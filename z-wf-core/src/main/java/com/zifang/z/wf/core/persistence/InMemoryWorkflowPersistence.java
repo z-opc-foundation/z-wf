@@ -21,6 +21,7 @@ import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
+import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfTask;
 
@@ -57,6 +58,8 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
     private final Map<String, List<WfActivityInstance>> activities = new ConcurrentHashMap<>();
 
     private final Map<String, List<WfComment>> comments = new ConcurrentHashMap<>();
+
+    private final Map<String, WfJob> jobs = new ConcurrentHashMap<>();
 
     @Override
     public void initialize() {
@@ -615,6 +618,117 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         return result;
     }
 
+    // ==================== Job ====================
+
+    @Override
+    public void saveJob(WfJob job) {
+        if (job == null || job.getId() == null) {
+            return;
+        }
+        WfJob existing = jobs.get(job.getId());
+        if (existing != null && job.getRevision() != existing.getRevision() + 1) {
+            throw new WfOptimisticLockException("job", job.getId(), existing.getRevision() + 1);
+        }
+        jobs.put(job.getId(), copy(job));
+    }
+
+    @Override
+    public void deleteJob(String id) {
+        jobs.remove(id);
+    }
+
+    @Override
+    public WfJob findJob(String id) {
+        return copy(jobs.get(id));
+    }
+
+    @Override
+    public List<WfJob> queryJobs(WfJobQuery query) {
+        List<WfJob> matched = new ArrayList<>();
+        for (WfJob job : jobs.values()) {
+            if (matches(job, query)) {
+                matched.add(copy(job));
+            }
+        }
+        // 到期时刻正序：执行器要的是"最早到点的先做"，顺序错了会饿死靠后的 job。
+        // 到期时刻相同时按 id 排，否则 ConcurrentHashMap 的遍历顺序会随机化，
+        // 同一批 job 在不同 JVM 上得到不同的执行顺序。
+        matched.sort((a, b) -> {
+            Date ta = a.getDuedate();
+            Date tb = b.getDuedate();
+            if (ta == null || tb == null) {
+                return a.getId().compareTo(b.getId());
+            }
+            int cmp = ta.compareTo(tb);
+            return cmp != 0 ? cmp : a.getId().compareTo(b.getId());
+        });
+        int offset = query == null ? 0 : query.getOffset();
+        int size = query == null || query.getPageSize() <= 0 ? 50 : query.getPageSize();
+        return paginate(matched, offset, size);
+    }
+
+    @Override
+    public long countJobs(WfJobQuery query) {
+        int total = 0;
+        for (WfJob job : jobs.values()) {
+            if (matches(job, query)) {
+                total++;
+            }
+        }
+        return total;
+    }
+
+    @Override
+    public int deleteJobsByProcessInstance(String processInstanceId) {
+        int removed = 0;
+        for (WfJob job : jobs.values()) {
+            if (processInstanceId.equals(job.getProcessInstanceId())) {
+                jobs.remove(job.getId());
+                removed++;
+            }
+        }
+        return removed;
+    }
+
+    @Override
+    public int deleteJobsByExecution(String executionId) {
+        int removed = 0;
+        for (WfJob job : jobs.values()) {
+            if (executionId.equals(job.getExecutionId())) {
+                jobs.remove(job.getId());
+                removed++;
+            }
+        }
+        return removed;
+    }
+
+    /**
+     * job 过滤。与 {@link #queryJobs} / {@link #countJobs} 共用同一个判定 ——
+     * count 与列表口径必须一致，否则执行器日志里"处理了 5 个"和实际影响到的流程对不上。
+     */
+    private boolean matches(WfJob job, WfJobQuery query) {
+        if (query == null) {
+            return true;
+        }
+        if (isNotBlank(query.getProcessInstanceId())
+                && !query.getProcessInstanceId().equals(job.getProcessInstanceId())) {
+            return false;
+        }
+        if (isNotBlank(query.getElementId())
+                && !query.getElementId().equals(job.getElementId())) {
+            return false;
+        }
+        if (query.getDueBefore() != null
+                && (job.getDuedate() == null || !job.getDuedate().before(query.getDueBefore()))) {
+            return false;
+        }
+        if (query.getRetriesExhausted() != null
+                && job.isRetriesExhausted() != query.getRetriesExhausted()) {
+            return false;
+        }
+        return true;
+    }
+
     @Override
     public synchronized void clear() {
         definitions.clear();
@@ -623,6 +737,7 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         tasks.clear();
         activities.clear();
         comments.clear();
+        jobs.clear();
     }
 
     // ==================== 拷贝 ====================

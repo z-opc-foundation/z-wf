@@ -108,6 +108,50 @@ public class WfNode implements Serializable {
      */
     private String attachedToRef;
 
+    /**
+     * 定时器边界的触发时刻怎么算，见 {@link WfTimerType}。
+     *
+     * <p>为 null 表示这个边界事件不是定时器边界。
+     *
+     * <p>与 {@link #errorCode} 是<b>互斥</b>的两条触发路径：BPMN 里一个
+     * boundaryEvent 只会挂一种 eventDefinition。解析时若两者都出现，
+     * 以 {@code error} 为准并让校验器报 ERROR —— 不静默挑一个。
+     */
+    private WfTimerType timerType;
+
+    /**
+     * 定时器表达式：
+     * <ul>
+     *   <li>{@link WfTimerType#DURATION} —— ISO-8601 时长，如 {@code PT5M}，
+     *       支持 D/H/M/S 与它们的组合；此处也可写 {@code ${变量}} 形式的流程变量</li>
+     *   <li>{@link WfTimerType#DATE} —— ISO-8601 时刻，如 {@code 2026-12-31T18:00:00Z}</li>
+     *   <li>{@link WfTimerType#CYCLE} —— ISO-8601 循环周期，如 {@code R3/PT10M}；
+     *       本实现<b>不支持</b>循环定时器，解析出来只为给出可操作的报错</li>
+     * </ul>
+     */
+    private String timerExpression;
+
+    public WfTimerType getTimerType() {
+        return timerType;
+    }
+
+    public void setTimerType(WfTimerType timerType) {
+        this.timerType = timerType;
+    }
+
+    public String getTimerExpression() {
+        return timerExpression;
+    }
+
+    public void setTimerExpression(String timerExpression) {
+        this.timerExpression = timerExpression;
+    }
+
+    /** 这个边界事件是否由定时器触发。 */
+    public boolean isTimerBoundary() {
+        return timerType != null;
+    }
+
     public String getErrorCode() {
         return errorCode;
     }

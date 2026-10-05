@@ -143,6 +143,31 @@ public class WfDefinition implements Serializable {
     }
 
     /**
+     * 挂在某个节点上的<b>定时器</b>边界事件。
+     *
+     * <p>与 {@code WfRuntimeService#findErrorBoundary}（按错误码找单个）是两类触发：
+     * 错误边界靠出错时路由，定时器边界靠时间到了自动触发。
+     *
+     * <p>返回列表而非单个：同一个节点上可以挂多个定时器边界
+     * （比如"1 小时提醒"和"24 小时升级"），它们各自起表、各自到期。
+     * 解析期不限制数量 —— 数量该不该有限制是业务问题，引擎只负责都做对。
+     */
+    public List<WfNode> timerBoundariesOf(String hostNodeId) {
+        List<WfNode> result = new ArrayList<>();
+        if (hostNodeId == null || getNodes() == null) {
+            return result;
+        }
+        for (WfNode candidate : getNodes()) {
+            if (candidate.getType() == WfNodeType.BOUNDARY_EVENT
+                    && candidate.isTimerBoundary()
+                    && hostNodeId.equals(candidate.getAttachedToRef())) {
+                result.add(candidate);
+            }
+        }
+        return result;
+    }
+
+    /**
      * 出线（保持声明顺序 —— 排他网关的求值顺序依赖它）。
      */
     public List<WfFlow> outgoingFlows(String nodeId) {

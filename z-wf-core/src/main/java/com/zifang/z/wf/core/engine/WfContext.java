@@ -8,10 +8,14 @@ import java.util.List;
 import java.util.Map;
 
 import com.zifang.z.wf.core.definition.WfDefinition;
+import com.zifang.z.wf.core.definition.WfNode;
+import com.zifang.z.wf.core.definition.WfTimerSupport;
 import com.zifang.z.wf.core.engine.expression.WfExpressionEvaluator;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfExecution;
+import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfProcessInstance;
+import com.zifang.z.wf.core.service.WfEngineException;
 import com.zifang.z.wf.core.model.WfTask;
 import com.zifang.z.wf.core.service.WfDelegateRegistry;
 
@@ -47,6 +51,78 @@ public class WfContext {
     /** 本次推进产生的历史记录。 */
     private final java.util.List<WfActivityInstance> activityHistory =
             new java.util.ArrayList<>();
+
+    /** 本次推进新建的 job（定时器边界事件）。 */
+    private final java.util.List<WfJob> createdJobs =
+            new java.util.ArrayList<>();
+
+    /**
+     * 本次推进要撤掉的 job 所属的 token。
+     *
+     * <p>记录 token 而不是 job id：定时器到期时刻尚未知（时长可以引用流程变量），
+     * 且清理要覆盖"这个 token 在本节点期间建的所有 job"。
+     */
+    private final java.util.List<String> jobsToClearByExecution =
+            new java.util.ArrayList<>();
+
+    public java.util.List<WfJob> getCreatedJobs() {
+        return createdJobs;
+    }
+
+    public void addCreatedJob(WfJob job) {
+        if (job != null) {
+            createdJobs.add(job);
+        }
+    }
+
+    public java.util.List<String> getJobsToClearByExecution() {
+        return jobsToClearByExecution;
+    }
+
+    public void clearJobsOf(String executionId) {
+        if (executionId != null) {
+            jobsToClearByExecution.add(executionId);
+        }
+    }
+
+    /**
+     * token 刚进入某个节点，为挂在这个节点上的每个定时器边界起一个 job。
+     *
+     * <p><b>起算点是"进入本节点这一刻"而不是流程启动时刻</b>：
+     * 超时提醒问的是"这一步停了多久"，不是"这单办了多久"。
+     * 用流程启动时刻的话，一张走了三天的单会在进入审批的同一秒就超时。
+     *
+     * <p>起算点取 {@code enteredTime}：{@code WfEngine.enter} 在调用本方法之前
+     * 已经把它设成当前时刻，所以并行分支上同一个节点的不同 token 各自起表、互不干扰。
+     */
+    public void startTimerJobs(java.util.Collection<WfNode> boundaries) {
+        WfExecution execution = getCurrentExecution();
+        if (execution == null || boundaries == null || boundaries.isEmpty()) {
+            return;
+        }
+        Date base = execution.getEnteredTime() != null ? execution.getEnteredTime() : new Date();
+        for (WfNode boundary : boundaries) {
+            WfJob job = new WfJob();
+            job.setProcessInstanceId(getProcessInstanceId());
+            job.setExecutionId(execution.getId());
+            job.setElementId(boundary.getId());
+            job.setAttachedToRef(boundary.getAttachedToRef());
+            job.setCreateTime(new Date());
+            job.setRetries(WfJob.DEFAULT_RETRIES);
+            // 定时器算不出触发时刻就直接抛：建一个永远不响的哑定时器，
+            // 比启动失败危险得多 —— 它表现为"超时提醒一直没来"，没人查得到根因。
+            // 底层抛 IllegalArgumentException（它是入参问题），这里转成引擎的
+            // 对外异常，让调用方与其它启动失败拿到同一种处理方式。
+            try {
+                job.setDuedate(WfTimerSupport.resolveDueDate(boundary.getTimerType(),
+                        boundary.getTimerExpression(), base, mergedVariables()));
+            } catch (IllegalArgumentException e) {
+                throw new WfEngineException("边界事件 " + boundary.getId()
+                        + " 的定时器算不出触发时刻: " + e.getMessage(), e);
+            }
+            createdJobs.add(job);
+        }
+    }
 
     /** 本次推进产生的结果标记（endEvent 的 resultExpression 求值结果）。 */
     private String processResult;

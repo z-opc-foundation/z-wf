@@ -3,6 +3,7 @@ package com.zifang.z.wf.core.definition;
 import com.zifang.z.wf.core.engine.WfEngine;
 
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -290,9 +291,11 @@ public class WfDefinitionValidator {
      * <ul>
      *   <li>缺 attachedToRef ⇒ 不知道挂在谁身上，等于没挂</li>
      *   <li>挂到了不存在的节点 ⇒ 永远不会触发</li>
-     *   <li>缺 errorCode ⇒ 无法决定捕不捕获。这里刻意<b>不接受</b> BPMN 里的
-     *       "空 errorRef 表示捕获所有错误"：宽泛捕获会把不相关的异常也吸走，
-     *       让本该崩掉的流程继续走下去，而那正是边界事件最该避免的事</li>
+     *   <li>既没有 {@code errorRef} 也没有 {@code timerEventDefinition}
+     *       ⇒ 它没有任何触发条件，永远不会触发</li>
+     *   <li>是错误边界却缺 errorCode ⇒ 无法决定捕不捕获。这里刻意<b>不接受</b>
+     *       BPMN 里的"空 errorRef 表示捕获所有错误"：宽泛捕获会把不相关的异常
+     *       也吸走，让本该崩掉的流程继续走下去，而那正是边界事件最该避免的事</li>
      *   <li>有入线 ⇒ 画错了。边界事件靠宿主节点出错时触发，
      *       被 sequenceFlow 指到它意味着作者以为它是普通流程节点</li>
      * </ul>
@@ -306,12 +309,27 @@ public class WfDefinitionValidator {
                     "boundaryEvent 挂载的目标节点不存在: " + node.getAttachedToRef()
                             + "，该边界事件永远不会触发");
         }
-        if (isBlank(node.getErrorCode())) {
+
+        // ---- 触发类型：错误边界 / 定时器边界是两条互斥的路径 ----
+        // 此前这里不分类型，一律要求 errorCode，于是合法定时器边界
+        // 会被报"缺少 errorCode"而部署不了 —— 部署期严格成了部署期误伤。
+        Object conflict = node.getProperties() == null
+                ? null : node.getProperties().get(WfXmlParser.PROPERTY_TIMER_CONFLICT);
+        if (conflict != null) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
-                    "boundaryEvent 缺少 errorCode。本实现刻意不支持"
-                            + "「空 errorRef = 捕获所有错误」：宽泛捕获会把不相关的异常也吸走，"
-                            + "让本该崩掉的流程继续走下去。请显式写明捕获哪一种错误");
+                    "timerEventDefinition 里同时出现了多个子元素: " + conflict
+                            + "。一个边界事件只能挂一种触发条件");
         }
+        if (node.isTimerBoundary()) {
+            validateTimerBoundary(node);
+        } else if (isBlank(node.getErrorCode())) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "boundaryEvent 既没有 errorCode（errorEventDefinition/@errorRef）"
+                            + "也没有 timerEventDefinition，没有任何触发条件，永远不会触发。"
+                            + "错误边界请显式写明捕获哪一种错误 —— 本实现刻意不支持"
+                            + "「空 errorRef = 捕获所有错误」：宽泛捕获会把不相关的异常也吸走");
+        }
+
         if (definition.incomingFlows(node.getId()) != null
                 && !definition.incomingFlows(node.getId()).isEmpty()) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
@@ -322,6 +340,40 @@ public class WfDefinitionValidator {
         if (outgoing == null || outgoing.isEmpty()) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
                     "boundaryEvent 没有出线。触发之后将无处可去，流程会直接结束");
+        }
+    }
+
+    /**
+     * 定时器边界事件的校验。
+     *
+     * <p>只有"触发时刻算不出来"这一类问题会报 ERROR —— 那意味着 job 建不出来，
+     * 部署放行等于留一个永远不会响的哑定时器。
+     */
+    private void validateTimerBoundary(WfNode node) {
+        if (node.getTimerType() == WfTimerType.CYCLE) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "循环定时器（timeCycle）本实现不支持。循环周期需要独立的"
+                            + "『下一次触发时间』状态，还要在实例终止时清理，"
+                            + "并与会签、补偿事务纠缠。请改用 timeDuration 或 timeDate");
+            return;
+        }
+        if (isBlank(node.getTimerExpression())) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    node.getTimerType().getElementName() + " 内容为空，定时器算不出触发时刻");
+            return;
+        }
+        if (WfTimerSupport.isVariableReference(node.getTimerExpression())) {
+            // 变量值要到实例启动时才有，部署期无法判断它是否合法。
+            // 这里放过不是放过不管：取不到变量时 WfContext#startTimerJobs 会抛，
+            // 流程启动当场失败，不会留下一个算不出时刻的哑表
+            return;
+        }
+        try {
+            WfTimerSupport.resolveDueDate(node.getTimerType(), node.getTimerExpression(),
+                    new Date(), null);
+        } catch (RuntimeException e) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "定时器表达式无法解析: " + node.getTimerExpression() + " —— " + e.getMessage());
         }
     }
 
@@ -403,7 +455,7 @@ public class WfDefinitionValidator {
      * 找出被嵌在指定容器元素里的节点 id。
      *
      * <p>依赖解析期写下的 {@link WfNode#PROPERTY_NESTED_IN} 标记 ——
-     * 解析结果���扁平表，父子关系不靠这个标记无从还原。
+     * 解析结果扁平表，父子关系不靠这个标记无从还原。
      */
     private static List<String> inlineChildIds(WfDefinition definition, String containerId) {
         List<String> inline = new ArrayList<>();

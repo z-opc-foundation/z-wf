@@ -23,6 +23,7 @@ import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
+import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfProcessStatus;
 import com.zifang.z.wf.core.model.WfTask;
@@ -38,6 +39,9 @@ import com.zifang.z.wf.core.model.WfTask;
  *       必须抛 {@link WfOptimisticLockException}；用内存 Map 无法验证这一点</li>
  *   <li><b>时间类型映射</b>：{@link Date} ↔ {@code TIMESTAMP} 往返（这正是内存实现
  *       踩过 JsonUtil Date 坑的地方，必须在 JDBC 侧确认干净）</li>
+ *   <li><b>占位符个数与 set 次数</b>：{@code INSERT INTO T (a,b,c) VALUES (?,?,?)}
+ *       里少 set 一个参数，javac 一声不吭，只有真跑才报
+ *       {@code Parameter "#3" is not set}。写 ZWF_JOB 的 INSERT 时就是这样漏了 REV 一列</li>
  * </ol>
  *
  * @author zifang
@@ -493,6 +497,136 @@ class JdbcWorkflowPersistenceTest {
                 new WfProcessInstanceQuery().setPageNum(4).setPageSize(3)).size());
         assertEquals(7, persistence.countProcessInstances(new WfProcessInstanceQuery()),
                 "total 不受分页影响");
+    }
+
+    // ==================== Job 存储 ====================
+
+    private WfJob newJob(String id, String procId, String execId, String element,
+                         long dueOffsetMillis) {
+        WfJob job = new WfJob();
+        job.setId(id);
+        job.setProcessInstanceId(procId);
+        job.setExecutionId(execId);
+        job.setElementId(element);
+        job.setAttachedToRef("approve");
+        job.setCreateTime(new Date(BASE));
+        job.setDuedate(new Date(BASE + dueOffsetMillis));
+        persistence.saveJob(job);
+        return job;
+    }
+
+    @Test
+    @DisplayName("job 往返：到期时刻、重试次数、失败信息都不丢")
+    void jobRoundTrip() {
+        WfJob job = newJob("j1", "p1", "e1", "timeout", 60000L);
+        job.recordFailure("执行器炸了");
+        job.nextRevision();
+        persistence.saveJob(job);
+
+        WfJob loaded = persistence.findJob("j1");
+        assertNotNull(loaded);
+        assertEquals("p1", loaded.getProcessInstanceId());
+        assertEquals("e1", loaded.getExecutionId());
+        assertEquals("timeout", loaded.getElementId());
+        assertEquals("approve", loaded.getAttachedToRef());
+        assertNotNull(loaded.getDuedate());
+        assertEquals(60000L, loaded.getDuedate().getTime() - BASE);
+        assertEquals(WfJob.DEFAULT_RETRIES - 1, loaded.getRetries());
+        assertEquals("执行器炸了", loaded.getExceptionMessage());
+        assertNotNull(loaded.getLastFailureTime());
+    }
+
+    @Test
+    @DisplayName("job 乐观锁：版本对不上直接抛，不静默覆盖执行器的重试计数")
+    void jobOptimisticLock() {
+        WfJob job = newJob("j1", "p1", "e1", "timeout", 1000L);
+        // 拿一份过期的副本再存一次（库里已经是 revision=1）
+        WfJob stale = persistence.findJob("j1");
+        job.recordFailure("第一次失败");
+        job.nextRevision();
+        persistence.saveJob(job);
+
+        stale.recordFailure("基于旧版本的写入");
+        stale.nextRevision();
+        assertThrows(WfOptimisticLockException.class, () -> persistence.saveJob(stale));
+    }
+
+    @Test
+    @DisplayName("按到期时刻取 job：严格早于边界，并按到期正序")
+    void queryJobsByDueDate() {
+        newJob("j-late", "p1", "e1", "timeout", 5000L);
+        newJob("j-early", "p2", "e2", "timeout", 1000L);
+        newJob("j-mid", "p3", "e3", "timeout", 3000L);
+
+        List<WfJob> due = persistence.queryJobs(new WfJobQuery()
+                .setDueBefore(new Date(BASE + 3001L)).setPageNum(1).setPageSize(10));
+        assertEquals(2, due.size(), "只有到期时刻严格早于边界的两只");
+        assertEquals("j-early", due.get(0).getId(), "最早到点的排第一");
+        assertEquals("j-mid", due.get(1).getId());
+
+        assertEquals(0, persistence.queryJobs(new WfJobQuery()
+                        .setDueBefore(new Date(BASE + 1000L)).setPageNum(1).setPageSize(10)).size(),
+                "恰好等于边界的算下一轮（SQL 是严格小于），"
+                        + "避免同一秒被两个执行器各处理一次");
+        assertEquals(3, persistence.countJobs(new WfJobQuery()));
+        assertEquals(1, persistence.countJobs(new WfJobQuery().setProcessInstanceId("p2")));
+        assertEquals(1, persistence.countJobs(new WfJobQuery().setElementId("timeout")
+                .setProcessInstanceId("p1")));
+        assertEquals(0, persistence.countJobs(new WfJobQuery().setElementId("nope")));
+    }
+
+    @Test
+    @DisplayName("重试耗尽的能被单独查出来 —— 漏发的提醒必须查得到")
+    void queryExhaustedJobs() {
+        WfJob ok = newJob("j-ok", "p1", "e1", "timeout", 1000L);
+        WfJob bad = newJob("j-bad", "p2", "e2", "timeout", 2000L);
+        for (int i = 0; i < WfJob.DEFAULT_RETRIES; i++) {
+            bad.recordFailure("第 " + (i + 1) + " 次");
+        }
+        bad.nextRevision();
+        persistence.saveJob(bad);
+
+        List<WfJob> exhausted = persistence.queryJobs(new WfJobQuery()
+                .setRetriesExhausted(Boolean.TRUE).setPageNum(1).setPageSize(10));
+        assertEquals(1, exhausted.size());
+        assertEquals("j-bad", exhausted.get(0).getId());
+        assertEquals(1, persistence.countJobs(new WfJobQuery()
+                .setRetriesExhausted(Boolean.FALSE)));
+        assertEquals(1, persistence.countJobs(new WfJobQuery()
+                .setRetriesExhausted(Boolean.FALSE).setProcessInstanceId("p1")));
+        assertEquals(ok.getId(), persistence.queryJobs(new WfJobQuery()
+                .setRetriesExhausted(Boolean.FALSE).setPageNum(1).setPageSize(10))
+                .get(0).getId());
+    }
+
+    @Test
+    @DisplayName("按实例/按 token 清 job，两条清理路径互不误伤")
+    void deleteJobsByScope() {
+        newJob("j1", "p1", "e1", "timeout", 1000L);
+        newJob("j2", "p1", "e1", "remind", 2000L);
+        newJob("j3", "p1", "e2", "timeout", 3000L);
+        newJob("j4", "p2", "e3", "timeout", 4000L);
+
+        // j1/j2 都挂在 e1 上，j3 在 e2，j4 在 e3
+        assertEquals(2, persistence.deleteJobsByExecution("e1"));
+        assertEquals(2, persistence.countJobs(new WfJobQuery()));
+        assertEquals(0, persistence.deleteJobsByExecution("e1"),
+                "已经清空的 token 再删一次不该报错，直接返回 0");
+
+        // 上一行清完 e1 后 p1 名下只剩 j3 一条
+        assertEquals(1, persistence.deleteJobsByProcessInstance("p1"));
+        List<WfJob> left = persistence.queryJobs(new WfJobQuery().setPageNum(1).setPageSize(10));
+        assertEquals(1, left.size());
+        assertEquals("j4", left.get(0).getId(), "别的实例的 job 不能被误删");
+    }
+
+    @Test
+    @DisplayName("job 表在 initialize 后可重复初始化，老库升级不炸")
+    void jobTableIsIdempotent() {
+        persistence.initialize();
+        persistence.initialize();
+        newJob("j1", "p1", "e1", "timeout", 1000L);
+        assertEquals(1, persistence.countJobs(new WfJobQuery()));
     }
 
     private WfTask newTask(String id, String assignee, WfTask.Status status, int priority, long time) {

@@ -8,6 +8,7 @@ import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
+import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfTask;
 
@@ -197,6 +198,47 @@ public interface WfPersistence {
     void saveComment(WfComment comment);
 
     List<WfComment> findComments(String processInstanceId);
+
+    // ==================== Job ====================
+
+    /**
+     * 保存 job。
+     *
+     * <p>契约与 {@link #saveTask} 一致：<b>调用方必须自己先 {@code nextRevision()}</b>，
+     * 实现按"库里 revision + 1 == 传入 revision"做 CAS，0 行受影响就抛
+     * {@link WfOptimisticLockException}。
+     */
+    void saveJob(WfJob job);
+
+    void deleteJob(String id);
+
+    WfJob findJob(String id);
+
+    /**
+     * 查 job 列表。
+     *
+     * <p>默认按到期时刻正序：执行器要的是"最早到点的先做"，
+     * 顺序错了会让一批同时到点的 job 里靠后的被饿死。
+     */
+    List<WfJob> queryJobs(WfJobQuery query);
+
+    long countJobs(WfJobQuery query);
+
+    /**
+     * 删掉某个流程实例下的全部 job。
+     *
+     * <p>实例终止/删历史时必须调用，否则残留的 job 会在到期时去找一个
+     * 已经不存在的实例，把"流程早就结束了"变成一条莫名其妙的执行失败。
+     */
+    int deleteJobsByProcessInstance(String processInstanceId);
+
+    /**
+     * 删掉挂在某个 token 上的全部 job（token 正常离开节点时调用）。
+     *
+     * <p>不清理的后果：人已经按时办完了，30 分钟后定时器照样触发，
+     * 把一条正常结束的流程拽进超时分支 —— 审批系统里这种 bug 最招骂。
+     */
+    int deleteJobsByExecution(String executionId);
 
     // ==================== 生命周期 ====================
 

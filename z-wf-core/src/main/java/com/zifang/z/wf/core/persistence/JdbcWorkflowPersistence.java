@@ -26,6 +26,7 @@ import com.zifang.z.wf.core.definition.WfNodeType;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
+import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfProcessStatus;
 import com.zifang.z.wf.core.model.WfTask;
@@ -41,6 +42,7 @@ import com.zifang.z.wf.core.model.WfTask;
  *   ZWF_TASK            任务
  *   ZWF_ACTIVITY        活动历史
  *   ZWF_COMMENT         评论
+ *   ZWF_JOB             job（定时器边界事件）
  * </pre>
  *
  * <p><b>三条设计决策</b>：
@@ -180,6 +182,20 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 + "CMT_TIME TIMESTAMP,"
                 + "PRIMARY KEY (CMT_ID))");
 
+        ddl.add("CREATE TABLE IF NOT EXISTS ZWF_JOB ("
+                + "JOB_ID VARCHAR(128) NOT NULL,"
+                + "PROC_ID VARCHAR(128) NOT NULL,"
+                + "EXEC_ID VARCHAR(128),"
+                + "ELEMENT_ID VARCHAR(128),"
+                + "ATTACHED_TO VARCHAR(128),"
+                + "DUEDATE TIMESTAMP,"
+                + "RETRIES INT,"
+                + "EXCEPTION_MSG VARCHAR(2048),"
+                + "CREATE_TIME TIMESTAMP,"
+                + "LAST_FAIL_TIME TIMESTAMP,"
+                + "REV INT,"
+                + "PRIMARY KEY (JOB_ID))");
+
         // 审批中心的三条主查询路径都走这些索引
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_PROC_BIZKEY ON ZWF_PROCESS (BUSINESS_KEY)");
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_PROC_USER ON ZWF_PROCESS (START_USER_ID)");
@@ -191,6 +207,10 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_TASK_PROC ON ZWF_TASK (PROC_ID, STATUS)");
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_ACT_PROC ON ZWF_ACTIVITY (PROC_ID, START_TIME)");
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_CMT_PROC ON ZWF_COMMENT (PROC_ID)");
+        // 执行器每轮都按"到期时刻 <= now"扫，DUEDATE 上没有索引就是全表扫
+        ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_JOB_DUEDATE ON ZWF_JOB (DUEDATE)");
+        ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_JOB_PROC ON ZWF_JOB (PROC_ID)");
+        ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_JOB_EXEC ON ZWF_JOB (EXEC_ID)");
 
         Connection connection = null;
         try {
@@ -240,7 +260,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
 
     @Override
     public void clear() {
-        String[] tables = {"ZWF_COMMENT", "ZWF_ACTIVITY", "ZWF_TASK", "ZWF_EXECUTION",
+        String[] tables = {"ZWF_JOB", "ZWF_COMMENT", "ZWF_ACTIVITY", "ZWF_TASK", "ZWF_EXECUTION",
                 "ZWF_PROCESS", "ZWF_DEFINITION"};
         Connection connection = null;
         try {
@@ -1186,6 +1206,148 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         }
         return result;
     }
+
+    // ==================== Job ====================
+
+    @Override
+    public void saveJob(WfJob job) {
+        boolean exists = exists("SELECT 1 FROM ZWF_JOB WHERE JOB_ID=?", job.getId());
+        if (exists) {
+            int affected = update("UPDATE ZWF_JOB SET RETRIES=?, EXCEPTION_MSG=?, LAST_FAIL_TIME=?, "
+                            + "DUEDATE=?, REV=? WHERE JOB_ID=? AND REV=?",
+                    job.getRetries(), job.getExceptionMessage(),
+                    timestamp(job.getLastFailureTime()), timestamp(job.getDuedate()),
+                    job.getRevision(), job.getId(), job.getRevision() - 1);
+            if (affected == 0) {
+                throw new WfOptimisticLockException("job", job.getId(), job.getRevision() - 1);
+            }
+            return;
+        }
+        Connection connection = null;
+        try {
+            connection = dataSource.getConnection();
+            PreparedStatement ps = connection.prepareStatement(
+                    "INSERT INTO ZWF_JOB (JOB_ID, PROC_ID, EXEC_ID, ELEMENT_ID, ATTACHED_TO, "
+                            + "DUEDATE, RETRIES, EXCEPTION_MSG, CREATE_TIME, LAST_FAIL_TIME, REV) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+            try {
+                int i = 1;
+                ps.setString(i++, job.getId());
+                ps.setString(i++, job.getProcessInstanceId());
+                ps.setString(i++, job.getExecutionId());
+                ps.setString(i++, job.getElementId());
+                ps.setString(i++, job.getAttachedToRef());
+                ps.setTimestamp(i++, timestamp(job.getDuedate()));
+                ps.setInt(i++, job.getRetries());
+                ps.setString(i++, job.getExceptionMessage());
+                ps.setTimestamp(i++, timestamp(job.getCreateTime()));
+                ps.setTimestamp(i++, timestamp(job.getLastFailureTime()));
+                ps.setInt(i, job.getRevision());
+                ps.executeUpdate();
+            } finally {
+                closeQuietly(ps);
+            }
+        } catch (SQLException e) {
+            throw new WfPersistenceException("保存 job 失败: " + job.getId(), e);
+        } finally {
+            close(connection);
+        }
+    }
+
+    @Override
+    public void deleteJob(String id) {
+        update("DELETE FROM ZWF_JOB WHERE JOB_ID=?", id);
+    }
+
+    @Override
+    public WfJob findJob(String id) {
+        return queryOne("SELECT * FROM ZWF_JOB WHERE JOB_ID=?", id, jobMapper);
+    }
+
+    @Override
+    public List<WfJob> queryJobs(WfJobQuery query) {
+        StringBuilder sql = new StringBuilder("SELECT * FROM ZWF_JOB");
+        List<Object> args = new ArrayList<>();
+        appendJobFilters(sql, args, query);
+        // 到期时刻正序 + id 兜底：执行器要"最早到点的先做"，
+        // 同一时刻的多个 job 顺序随机会让日志对不上，也不好复现
+        sql.append(" ORDER BY DUEDATE ASC, JOB_ID ASC LIMIT ? OFFSET ?");
+        args.add(query == null || query.getPageSize() <= 0 ? 50 : query.getPageSize());
+        args.add(query == null ? 0 : query.getOffset());
+        return queryList(sql.toString(), args.toArray(), jobMapper);
+    }
+
+    @Override
+    public long countJobs(WfJobQuery query) {
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM ZWF_JOB");
+        List<Object> args = new ArrayList<>();
+        appendJobFilters(sql, args, query);
+        Long count = queryOne(sql.toString(), args.toArray(), COUNT_MAPPER);
+        return count == null ? 0L : count;
+    }
+
+    @Override
+    public int deleteJobsByProcessInstance(String processInstanceId) {
+        return update("DELETE FROM ZWF_JOB WHERE PROC_ID=?", processInstanceId);
+    }
+
+    @Override
+    public int deleteJobsByExecution(String executionId) {
+        return update("DELETE FROM ZWF_JOB WHERE EXEC_ID=?", executionId);
+    }
+
+    /**
+     * job 过滤。与 {@link #queryJobs} / {@link #countJobs} 共用 ——
+     * 执行器日志说"处理了 N 个"而 count 是另一个数时，这份日志就没法用了。
+     */
+    private void appendJobFilters(StringBuilder sql, List<Object> args, WfJobQuery query) {
+        if (query == null) {
+            return;
+        }
+        List<String> parts = new ArrayList<>();
+        if (query.getProcessInstanceId() != null) {
+            parts.add("PROC_ID=?");
+            args.add(query.getProcessInstanceId());
+        }
+        if (query.getElementId() != null) {
+            parts.add("ELEMENT_ID=?");
+            args.add(query.getElementId());
+        }
+        if (query.getDueBefore() != null) {
+            // 严格小于：边界时刻的 job 归下一轮，避免同一秒被两个执行器各处理一次
+            parts.add("DUEDATE < ?");
+            args.add(timestamp(query.getDueBefore()));
+        }
+        if (query.getRetriesExhausted() != null) {
+            if (query.getRetriesExhausted()) {
+                parts.add("RETRIES <= 0");
+            } else {
+                parts.add("RETRIES > 0");
+            }
+        }
+        if (!parts.isEmpty()) {
+            sql.append(" WHERE ").append(join(parts, " AND "));
+        }
+    }
+
+    private final RowMapper<WfJob> jobMapper = new RowMapper<WfJob>() {
+        @Override
+        public WfJob map(ResultSet rs) throws SQLException {
+            WfJob job = new WfJob();
+            job.setId(rs.getString("JOB_ID"));
+            job.setProcessInstanceId(rs.getString("PROC_ID"));
+            job.setExecutionId(rs.getString("EXEC_ID"));
+            job.setElementId(rs.getString("ELEMENT_ID"));
+            job.setAttachedToRef(rs.getString("ATTACHED_TO"));
+            job.setDuedate(date(rs.getTimestamp("DUEDATE")));
+            job.setRetries(rs.getInt("RETRIES"));
+            job.setExceptionMessage(rs.getString("EXCEPTION_MSG"));
+            job.setCreateTime(date(rs.getTimestamp("CREATE_TIME")));
+            job.setLastFailureTime(date(rs.getTimestamp("LAST_FAIL_TIME")));
+            job.setRevision(rs.getInt("REV"));
+            return job;
+        }
+    };
 
     private boolean exists(String sql, Object arg) {
         Connection connection = null;

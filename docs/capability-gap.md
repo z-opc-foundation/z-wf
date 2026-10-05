@@ -97,7 +97,7 @@
 
 | Camunda 能力 | z-wf | 说明 |
 |---|---|---|
-| **Job / 定时器** `createJobQuery` / `executeJob` / `setJobRetries` | ❌ | **重大缺口**，见 §2 |
+| **Job / 定时器** `createJobQuery` / `executeJob` / `setJobRetries` | 🟡 | **本轮补上 job 机制**：`WfJob` + `ZWF_JOB` 表 + `WfJobService#executeDueJobs`（重试计数、耗尽可查）。**剩余**：只有定时器边界一种 job，异步执行（`asyncBefore/asyncAfter`）、外部任务（`externalTask`）、`jobPriority`/定时器事件订阅都没做；也没有 `createJobQuery` 的 REST 入口 |
 | `createIncidentQuery` | ❌ | 无运行期故障的概念 |
 | `createMetricQuery`（引擎指标） | 🟡 | 只有 `getProcessStatusCounts` 一个自定义统计 |
 | `getTableCount` / `getTableNames` / `getProperties` | ❌ | |
@@ -138,7 +138,7 @@
 | `eventBasedGateway` | ❌ | 现在会被校验器**报错挡住**（见 §4），不会静默退化 |
 | `complexGateway` | ❌ | |
 | `transaction` / `adHocSubProcess` | ❌ | 同上，报错挡住 |
-| **定时器** `timerEventDefinition` | ❌ | |
+| **定时器** `timerEventDefinition` | ✅ | `timeDuration`（PT5M / P1DT2H / P1Y）与 `timeDate`（2026-12-31T18:00:00Z）已实现，可写 `${变量}` 由流程实例决定时限。**`timeCycle` 循环定时器刻意不支持**，部署期报 ERROR |
 | **异步** `asyncBefore` / `asyncAfter` | ❌ | |
 | `errorRef` / `errorEventDefinition` | ✅ | 见上。**刻意不支持「空 errorRef = 捕获所有错误」**——宽泛捕获会把不相关异常也吸走，让本该崩的流程继续走 |
 | `escalationCode` / `compensation` | ❌ | |
@@ -153,9 +153,11 @@
   （`${approvers[1]}` 可以）。所以逐实例派不同人靠 `zifang:loopAssignees="${approvers}"`
   + `zifang:assignee="${loopAssignee}"`，索引在分叉时用 Java 取，不在表达式里做
 
-**关于定时器与异步为什么是"重大缺口"**：没有 Job 就没有
-"超时自动提醒""超时自动升级""这一步异步调用外部系统"。
-这不是少一个特性，是缺一整条执行机制——需要 Job 存储、执行器、调度器接入。
+**关于异步为什么仍是缺口**：job 载体本身已经在位（`WfJob` / `ZWF_JOB` / `WfJobService`），
+定时器边界事件也已经跑通"超时提醒/超时升级"。但**异步执行**（`asyncBefore` / `asyncAfter`
+把这一步丢到 job 队列）与**外部任务**（`externalTask` 把这一步交给业务系统领走）
+还没有对应实现 —— 两者都只差"谁去执行这一步"，载体却已通用。
+先做定时器是因为它有确定的到期时刻、不需要外部系统参与。
 
 ---
 
@@ -243,7 +245,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 | 1 | ~~**多实例（会签/或签/计数）**~~ | ✅ 本轮已实现（并行）。剩余：`collection` 迭代、串行、变量下标 EL |
 | 2 | ~~**变量服务**~~ | ✅ 本轮已补（`WfVariableService` + REST `GET/POST /api/wf/process/variables`）。剩余缺口：变量实例查询、类型化变量、变量作用域链（execution 级） |
 | 3 | ~~**BPMN 错误事件 + `handleBpmnError`**~~ | ✅ 本轮已实现（错误边界）。剩余：escalation / compensation / 超时与消息边界 |
-| 4 | **边界事件 + 定时器 + Job 执行器** | 缺一整条机制：超时提醒/超时升级/异步调用都做不了 |
+| 4 | ~~**边界事件 + 定时器 + Job 执行器**~~ | ✅ **本轮已实现**：定时器边界事件（PT 时长 / ISO 时刻 / `${变量}`）+ Job 存储 + `WfJobService` 执行器 + 重试与耗尽可查。**剩余**：异步执行（`asyncBefore/asyncAfter`）、外部任务（`externalTask`）、消息/信号边界事件、循环定时器 |
 
 ### P1 —— 引擎成熟度
 
@@ -260,7 +262,7 @@ identity link 与任务挂起 · 复杂网关 · Filter
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 226 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 251 个测试兜着
 - 本轮从测试与审计中逼出并修复的**真实缺陷 18 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **扩展面明显比 Camunda 窄**（3 个 hook vs 几十个监听点），这是与 Camunda 差距最大、

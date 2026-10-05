@@ -28,6 +28,9 @@ public interface WfIdGenerator {
     /** 生成评论 ID。 */
     String nextCommentId();
 
+    /** 生成 job ID。 */
+    String nextJobId();
+
     /**
      * 默认实现：{@code 前缀 + 进程启动随机数 + 自增序号}。
      *
@@ -41,6 +44,7 @@ public interface WfIdGenerator {
         private final AtomicLong taskCounter = new AtomicLong();
         private final AtomicLong activityCounter = new AtomicLong();
         private final AtomicLong commentCounter = new AtomicLong();
+        private final AtomicLong jobCounter = new AtomicLong();
 
         public DefaultWfIdGenerator() {
             // 启动期随机后缀：不同 JVM 实例/不同次启动互不相同
@@ -75,6 +79,11 @@ public interface WfIdGenerator {
         @Override
         public String nextCommentId() {
             return "cmt-" + instanceTag + "-" + commentCounter.incrementAndGet();
+        }
+
+        @Override
+        public String nextJobId() {
+            return "job-" + instanceTag + "-" + jobCounter.incrementAndGet();
         }
     }
 }

@@ -262,6 +262,40 @@ class UnsupportedBpmnElementTest {
         }
 
         @Override
+        public void saveJob(com.zifang.z.wf.core.model.WfJob job) {
+        }
+
+        @Override
+        public void deleteJob(String id) {
+        }
+
+        @Override
+        public com.zifang.z.wf.core.model.WfJob findJob(String id) {
+            return null;
+        }
+
+        @Override
+        public java.util.List<com.zifang.z.wf.core.model.WfJob> queryJobs(
+                com.zifang.z.wf.core.persistence.WfJobQuery q) {
+            return null;
+        }
+
+        @Override
+        public long countJobs(com.zifang.z.wf.core.persistence.WfJobQuery q) {
+            return 0L;
+        }
+
+        @Override
+        public int deleteJobsByProcessInstance(String processInstanceId) {
+            return 0;
+        }
+
+        @Override
+        public int deleteJobsByExecution(String executionId) {
+            return 0;
+        }
+
+        @Override
         public void saveActivityInstance(com.zifang.z.wf.core.model.WfActivityInstance a) {
         }
 

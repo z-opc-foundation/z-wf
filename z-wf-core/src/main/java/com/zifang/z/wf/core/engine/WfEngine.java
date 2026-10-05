@@ -208,6 +208,12 @@ public class WfEngine {
         // 对审批节点而言通常是发起人而不是办理人，记下来轨迹上就会显示错人。
         // 一次节点访问只应当在 leave 时记一条（见 leave）。
 
+        // ---- 定时器边界：token 一进入宿主节点就起表 ----
+        // 必须在"停留"类节点之前：定时器测的就是这一步停多久。
+        // 结束事件不会挂定时器边界（挂上去也没有"停留"可言），
+        // 但放在一起读起来更顺 —— 起表与节点是否真的停下无关，交给 job 自己去判断。
+        context.startTimerJobs(definition.timerBoundariesOf(node.getId()));
+
         // ---- 结束事件 ----
         if (node.getType() == WfNodeType.END_EVENT) {
             evaluateResult(context, node);
@@ -434,6 +440,13 @@ public class WfEngine {
             context.recordActivity(node.getId(), node.getName(), node.getType().bpmnName(),
                     outcome == null || outcome.trim().isEmpty() ? "completed" : outcome);
         }
+
+        // ---- 撤掉本节点起过的定时器 ----
+        // 放在历史记录之后、选线之前：无论下一步走哪条线，这个 token 都已经离开了
+        // 这个节点，它在这里起的那几只表必须一起撤。
+        // 不撤的后果是审批系统里最招骂的那类 bug —— 人已经按时办完了，
+        // 30 分钟后定时器照样响，把一条正常结束的流程拽进"超时"分支。
+        context.clearJobsOf(token.getId());
 
         // ---- 网关离开：先记历史，选线由 handleGateway 在进入时已完成 ----
         List<WfFlow> flows = definition.outgoingFlows(node.getId());

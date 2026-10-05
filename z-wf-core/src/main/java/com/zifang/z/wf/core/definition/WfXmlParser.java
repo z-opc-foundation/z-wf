@@ -48,6 +48,13 @@ public class WfXmlParser {
      *  只用于识别"作者写了集合迭代"，以便校验器给出可操作的拒绝理由。 */
     public static final String PROPERTY_LOOP_COLLECTION = "zifang:loopCollection";
 
+    /**
+     * {@code timerEventDefinition} 里同时出现了多个子元素时记在这里。
+     *
+     * <p>解析层不替作者挑一个，交给 {@link WfDefinitionValidator} 在部署期报 ERROR。
+     */
+    public static final String PROPERTY_TIMER_CONFLICT = "zifang:timerConflict";
+
     /** BPMN 2.0 模型命名空间。 */
     private static final String BPMN_NS = "http://www.omg.org/spec/BPMN/20100524/MODEL";
 
@@ -268,6 +275,7 @@ public class WfXmlParser {
         if (errorDef != null) {
             node.setErrorCode(errorDef.getAttribute("errorRef"));
         }
+        parseTimerDefinition(element, node);
 
         node.setDueDateDuration(extension(element, "dueDate"));
 
@@ -285,6 +293,38 @@ public class WfXmlParser {
         node.setRequiredVariables(splitList(extension(element, "requiredVariables")));
 
         return node;
+    }
+
+    /**
+     * 解析定时器边界事件的 {@code timerEventDefinition}。
+     *
+     * <p>三种子元素在 BPMN 里互斥。这里按固定顺序探测而不是"哪个先出现用哪个"，
+     * 是为了让"同时写了两个"这种情况被解析层记下来（存进 properties），
+     * 校验器据此报错 —— 静默挑一个会让作者以为自己写的那条生效了。
+     */
+    private void parseTimerDefinition(Element element, WfNode node) {
+        Element timerDef = childElement(element, "timerEventDefinition");
+        if (timerDef == null) {
+            return;
+        }
+        WfTimerType found = null;
+        String foundText = null;
+        for (WfTimerType type : WfTimerType.values()) {
+            String text = childText(timerDef, type.getElementName());
+            if (text == null || text.trim().isEmpty()) {
+                continue;
+            }
+            if (found == null) {
+                found = type;
+                foundText = text.trim();
+            } else {
+                // 记下来但不改 node：交给校验器去报，解析层不替作者做选择
+                node.getProperties().put(PROPERTY_TIMER_CONFLICT,
+                        type.getElementName() + " 与 " + found.getElementName());
+            }
+        }
+        node.setTimerType(found);
+        node.setTimerExpression(foundText);
     }
 
     /**

@@ -13,6 +13,7 @@ import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.WfDefinitionException;
 import com.zifang.z.wf.core.definition.WfNode;
 import com.zifang.z.wf.core.definition.WfNodeType;
+import com.zifang.z.wf.core.definition.WfTimerSupport;
 import com.zifang.z.wf.core.engine.WfContext;
 import com.zifang.z.wf.core.engine.WfEngine;
 import com.zifang.z.wf.core.engine.WfIdGenerator;
@@ -22,6 +23,7 @@ import com.zifang.z.wf.core.hook.WfHookDispatcher;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
+import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfProcessStatus;
 import com.zifang.z.wf.core.model.WfTask;
@@ -394,6 +396,10 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             persistence.saveExecution(execution);
         }
 
+        // 撤掉它名下的所有 job：实例已经没了，到点的 job 会去找一个
+        // 不存在的流程，把"流程早就被强制终止了"变成一条莫名其妙的执行失败
+        persistence.deleteJobsByProcessInstance(processInstanceId);
+
         log.info("流程终止: {}, 原因={}, 作废任务 {} 个", processInstanceId, reason, cancelled);
 
         // 终止同样要走收尾钩子。旧实现只改状态、只打日志，一个钩子都不发 ——
@@ -757,6 +763,71 @@ public class WfRuntimeService implements WfSubProcessLauncher {
     }
 
     /**
+     * 触发定时器边界事件 —— 由 {@link WfJobService} 在 job 到期时调用。
+     *
+     * <p>形状与 {@link #handleBpmnError} 一致：把 token 从宿主节点挪到边界事件上，
+     * 由它沿出线走补偿/升级分支。差别只在"为什么挪"：
+     * 错误边界是人或委托抛错触发的，定时器边界是时间到了触发的。
+     *
+     * @param job 已到期的 job（调用方保证它已被删除，不会重复触发）
+     * @return 是否真的触发了边界事件
+     */
+    public boolean fireTimerBoundary(WfJob job) {
+        WfProcessInstance instance = requireInstance(job.getProcessInstanceId());
+        if (instance.getStatus().isTerminal()) {
+            // 流程已经结束了还在响：多半是残留 job（实例被外部直接改库终止、
+            // 或清理逻辑漏了）。返回 false 而不是抛异常 ——
+            // 抛出去会被执行器算成失败并重试，而重试永远不会有用。
+            log.warn("流程 {} 已是终态 {}，却还有 job {} 到期，忽略触发",
+                    instance.getId(), instance.getStatus(), job.getId());
+            return false;
+        }
+        WfDefinition definition = definitionOf(instance);
+        WfNode boundary = WfJobService.resolveBoundary(definition, job);
+
+        // 找 token：它必须仍停在宿主节点上。
+        // token 早就走了还触发，等于把流程从别处拽到边界事件上 ——
+        // 比如人已经办完、token 已进入下一节点，只是 job 撤得慢了一步。
+        WfExecution execution = job.getExecutionId() != null
+                ? persistence.findExecution(job.getExecutionId()) : null;
+        if (execution == null || execution.isEnded()
+                || !job.getAttachedToRef().equals(execution.getActivityId())) {
+            log.info("job {} 触发时 token 已不在宿主节点 {} 上（当前 {}），"
+                            + "按已办结处理，不触发边界事件",
+                    job.getId(), job.getAttachedToRef(),
+                    execution == null ? "不存在" : execution.getActivityId());
+            return false;
+        }
+
+        long waitedMillis = System.currentTimeMillis()
+                - (job.getCreateTime() == null ? System.currentTimeMillis()
+                : job.getCreateTime().getTime());
+        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                instance.getId(), "system", "job",
+                "节点 " + job.getAttachedToRef() + " 停留超时（已等 "
+                        + WfTimerSupport.describeDuration(waitedMillis)
+                        + "），触发边界事件 " + boundary.getId()));
+        log.info("流程 {} 节点 {} 超时，触发边界事件 {}",
+                instance.getId(), job.getAttachedToRef(), boundary.getId());
+
+        // 宿主节点上的待办作废：人已经超时了，待办还挂着只会让人以为还能办
+        cancelOpenTasksOn(instance.getId(), job.getAttachedToRef());
+
+        WfContext context = contextForError(instance, definition, execution, null);
+        execution.setActivityId(boundary.getId());
+        execution.setState(WfExecution.State.ACTIVE);
+        execution.setEnteredTime(new Date());
+        // 结论交给 leave() 写成唯一那条记录（见 WfContext#pendingActivityOutcome）。
+        // 不在这里单独 recordActivity：那会让边界事件在轨迹上出现两行 ——
+        // 一行写 timer:30 分钟，一行写 completed —— 而"一次节点访问一条"是本引擎的硬约定。
+        context.setPendingActivityOutcome("timer:" + WfTimerSupport.describeDuration(waitedMillis));
+        engine.startFrom(context, execution);
+        persistAll(context);
+        resolveCompletion(context);
+        return true;
+    }
+
+    /**
      * 记错误时用谁的名义。
      *
      * <p>优先取 owner（委派态下责任在人身上），其次 assignee。
@@ -809,11 +880,26 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         if (nodeId != null) {
             query.setDefinitionId(nodeId);
         }
-        for (WfTask pending : persistence.queryTasks(query)) {
+        // 先把要作废的收齐：作废之后就查不到了（openOnly 只看未完成），
+        // 分两个循环的话第二个循环永远空转，定时器一个都撤不掉
+        List<WfTask> pendingTasks = persistence.queryTasks(query);
+        for (WfTask pending : pendingTasks) {
             pending.setStatus(WfTask.Status.CANCELLED);
             pending.setEndTime(new Date());
             pending.nextRevision();
             persistence.saveTask(pending);
+        }
+        // 同步撤掉对应的定时器：
+        // nodeId 非 null 时流程本身还活着（走补偿分支），只撤这个节点 token 上的表；
+        // 为 null 时整个实例都要收尾，按实例清。
+        if (nodeId != null) {
+            for (WfTask pending : pendingTasks) {
+                if (pending.getExecutionId() != null) {
+                    persistence.deleteJobsByExecution(pending.getExecutionId());
+                }
+            }
+        } else {
+            persistence.deleteJobsByProcessInstance(processInstanceId);
         }
     }
 
@@ -942,9 +1028,29 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             }
             persistence.saveActivityInstance(history);
         }
+        persistJobs(context);
         WfProcessInstance instance = context.getProcessInstance();
         instance.nextRevision();
         persistence.saveProcessInstance(instance);
+    }
+
+    /**
+     * 落本次推进产生的 job，并撤掉已离开节点的 job。
+     *
+     * <p>顺序是"先撤后建"：token 挂在一个既有定时器边界的节点上又离开它时，
+     * 先撤才能保证它不会在同一次推进里既被删又被建回来。
+     * 反过来的话，每绕一圈回同一个节点就会多留一只永远不响的旧表。
+     */
+    private void persistJobs(WfContext context) {
+        for (String executionId : context.getJobsToClearByExecution()) {
+            persistence.deleteJobsByExecution(executionId);
+        }
+        for (WfJob job : context.getCreatedJobs()) {
+            if (job.getId() == null) {
+                job.setId(idGenerator.nextJobId());
+            }
+            persistence.saveJob(job);
+        }
     }
 
     /**
@@ -1027,6 +1133,13 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         }
         instance.nextRevision();
         persistence.saveProcessInstance(instance);
+        // 兜底：正常路径上 leave() 已按 token 撤过表，这里是第二道。
+        // 它存在是因为"撤表"有若干条旁路会绕过 leave —— 并行分支汇合时被折叠掉的
+        // token、流程定义被替换后残留的表。前者让定时器在 token 早就不存在时去触发
+        // 一条已经走完的分支，后者让到点的表去一个已不存在的流程实例上找宿主。
+        // 代价是这一句无法单独反向验证：正常路径上它总是被 leave 兜住，
+        // 功能测试对它天然无区分（同"分页下推"那类行为等价的防护）。
+        persistence.deleteJobsByProcessInstance(processId);
         log.info("流程完成: processInstanceId={}, result={}", processId, instance.getResult());
     }
 
