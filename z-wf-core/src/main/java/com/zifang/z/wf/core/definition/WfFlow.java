@@ -50,6 +50,15 @@ public class WfFlow implements Serializable {
     /** 是否为默认流。同一网关上至多一条为 true。 */
     private boolean defaultFlow;
 
+    /**
+     * 复杂网关出线的匹配值。
+     *
+     * <p>与 {@link #conditionExpression} 互斥：复杂网关比的是"值等不等于"，
+     * 不是"条件成不成立"。两条都配时部署期报 ERROR —— 引擎只会用 caseValue，
+     * 留着 conditionExpression 会让人以为两条线都可能走。
+     */
+    private String caseValue;
+
     /** 扩展属性（如 LogicFlow 导出的 style / label 等，业务方自定义）。 */
     private Map<String, Object> properties = new HashMap<>();
 
@@ -99,6 +108,14 @@ public class WfFlow implements Serializable {
 
     public void setConditionExpression(String conditionExpression) {
         this.conditionExpression = conditionExpression;
+    }
+
+    public String getCaseValue() {
+        return caseValue;
+    }
+
+    public void setCaseValue(String caseValue) {
+        this.caseValue = caseValue;
     }
 
     public boolean isDefaultFlow() {

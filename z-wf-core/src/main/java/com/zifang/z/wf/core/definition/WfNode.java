@@ -90,6 +90,17 @@ public class WfNode implements Serializable {
      */
     private String topic;
 
+    // ==================== 复杂网关 ====================
+
+    /**
+     * 复杂网关的判别变量（通常是 {@code ${变量名}}）。
+     *
+     * <p>引擎取它的<b>值</b>，再去出线上找 {@code caseValue} 相同的线。
+     * 留空时部署期报 ERROR —— 没有它就退化成"永远走默认线"的死网关，
+     * 而流程照样能跑完，只是永远走同一条路。
+     */
+    private String caseVariable;
+
     // ==================== 异步执行（asyncBefore / asyncAfter） ====================
 
     /**
@@ -281,6 +292,14 @@ public class WfNode implements Serializable {
      * Java 做掉，比在表达式引擎里补一个索引解析更可控。
      */
     private String loopAssignees;
+
+    public String getCaseVariable() {
+        return caseVariable;
+    }
+
+    public void setCaseVariable(String caseVariable) {
+        this.caseVariable = caseVariable;
+    }
 
     public boolean isAsyncBefore() {
         return asyncBefore;

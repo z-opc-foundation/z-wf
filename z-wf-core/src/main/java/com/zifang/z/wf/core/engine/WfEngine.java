@@ -575,6 +575,10 @@ public class WfEngine {
             return defaultFlow(flows);
         }
 
+        if (node.getType() == WfNodeType.COMPLEX_GATEWAY) {
+            return selectByCaseValue(context, node, flows, variables);
+        }
+
         // 包容网关：所有条件成立的线
         for (WfFlow flow : flows) {
             if (flow.isDefaultFlow()) {
@@ -589,6 +593,44 @@ public class WfEngine {
             return defaultFlow(flows);
         }
         return selected;
+    }
+
+    /**
+     * 复杂网关选线：取判别变量的值，走第一条 {@code caseValue} 相同的线。
+     *
+     * <p><b>只走一条</b>，即使多条 caseValue 都能匹配。这是复杂网关与包容网关的
+     * 根本区别，放行多条会让"按状态分派"变成"状态一变全走一遍"。
+     *
+     * <p>变量没值时<b>不静默走默认线</b>，而是让 token 停住并把原因说清楚：
+     * 变量缺失通常是上游忘了赋值或变量名写错，而静默走默认线的话流程会
+     * "成功地"走错分支且没有任何报错 —— 那是最难查的一类。
+     */
+    private List<WfFlow> selectByCaseValue(WfContext context, WfNode node,
+                                           List<WfFlow> flows, Map<String, Object> variables) {
+        // 判别变量写的是 ${} 表达式而不是变量名，所以要走 evalRaw 取"原始值"。
+        // 走 evaluate（返回 boolean）会把 approved/rejected 都压成 false，
+        // 于是所有 caseValue 都匹配不上，流程永远走默认线。
+        Object actual = expressionEvaluator.evalRaw(node.getCaseVariable(), variables);
+        if (actual == null) {
+            log.warn("复杂网关 {} 的判别变量 {} 取不到值，token 停留。"
+                    + "常见原因是上游忘了赋值或变量名写错 —— 静默走默认线会让"
+                    + "流程成功地走错分支且没有任何报错", node.getId(), node.getCaseVariable());
+            return new ArrayList<WfFlow>();
+        }
+        String value = String.valueOf(actual);
+        for (WfFlow flow : flows) {
+            if (flow.getCaseValue() != null && flow.getCaseValue().equals(value)) {
+                List<WfFlow> picked = new ArrayList<WfFlow>();
+                picked.add(flow);
+                return picked;
+            }
+        }
+        List<WfFlow> fallback = defaultFlow(flows);
+        if (fallback.isEmpty()) {
+            log.warn("复杂网关 {} 的判别变量值 {} 没有匹配的出线，也没有默认流，token 停留。"
+                    + "流程不会再前进", node.getId(), value);
+        }
+        return fallback;
     }
 
     /**

@@ -70,6 +70,9 @@ public class WfXmlParser {
     /** 扩展属性前缀（BPMN 文件里声明的 zifang 命名空间）。 */
     public static final String EXT_NS = "http://zifang.com/wf/bpmn/ext";
 
+    /** Camunda 扩展属性命名空间。迁移别人的模型时靠它识别 asyncBefore / caseExpression。 */
+    public static final String CAMUNDA_NS = "http://camunda.org/schema/1.0/bpmn";
+
     /** 扩展属性前缀（无命名空间时的下划线写法）。 */
     public static final String EXT_PREFIX = "zifang_";
 
@@ -103,6 +106,7 @@ public class WfXmlParser {
             {"exclusiveGateway", "exclusiveGateway"},
             {"parallelGateway", "parallelGateway"},
             {"inclusiveGateway", "inclusiveGateway"},
+            {"complexGateway", "complexGateway"},
             {"eventBasedGateway", "eventBasedGateway"},
             {"subProcess", "subProcess"},
             {"transaction", "transaction"},
@@ -306,6 +310,11 @@ public class WfXmlParser {
         }
 
         node.setTopic(extension(element, "topic"));
+        // 复杂网关的判别变量。读 zifang:caseVariable 与 camunda:caseExpression 两种写法：
+        // Camunda 导出的是后者，照搬过来不被识别的话用户会以为"不支持复杂网关"
+        node.setCaseVariable(firstNonBlank(
+                extension(element, "caseVariable"),
+                null));
         // 异步两个方向都读 zifang: 与 camunda: 两个前缀：Camunda 导出的模型带的是
         // camunda:asyncBefore，照搬过来却因为前缀不同而不被识别，用户会以为
         // "z-wf 不支持异步" —— 而它其实支持。async 是 Camunda 里最常被直接沿用的扩展之一。
@@ -412,6 +421,12 @@ public class WfXmlParser {
         }
         if (condition != null) {
             flow.setConditionExpression(condition.trim());
+        }
+
+        // 复杂网关出线的匹配值
+        String caseValue = extension(element, "caseValue");
+        if (caseValue != null) {
+            flow.setCaseValue(caseValue.trim());
         }
 
         // 默认流：BPMN 用 sequenceFlow 上的 attribute/子元素，z-wf 同时接受扩展属性
@@ -579,6 +594,25 @@ public class WfXmlParser {
     }
 
     /**
+     * 读 {@code camunda:} 前缀的属性。
+     *
+     * <p>与 {@link #extension} 分开而不是合并：{@code extension} 的三条查找路径里
+     * 有一条是 {@code zifang_xxx} 下划线写法，camunda 没有对应约定，
+     * 混进去会让"zifang:xxx"意外命中 camunda 属性。
+     */
+    private String camundaAttribute(Element element, String name) {
+        if (element == null) {
+            return null;
+        }
+        String namespaced = element.getAttributeNS(CAMUNDA_NS, name);
+        if (namespaced != null && !namespaced.trim().isEmpty()) {
+            return namespaced.trim();
+        }
+        String prefixed = element.getAttribute("camunda:" + name);
+        return prefixed == null || prefixed.trim().isEmpty() ? null : prefixed.trim();
+    }
+
+    /**
      * 读布尔型扩展属性：先试 zifang 前缀，再试 camunda 前缀。
      *
      * <p>只认 {@code "true"}（不分大小写）。其它值一律当没配 —— 写
@@ -589,7 +623,7 @@ public class WfXmlParser {
     private boolean booleanExtension(Element element, String name) {
         String value = extension(element, name);
         if (value == null) {
-            value = element == null ? null : element.getAttribute("camunda:" + name);
+            value = camundaAttribute(element, name);
         }
         return "true".equalsIgnoreCase(value == null ? null : value.trim());
     }

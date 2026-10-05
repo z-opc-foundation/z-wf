@@ -56,6 +56,19 @@ public enum WfNodeType {
     /** 包容网关：激活所有条件成立的出线；汇合时等待"仍可能到达"的分支。 */
     INCLUSIVE_GATEWAY("inclusiveGateway"),
 
+    /**
+     * 复杂网关：按<b>流程变量的取值</b>走对应的出线，而不是按布尔条件。
+     *
+     * <p>与排他网关的关系：排他是"哪个条件为真走哪条线"（条件可以是任意表达式），
+     * 复杂是"这个值等于几就走哪条线"。后者在"按单据状态分派"这种场景里更直白 ——
+     * {@code status} 等于 {@code approved} 走审批通过、{@code rejected} 走驳回，
+     * 不必为每个状态写一条比较表达式。
+     *
+     * <p>与包容网关不同：它<b>只走一条</b>线，即使多条 caseValue 都能匹配，
+     * 也只有第一条生效。走多条是包容网关的语义。
+     */
+    COMPLEX_GATEWAY("complexGateway"),
+
     /** 子流程：内嵌一个流程定义（或内联子图）。 */
     SUB_PROCESS("subProcess"),
 
@@ -91,7 +104,8 @@ public enum WfNodeType {
      * 不走 delegate 调用路径。
      */
     public boolean isGateway() {
-        return this == EXCLUSIVE_GATEWAY || this == PARALLEL_GATEWAY || this == INCLUSIVE_GATEWAY;
+        return this == EXCLUSIVE_GATEWAY || this == PARALLEL_GATEWAY
+                || this == INCLUSIVE_GATEWAY || this == COMPLEX_GATEWAY;
     }
 
     /**
@@ -217,7 +231,8 @@ public enum WfNodeType {
                 SERVICE_TASK.bpmnName, SCRIPT_TASK.bpmnName, MANUAL_TASK.bpmnName,
                 SEND_TASK.bpmnName, RECEIVE_TASK.bpmnName, EXCLUSIVE_GATEWAY.bpmnName,
                 PARALLEL_GATEWAY.bpmnName, INCLUSIVE_GATEWAY.bpmnName,
-                SUB_PROCESS.bpmnName, CALL_ACTIVITY.bpmnName, TASK.bpmnName,
+                COMPLEX_GATEWAY.bpmnName, SUB_PROCESS.bpmnName, CALL_ACTIVITY.bpmnName,
+                TASK.bpmnName,
                 BOUNDARY_EVENT.bpmnName));
     }
 }

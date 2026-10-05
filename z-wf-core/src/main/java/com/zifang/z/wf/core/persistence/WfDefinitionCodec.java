@@ -129,6 +129,7 @@ public final class WfDefinitionCodec {
         private String messageName;
         private String signalName;
         private String topic;
+        private String caseVariable;
         private boolean asyncBefore;
         private boolean asyncAfter;
         private String resultVariable;
@@ -282,6 +283,14 @@ public final class WfDefinitionCodec {
             return resultVariable;
         }
 
+        public String getCaseVariable() {
+            return caseVariable;
+        }
+
+        public void setCaseVariable(String caseVariable) {
+            this.caseVariable = caseVariable;
+        }
+
         public boolean isAsyncBefore() {
             return asyncBefore;
         }
@@ -421,6 +430,7 @@ public final class WfDefinitionCodec {
         private String sourceRef;
         private String targetRef;
         private String conditionExpression;
+        private String caseValue;
         private boolean defaultFlow;
         private Map<String, Object> properties = new HashMap<>();
 
@@ -458,6 +468,14 @@ public final class WfDefinitionCodec {
 
         public String getConditionExpression() {
             return conditionExpression;
+        }
+
+        public String getCaseValue() {
+            return caseValue;
+        }
+
+        public void setCaseValue(String caseValue) {
+            this.caseValue = caseValue;
         }
 
         public void setConditionExpression(String conditionExpression) {
@@ -519,6 +537,7 @@ public final class WfDefinitionCodec {
             gn.setSignalName(node.getSignalName());
             gn.setTopic(node.getTopic());
             gn.setResultVariable(node.getResultVariable());
+            gn.setCaseVariable(node.getCaseVariable());
             gn.setAsyncBefore(node.isAsyncBefore());
             gn.setAsyncAfter(node.isAsyncAfter());
             gn.setMultiInstance(node.isMultiInstance());
@@ -548,6 +567,7 @@ public final class WfDefinitionCodec {
             gf.setSourceRef(flow.getSourceRef());
             gf.setTargetRef(flow.getTargetRef());
             gf.setConditionExpression(flow.getConditionExpression());
+            gf.setCaseValue(flow.getCaseValue());
             gf.setDefaultFlow(flow.isDefaultFlow());
             gf.setProperties(new HashMap<>(flow.getProperties()));
             flows.add(gf);
@@ -607,6 +627,7 @@ public final class WfDefinitionCodec {
             node.setSignalName(gn.getSignalName());
             node.setTopic(gn.getTopic());
             node.setResultVariable(gn.getResultVariable());
+            node.setCaseVariable(gn.getCaseVariable());
             node.setAsyncBefore(gn.isAsyncBefore());
             node.setAsyncAfter(gn.isAsyncAfter());
             node.setMultiInstance(gn.isMultiInstance());
@@ -645,6 +666,7 @@ public final class WfDefinitionCodec {
             flow.setSourceRef(gf.getSourceRef());
             flow.setTargetRef(gf.getTargetRef());
             flow.setConditionExpression(gf.getConditionExpression());
+            flow.setCaseValue(gf.getCaseValue());
             flow.setDefaultFlow(gf.isDefaultFlow());
             flow.setProperties(new HashMap<>(gf.getProperties()));
             flows.add(flow);

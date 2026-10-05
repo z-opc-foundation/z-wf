@@ -252,6 +252,9 @@ public class WfDefinitionValidator {
                         "排他网关有 " + outs.size() + " 条出线但既无 defaultFlow 也无条件连线，"
                                 + "当所有条件都不成立时流程将卡死");
             }
+            if (node.getType() == WfNodeType.COMPLEX_GATEWAY) {
+                validateComplexGateway(id, node, outs, defaultCount);
+            }
         }
 
         // ---- 孤立节点 ----
@@ -263,6 +266,47 @@ public class WfDefinitionValidator {
             if (definition.incomingFlows(id).isEmpty() && definition.outgoingFlows(id).isEmpty()) {
                 add(WfValidationIssue.Severity.WARN, id, "节点 " + id + " 是孤立节点（无入线也无出线），运行时不可达");
             }
+        }
+    }
+
+    /**
+     * 复杂网关的出线规则。
+     *
+     * <p>三条规则各自挡掉一种"能部署、永远走不通或永远走错"的写法：
+     * 缺判别变量 ⇒ 永远走默认线；一条 caseValue 都没有 ⇒ 永远走默认线；
+     * 没有默认流 ⇒ 判别变量的值一变，token 就永久停留。
+     */
+    private void validateComplexGateway(String id, WfNode node, List<WfFlow> outs,
+                                       int defaultCount) {
+        if (isBlank(node.getCaseVariable())) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "complexGateway 缺少 zifang:caseVariable（或 camunda:caseExpression）。"
+                            + "没有它就永远走默认线，而流程照样能跑完 —— "
+                            + "排查时看不出它是个坏网关");
+            return;
+        }
+        int withCase = 0;
+        for (WfFlow f : outs) {
+            if (!isBlank(f.getCaseValue())) {
+                withCase++;
+            }
+            // 两条判定方式都配时，引擎只会用 caseValue。留着 conditionExpression
+            // 的人会以为"条件不成立就顺延到下一条"，而实际是根本不看它
+            if (!isBlank(f.getCaseValue()) && !isBlank(f.getConditionExpression())) {
+                add(WfValidationIssue.Severity.ERROR, id,
+                        "出线 " + f.getId() + " 同时配了 caseValue 与 conditionExpression，"
+                                + "只能留一个。复杂网关比的是取值等于，不是条件成立与否");
+            }
+        }
+        if (withCase == 0) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "complexGateway 的 " + outs.size() + " 条出线没有一条配 caseValue，"
+                            + "无论判别变量是什么值都会走默认线");
+        }
+        if (defaultCount == 0) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "complexGateway 没有默认流。判别变量的值不匹配任何 caseValue 时，"
+                            + "token 会永久停留在这里，而流程不会报任何错");
         }
     }
 
