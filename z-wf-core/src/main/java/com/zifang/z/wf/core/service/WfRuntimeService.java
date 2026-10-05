@@ -240,6 +240,12 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         if (!task.isOpen()) {
             throw new WfEngineException("任务已完成或已作废，无法重复完成: " + taskId);
         }
+        if (task.isSuspended()) {
+            // 单独一条而不是并进上面那句：办结是流程语义（做完就没了），
+            // 挂起是运营语义（随时可恢复），调用方要做的后续动作完全不同
+            throw new WfEngineException("任务已挂起，无法办结: " + taskId
+                    + "。如需继续请先调用 WfTaskService#activateTask");
+        }
 
         // 办结人必须是当前处理人（委派态看 owner）
         String handler = task.effectiveHandler();

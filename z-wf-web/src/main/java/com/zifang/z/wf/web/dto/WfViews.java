@@ -98,6 +98,8 @@ public final class WfViews {
         private long dueDate;
         private boolean overdue;
         private String startUserId;
+        /** 任务是否挂起。挂起的仍会出现在待办里，前端据此显示[暂停]角标而不是隐藏。 */
+        private boolean suspended;
 
         public String getTaskId() {
             return taskId;
@@ -232,6 +234,14 @@ public final class WfViews {
 
         public String getStartUserId() {
             return startUserId;
+        }
+
+        public boolean isSuspended() {
+            return suspended;
+        }
+
+        public void setSuspended(boolean suspended) {
+            this.suspended = suspended;
         }
 
         public void setStartUserId(String startUserId) {

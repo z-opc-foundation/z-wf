@@ -46,6 +46,13 @@ public class WfTaskQuery {
     /** 只查未完成任务（待办列表用）。 */
     private boolean openOnly;
 
+    /**
+     * 只查挂起 / 只查未挂起的任务。
+     * {@code null} = 不限（默认）。<b>默认不过滤</b>：挂起常是"等条件成立"而非"单子不存在"，
+     * 从待办里藏起来会让人以为单丢了。
+     */
+    private Boolean suspendedOnly;
+
     /** 只查已完成任务（已办列表用）。 */
     private boolean completedOnly;
 
@@ -142,6 +149,15 @@ public class WfTaskQuery {
 
     public boolean isOpenOnly() {
         return openOnly;
+    }
+
+    public Boolean getSuspendedOnly() {
+        return suspendedOnly;
+    }
+
+    public WfTaskQuery setSuspendedOnly(Boolean suspendedOnly) {
+        this.suspendedOnly = suspendedOnly;
+        return this;
     }
 
     public WfTaskQuery setOpenOnly(boolean openOnly) {

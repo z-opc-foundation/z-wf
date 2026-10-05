@@ -72,12 +72,12 @@
 | `delegateTask` / `resolveTask` | ✅ | `delegate` / `resolve`。**语义已定：委派不转移责任（只改 owner），转办才改 assignee** |
 | `setAssignee` / `setOwner` / `setPriority` / `setDueDate` | ✅ | `updateTask` |
 | `addComment` / `getProcessInstanceComments` | ✅ | |
-| `addIdentityLink` / `deleteIdentityLink` | 🟡 | 候选人用户/组存在 `WfTask.candidateUsers/candidateGroups` 字段里，但没有 Camunda 那套 identity link（无类型、无用户/组混合的通用关联） |
+| `addIdentityLink` / `deleteIdentityLink` | 🟡 | 候选人用户/组存在 `WfTask.candidateUsers/candidateGroups`（可查可筛，BPMN 部署时写入）。**仍缺**运行时增删候选人与 Camunda 那套带 type 的通用关联表（participating / starter 等）。刻意不另建 identity link 表：现有字段已覆盖审批场景的判定需求，另建一张表会带来两个真源 |
 | `handleBpmnError` | ✅ | **本轮补上**：`BpmnError(code, msg)` 抛错 → 路由到匹配的边界事件 → 走补偿分支；无匹配则流程终止并记错误码 |
 | `handleEscalation` | ❌ | |
 | **`move` / `moveTaskState`**（流程实例迁移） | ❌ | Camunda 7.15+ 的实例迁移。审批系统改流程时要迁移在途实例，目前只能 `jump` 单个任务 |
 | 任务级变量 `setVariableLocal` / `getVariablesLocal` | 🟡 | 本轮已由 `WfVariableService` 覆盖读写，但**没有变量作用域链**：Camunda 的 Local 变量只在当前 execution 可见，z-wf 的任务级变量随任务走、不会下传给子流程 token |
-| 任务挂起（suspension state） | ❌ | |
+| 任务挂起（suspension state） | ✅ | `WfTaskService#suspendTask / activateTask`，REST `POST /api/wf/task/suspend\|activate`。**挂起后仍留在待办列表并带 `suspended` 标记**（前端显示暂停角标），刻意不隐藏 —— 挂起常是「等条件成立」不是「单子不存在」，藏起来用户的感受是「我那张单不见了」。闸门覆盖认领/办结/转办/委派/撤回/强制完成/跳转**全部七处**，且报错文案与「已结束」分开：挂起能一键恢复，报成结束会让人去查历史而不是恢复 |
 | `withdraw` | ✅ | z-wf 扩展，比 Camunda 多 |
 
 ### 1.4 HistoryService
@@ -251,7 +251,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 历史查询体系（活动 / 任务 / 流程实例 / **变量变更审计** + 历史清理已实现）·
 ~~Repository 完整化~~（定义停用/启用 + 模型回读 + 定义查询已实现；**剩余**：deleteDeployment 物理撤销）·
-identity link 与任务挂起 · 复杂网关 · Filter
+~~任务挂起~~（suspend/activate + 七处闸门 + 查询过滤 + REST 已实现）· 运行时增删候选人（identity link 简化面）· 复杂网关 · Filter
 
 ### P2 —— 管理便利
 
@@ -261,7 +261,7 @@ identity link 与任务挂起 · 复杂网关 · Filter
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 289 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 298 个测试兜着
 - 本轮从测试与审计中逼出并修复的**真实缺陷 18 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **扩展面明显比 Camunda 窄**（3 个 hook vs 几十个监听点），这是与 Camunda 差距最大、

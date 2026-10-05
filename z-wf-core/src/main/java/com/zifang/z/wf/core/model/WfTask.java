@@ -126,6 +126,18 @@ public class WfTask implements Serializable {
     private String parentTaskId;
 
     /**
+     * 是否已挂起。挂起后该任务<b>不能被办理</b>（认领 / 办结 / 转办 / 委派 / 撤回 / 跳转全拒），
+     * 但仍留在待办列表里、也仍计入未完成统计。
+     *
+     * <p>刻意<b>不</b>藏进待办列表：挂起常是"等某个条件成立"而不是"这张单不存在"，
+     * 藏起来的话用户会以为单子丢了，反而要去问"我那张单呢"。
+     * 要只看未挂起的，查询时显式传 {@code suspendedOnly=false}。
+     *
+     * <p>与流程实例的挂起是两件事：实例挂起停的是整个流程，任务挂起只停这一张待办。
+     */
+    private boolean suspended;
+
+    /**
      * 乐观锁版本号。
      */
     private int revision;
@@ -191,6 +203,23 @@ public class WfTask implements Serializable {
      */
     public boolean isOpen() {
         return status == Status.CREATED || status == Status.ASSIGNED || status == Status.DELEGATED;
+    }
+
+    /**
+     * 是否被办理：未挂起且处于开放状态。
+     * 各处闸门一律用这个判据，别各自写 {@code isOpen() && !isSuspended()} ——
+     * 散着写总有一处会漏。
+     */
+    public boolean isOperable() {
+        return isOpen() && !suspended;
+    }
+
+    public boolean isSuspended() {
+        return suspended;
+    }
+
+    public void setSuspended(boolean suspended) {
+        this.suspended = suspended;
     }
 
     public boolean isOverdue() {

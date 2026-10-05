@@ -183,6 +183,35 @@ class JdbcWorkflowPersistenceTest {
     }
 
     @Test
+    @DisplayName("任务挂起状态真落库，且 count 与列表同口径")
+    void taskSuspensionIsPersistedAndFiltered() {
+        WfTask first = newTask("t1", "boss", WfTask.Status.ASSIGNED, 1, 1000L);
+        WfTask second = newTask("t2", "boss", WfTask.Status.ASSIGNED, 1, 2000L);
+        second.setSuspended(true);
+        persistence.saveTask(first);
+        persistence.saveTask(second);
+
+        assertTrue(persistence.findTask("t2").isSuspended(),
+                "挂起状态存进内存对象但没落库的话，重启后挂起就自动消失了");
+        assertFalse(persistence.findTask("t1").isSuspended());
+
+        // 查询过滤
+        assertEquals(1, persistence.countTasks(new WfTaskQuery().setSuspendedOnly(Boolean.TRUE)));
+        assertEquals(1, persistence.countTasks(new WfTaskQuery().setSuspendedOnly(Boolean.FALSE)));
+        assertEquals(2, persistence.countTasks(new WfTaskQuery().setSuspendedOnly(null)));
+        assertEquals("t2", persistence.queryTasks(new WfTaskQuery()
+                .setSuspendedOnly(Boolean.TRUE).setPageNum(1).setPageSize(10)).get(0).getId());
+
+        // 更新路径也必须带着挂起列：只写 INSERT 的话，UPDATE 会把状态悄悄抹回未挂起
+        first.setSuspended(true);
+        first.nextRevision();
+        persistence.saveTask(first);
+        assertTrue(persistence.findTask("t1").isSuspended(),
+                "UPDATE 漏了 SUSPENDED 列：挂起状态在库里被抹回默认");
+        assertEquals(2, persistence.countTasks(new WfTaskQuery().setSuspendedOnly(Boolean.TRUE)));
+    }
+
+    @Test
     @DisplayName("定义版本：latest 取最大版本，versions 倒序，按分类过滤可用")
     void definitionVersionsAndCategory() {
         for (int v = 1; v <= 3; v++) {

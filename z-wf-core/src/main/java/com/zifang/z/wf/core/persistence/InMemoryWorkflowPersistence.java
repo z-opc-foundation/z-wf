@@ -494,6 +494,12 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         if (query == null) {
             return true;
         }
+        // 与 JdbcWorkflowPersistence 的 appendTaskFilters 同口径：
+        // 少一个条件就是"内存查得到、库里查不到"，count 与列表也会跟着对不上
+        if (query.getSuspendedOnly() != null
+                && task.isSuspended() != query.getSuspendedOnly().booleanValue()) {
+            return false;
+        }
         if (isNotBlank(query.getProcessInstanceId())
                 && !query.getProcessInstanceId().equals(task.getProcessInstanceId())) {
             return false;

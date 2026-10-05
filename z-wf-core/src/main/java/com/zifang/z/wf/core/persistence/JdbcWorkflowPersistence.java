@@ -153,6 +153,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 // （而每次操作都会重读）链就空了 —— 审计能力看着在、实际不存。
                 + "DELEGATE_CHAIN TEXT,"
                 + "PARENT_TASK_ID VARCHAR(128),"
+                // 挂起状态。默认 0 = 未挂起：存量行升级后行为不变
+                + "SUSPENDED INTEGER NOT NULL DEFAULT 0,"
                 + "REVISION INTEGER NOT NULL,"
                 + "PRIMARY KEY (TASK_ID))");
 
@@ -226,6 +228,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             }
             log.info("JDBC 持久化初始化完成（{} 张表）", ddl.size() - 5);
             addDelegateChainColumnIfMissing(connection);
+            addTaskSuspendedColumnIfMissing(connection);
             addSuspendedColumnIfMissing(connection);
         } catch (SQLException e) {
             throw new WfPersistenceException("建表失败", e);
@@ -255,6 +258,25 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         } catch (SQLException e) {
             // 列已存在（或方言不支持该写法）——正常路径
             log.debug("DELEGATE_CHAIN 列已存在或无需补建: {}", e.getMessage());
+        } finally {
+            closeQuietly(statement);
+        }
+    }
+
+    /**
+     * 给已存在的 ZWF_TASK 补 SUSPENDED 列，理由同 {@link #addDelegateChainColumnIfMissing}。
+     *
+     * <p>存量行默认 0 = 未挂起，即升级前后行为完全一致 —— 挂起是新增能力，
+     * 不该让任何存量待办在升级后突然不能办。
+     */
+    private void addTaskSuspendedColumnIfMissing(Connection connection) {
+        Statement statement = null;
+        try {
+            statement = connection.createStatement();
+            statement.execute("ALTER TABLE ZWF_TASK ADD COLUMN SUSPENDED INTEGER DEFAULT 0");
+            log.info("已为既有 ZWF_TASK 补建 SUSPENDED 列");
+        } catch (SQLException e) {
+            log.debug("SUSPENDED 列已存在或无需补建: {}", e.getMessage());
         } finally {
             closeQuietly(statement);
         }
@@ -794,13 +816,16 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             // 乐观锁
             int affected = update("UPDATE ZWF_TASK SET STATUS=?, ASSIGNEE=?, OWNER=?, PRIORITY=?, "
                             + "END_TIME=?, COMPLETER_ID=?, COMMENT_TEXT=?, VARIABLES=?, "
-                            + "DELEGATE_CHAIN=?, REVISION=? "
+                            + "DELEGATE_CHAIN=?, SUSPENDED=?, REVISION=? "
                             + "WHERE TASK_ID=? AND REVISION=?",
                     task.getStatus() == null ? null : task.getStatus().name(),
                     task.getAssignee(), task.getOwner(), task.getPriority(),
                     timestamp(task.getEndTime()), task.getCompleterId(), task.getComment(),
                     JsonUtil.toJson(task.getVariables()),
                     delegateChainJson(task),
+                    // 挂起列必须跟着 UPDATE 走：只写进 INSERT 的话，
+                    // suspendTask 改了内存对象存回去，挂起状态在库里永远是初始值
+                    task.isSuspended() ? 1 : 0,
                     task.getRevision(),
                     task.getId(), task.getRevision() - 1);
             if (affected == 0) {
@@ -815,8 +840,9 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                     "INSERT INTO ZWF_TASK (TASK_ID, PROC_ID, EXEC_ID, DEF_ID, TASK_NAME, TASK_TYPE, "
                             + "FORM_KEY, CATEGORY, ASSIGNEE, OWNER, CANDIDATE_USERS, CANDIDATE_GROUPS, "
                             + "STATUS, PRIORITY, CREATE_TIME, DUE_DATE, END_TIME, COMPLETER_ID, "
-                            + "COMMENT_TEXT, VARIABLES, DELEGATE_CHAIN, PARENT_TASK_ID, REVISION) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                            + "COMMENT_TEXT, VARIABLES, DELEGATE_CHAIN, PARENT_TASK_ID, SUSPENDED, "
+                            + "REVISION) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
             try {
                 int i = 1;
                 ps.setString(i++, task.getId());
@@ -841,6 +867,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 ps.setString(i++, JsonUtil.toJson(task.getVariables()));
                 ps.setString(i++, delegateChainJson(task));
                 ps.setString(i++, task.getParentTaskId());
+                ps.setInt(i++, task.isSuspended() ? 1 : 0);
                 ps.setInt(i, task.getRevision());
                 ps.executeUpdate();
             } finally {
@@ -945,6 +972,10 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         }
         if (query.isUnassignedOnly()) {
             sql.append(" AND (ASSIGNEE IS NULL OR ASSIGNEE='')");
+        }
+        if (query.getSuspendedOnly() != null) {
+            sql.append(" AND SUSPENDED=?");
+            args.add(query.getSuspendedOnly() ? 1 : 0);
         }
         // 候选人过滤：CANDIDATE_* 存的是 JSON 数组文本，用 LIKE 做子串匹配。
         // 精度有限（"u1" 会命中 "u12"），但审批候选池通常是几十人的量级，
@@ -1073,6 +1104,9 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         task.setVariables(fromJsonMap(rs.getString("VARIABLES")));
         task.setDelegateChain(parseDelegateChain(rs.getString("DELEGATE_CHAIN")));
         task.setParentTaskId(rs.getString("PARENT_TASK_ID"));
+        // 读挂起列：漏了的话 suspendTask 在内存里生效、存回去就丢，
+        // 而开发期常用内存实现，上线才发现挂起功能形同虚设
+        task.setSuspended(rs.getInt("SUSPENDED") != 0);
         task.setRevision(rs.getInt("REVISION"));
         return task;
     }

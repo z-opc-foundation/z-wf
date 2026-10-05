@@ -321,6 +321,52 @@ class WfWebApiTest {
     }
 
     @Test
+    @DisplayName("任务挂起端点：挂起 → 办结被拒 → 待办仍可见 → 恢复 → 办结成功")
+    void taskSuspensionEndpoints() throws Exception {
+        String businessKey = "WEB-SUSP-" + System.nanoTime();
+        Map<String, Object> vars = new HashMap<String, Object>();
+        vars.put("days", 1);
+        vars.put("leaderId", "susp-leader");
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "leaveProcess", "businessKey", businessKey,
+                        "userId", "susp-alice", "variables", vars)).get("data");
+
+        // 直属领导由 ${leaderId} 决定，先把待办取出来
+        List<Map<String, Object>> todos = asList(asMap(
+                getOk("/api/approval-center/tasks/todo?userId=susp-leader")
+                        .get("data")).get("records"));
+        assertEquals(1, todos.size(), "应恰好一张待办。实际 " + todos);
+        String taskId = (String) todos.get(0).get("taskId");
+        assertEquals(Boolean.FALSE, todos.get(0).get("suspended"), "新建任务不该是挂起态");
+
+        Map<String, Object> suspended = asMap(postOk("/api/wf/task/suspend",
+                body("taskId", taskId, "userId", "susp-supervisor")).get("data"));
+        assertEquals(Boolean.TRUE, suspended.get("suspended"), "挂起后视图要带 suspended 标记");
+
+        // 办结必须被拒，且报的是"挂起"不是"已结束"
+        ResponseEntity<String> rejected = exchange(HttpMethod.POST,
+                "/api/approval-center/tasks/complete",
+                body("taskId", taskId, "userId", "susp-leader", "comment", "同意"));
+        assertEquals(statusOf("onEngine"), rejected.getStatusCode(),
+                "挂起的任务还能办结，等于挂起只是个摆设。实际: " + rejected.getBody());
+        assertTrue(rejected.getBody().contains("已挂起"),
+                "报错要点明挂起。实际: " + rejected.getBody());
+
+        // 仍能在待办里看到，并带上挂起标记（前端显示[暂停]角标而不是把它藏起来）
+        List<Map<String, Object>> afterSuspend = asList(asMap(
+                getOk("/api/approval-center/tasks/todo?userId=susp-leader")
+                        .get("data")).get("records"));
+        assertEquals(1, afterSuspend.size(), "挂起后待办不该消失 —— 用户的感受会是[单子丢了]");
+        assertEquals(Boolean.TRUE, afterSuspend.get(0).get("suspended"),
+                "待办列表要能看出这张被挂起了");
+
+        postOk("/api/wf/task/activate", body("taskId", taskId, "userId", "susp-supervisor"));
+        Map<String, Object> done = postOk("/api/approval-center/tasks/complete",
+                body("taskId", taskId, "userId", "susp-leader", "comment", "同意"));
+        assertNotNull(done.get("data"), "恢复后应当能正常办结");
+    }
+
+    @Test
     @DisplayName("定义管理端点：部署 → 停用 → 启动被拒 → 启用 → 模型回读")
     void definitionManagementEndpoints() throws Exception {
         String key = "restDeploy-" + (System.nanoTime() % 100000);

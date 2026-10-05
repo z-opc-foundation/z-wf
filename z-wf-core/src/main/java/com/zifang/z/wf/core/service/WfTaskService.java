@@ -68,6 +68,57 @@ public class WfTaskService {
         this.hookDispatcher = hookDispatcher;
     }
 
+    // ==================== 挂起 / 恢复 ====================
+
+    /**
+     * 挂起一张待办：之后认领 / 办结 / 转办 / 委派 / 撤回 / 强制完成 / 跳转全部拒绝。
+     *
+     * <p><b>挂起后仍留在待办列表里</b>，也不改变任务状态。理由：挂起常是
+     * "等某个条件成立"（等财务确认、等补材料），不是"这张单不存在"。
+     * 把它从列表里藏起来，用户的感受是"我那张单不见了"，只会去问人，
+     * 而恢复挂起本来只是一次点击。要只看未挂起的，查询传 {@code suspendedOnly=false}。
+     *
+     * <p>与流程实例挂起（{@code WfRuntimeService#suspendProcessInstance}）是两件事：
+     * 那个停的是整个流程，这个只停这一张待办。
+     *
+     * @param taskId     任务 id
+     * @param operatorId 操作人（记入任务变量，便于事后追"谁挂的"）
+     */
+    public WfTask suspendTask(String taskId, String operatorId) {
+        WfTask task = requireTask(taskId);
+        if (!task.isOpen()) {
+            throw new WfEngineException("任务已结束，无法挂起: " + taskId);
+        }
+        if (task.isSuspended()) {
+            // 重复挂起返回原任务而不是报错：定时任务/重试场景下重复调用很常见，
+            // 报异常会让调用方必须自己判重
+            return task;
+        }
+        task.setSuspended(true);
+        task.getVariables().put("suspendedBy", operatorId);
+        // 与 claim/transfer 等一致：改完必须 nextRevision 再存。
+        // 漏掉这一步不是"少了个版本号"，而是每次挂起都撞乐观锁直接抛异常
+        task.nextRevision();
+        persistence.saveTask(task);
+        return task;
+    }
+
+    /**
+     * 恢复挂起的任务（对应 {@link #suspendTask}）。
+     *
+     * <p>{@code suspendedBy} 保留不删：它是"这张单为什么曾经停过"的唯一线索。
+     */
+    public WfTask activateTask(String taskId, String operatorId) {
+        WfTask task = requireTask(taskId);
+        if (!task.isSuspended()) {
+            return task;
+        }
+        task.setSuspended(false);
+        task.nextRevision();
+        persistence.saveTask(task);
+        return task;
+    }
+
     // ==================== 认领 ====================
 
     /**
@@ -79,9 +130,7 @@ public class WfTaskService {
      */
     public WfTask claim(String taskId, String userId, List<String> userGroups) {
         WfTask task = requireTask(taskId);
-        if (!task.isOpen()) {
-            throw new WfEngineException("任务已结束，无法认领: " + taskId);
-        }
+        requireOperable(task, "认领");
         if (task.getAssignee() != null && !task.getAssignee().trim().isEmpty()) {
             throw new WfEngineException("任务 " + taskId + " 已有办理人 "
                     + task.getAssignee() + "，请用转办而非认领");
@@ -128,9 +177,7 @@ public class WfTaskService {
      */
     public WfTask transfer(String taskId, String fromUserId, String toUserId, String comment) {
         WfTask task = requireTask(taskId);
-        if (!task.isOpen()) {
-            throw new WfEngineException("任务已结束，无法转办: " + taskId);
-        }
+        requireOperable(task, "转办");
         if (fromUserId != null && !fromUserId.equals(task.effectiveHandler())) {
             throw new WfEngineException("只有当前处理人可转办，当前处理人为 "
                     + task.effectiveHandler());
@@ -165,9 +212,7 @@ public class WfTaskService {
      */
     public WfTask delegate(String taskId, String fromUserId, String toUserId, String comment) {
         WfTask task = requireTask(taskId);
-        if (!task.isOpen()) {
-            throw new WfEngineException("任务已结束，无法委派: " + taskId);
-        }
+        requireOperable(task, "委派");
         if (fromUserId != null && !fromUserId.equals(task.effectiveHandler())) {
             throw new WfEngineException("只有当前处理人可委派，当前处理人为 "
                     + task.effectiveHandler());
@@ -230,9 +275,7 @@ public class WfTaskService {
      */
     public WfTask withdraw(String taskId, String operatorId, String reason) {
         WfTask task = requireTask(taskId);
-        if (!task.isOpen()) {
-            throw new WfEngineException("任务已结束，无法撤回: " + taskId);
-        }
+        requireOperable(task, "撤回");
         String from = task.effectiveHandler();
         task.setAssignee(null);
         task.setOwner(null);
@@ -260,9 +303,7 @@ public class WfTaskService {
     public WfProcessInstance forceComplete(String taskId, String operatorId, String comment,
                                            Map<String, Object> variables) {
         WfTask task = requireTask(taskId);
-        if (!task.isOpen()) {
-            throw new WfEngineException("任务已结束，无法强制完成: " + taskId);
-        }
+        requireOperable(task, "强制完成");
         // 强制完成时跳过"办结人必须是处理人"的校验：把办结人记为操作人
         Map<String, Object> merged = variables == null
                 ? new HashMap<String, Object>() : new HashMap<>(variables);
@@ -290,9 +331,7 @@ public class WfTaskService {
     public WfProcessInstance jump(String taskId, String operatorId, String targetActivityId,
                                   String comment) {
         WfTask task = requireTask(taskId);
-        if (!task.isOpen()) {
-            throw new WfEngineException("任务已结束，无法跳转: " + taskId);
-        }
+        requireOperable(task, "跳转");
         WfProcessInstance instance = runtimeService.getProcessInstance(task.getProcessInstanceId());
         if (instance == null) {
             throw new WfEngineException("流程实例不存在: " + task.getProcessInstanceId());
@@ -461,6 +500,25 @@ public class WfTaskService {
             throw new WfEngineException("任务不存在: " + id);
         }
         return task;
+    }
+
+    /**
+     * 任务级闸门：已结束与已挂起都拒绝，但<b>报错文案要分开</b>。
+     *
+     * <p>混成一句"任务已结束"的话，调用方看到会以为单子办完了，
+     * 于是去查历史而不是去恢复挂起 —— 而挂起是能一键撤销的。
+     *
+     * <p>所有会改动任务状态的操作都必须过这一关，不许各自写
+     * {@code isOpen()} —— 漏一处就等于挂起可以被绕过，而功能看上去是好的。
+     */
+    private void requireOperable(WfTask task, String action) {
+        if (!task.isOpen()) {
+            throw new WfEngineException("任务已结束，无法" + action + ": " + task.getId());
+        }
+        if (task.isSuspended()) {
+            throw new WfEngineException("任务已挂起，无法" + action + ": " + task.getId()
+                    + "。如需继续请先调用 WfTaskService#activateTask");
+        }
     }
 
     /**

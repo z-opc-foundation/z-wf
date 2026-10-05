@@ -49,6 +49,9 @@ public class WfViewMapper {
         view.setCreateTime(time(task.getCreateTime()));
         view.setDueDate(time(task.getDueDate()));
         view.setOverdue(task.isOverdue());
+        // 挂起标记来自任务本身，不依赖流程实例能不能查到：
+        // 塞进下面那个 if 里的话，实例查不到时前端就看不到[暂停]角标了
+        view.setSuspended(task.isSuspended());
 
         WfProcessInstance instance = runtimeService.getProcessInstance(task.getProcessInstanceId());
         if (instance != null) {

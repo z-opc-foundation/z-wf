@@ -45,6 +45,20 @@ public class WfTaskOperationController {
     @Resource
     private WfViewMapper viewMapper;
 
+    @PostMapping("/suspend")
+    @Operation(summary = "挂起待办（等条件成立；挂起期间仍可见但不能办理）")
+    public Result<WfViews.TaskSummary> suspend(@RequestBody WfRequests.TaskOperation request) {
+        return Result.success(viewMapper.toSummary(
+                taskService.suspendTask(request.getTaskId(), request.getUserId())));
+    }
+
+    @PostMapping("/activate")
+    @Operation(summary = "恢复被挂起的待办")
+    public Result<WfViews.TaskSummary> activate(@RequestBody WfRequests.TaskOperation request) {
+        return Result.success(viewMapper.toSummary(
+                taskService.activateTask(request.getTaskId(), request.getUserId())));
+    }
+
     @PostMapping("/transfer")
     @Operation(summary = "001_转办（责任人转移）")
     public Result<WfViews.TaskSummary> transfer(@RequestBody WfRequests.TaskOperation request) {
