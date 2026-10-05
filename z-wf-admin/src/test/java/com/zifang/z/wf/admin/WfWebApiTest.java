@@ -11,9 +11,11 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -328,6 +330,106 @@ class WfWebApiTest {
                 .get("data")).get("amount"), "删除后要真的读不到");
     }
 
+    // ==================== 变量实例查询 ====================
+
+    @Test
+    @DisplayName("变量实例端点：三级作用域都列得出，默认值与范围过滤都真的生效")
+    void variableInstanceEndpoints() throws Exception {
+        String suffix = deployParallelProcess();
+        String alice = "lp-a-" + suffix;
+        String bob = "lp-b-" + suffix;
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "lpProcess", "businessKey", "WEB-VI-" + suffix,
+                        "userId", "alice")).get("data");
+        String taskA = openTaskOf(alice, processId).get("taskId").toString();
+        String taskB = openTaskOf(bob, processId).get("taskId").toString();
+
+        // 三级作用域各造一个同名变量 —— 同名是最容易串层、也最难看出串错的形态
+        postOk("/api/wf/process/variables",
+                body("processInstanceId", processId, "userId", "ops", "values", body("amount", 20000)));
+        postOk("/api/wf/process/branch-variables",
+                body("taskId", taskA, "userId", "ops", "values", body("amount", 500)));
+        // 任务级只能靠办结时带的变量产生：任务一办结这张待办就消失了，
+        // 而变量还留在那行任务上 —— 正好把「默认只看未办结」这条默认值测到
+        postOk("/api/approval-center/tasks/complete",
+                body("taskId", taskA, "userId", alice, "comment", "办完",
+                        "variables", body("amount", "T-1")));
+
+        Map<String, Object> data = asMap(getOk(
+                "/api/wf/variable-instances?processInstanceId=" + processId).get("data"));
+        // 默认 openTasksOnly=true：已办结那张任务上的 amount 不该混进「当前变量」
+        assertEquals(2, ((Number) data.get("total")).intValue(),
+                "默认只有流程级与分支级两条。实际: " + data.get("records"));
+        Set<String> scopes = new HashSet<>();
+        for (Object record : asList(data.get("records"))) {
+            scopes.add(asMap(record).get("scope").toString());
+            assertEquals("amount", asMap(record).get("name").toString());
+        }
+        assertTrue(scopes.contains("process") && scopes.contains("execution"),
+                "两个作用域都要在。实际: " + scopes);
+
+        // count 端点与 list 必须是同一个数：对不上时调用方只会以为自己算错了
+        assertEquals(2, ((Number) asMap(getOk("/api/wf/variable-instances/count?processInstanceId="
+                + processId).get("data")).get("count")).intValue());
+
+        // 点名已办结的那张任务 → 看得见，且带 onClosedTask。
+        // 默认值那一侧不列、点名这一侧列，两边必须同时成立才说明规则真的被实现过
+        List<Map<String, Object>> closedRecords = asList(asMap(getOk(
+                "/api/wf/variable-instances?taskId=" + taskA).get("data")).get("records"));
+        assertEquals(1, closedRecords.size(),
+                "点名一张已办结的任务必须查得到 —— 返回空列表分不清是没变量还是被滤掉了");
+        Map<String, Object> closedView = closedRecords.get(0);
+        assertEquals("task", closedView.get("scope").toString());
+        assertEquals("T-1", closedView.get("value").toString());
+        assertEquals(Boolean.TRUE, closedView.get("onClosedTask"));
+        assertNotNull(closedView.get("taskEndTime"), "办结时间让调用方能判断这条是残留还是还在用");
+        assertNotNull(closedView.get("activityName"), "要能看出这个变量属于当时图上的哪个节点");
+
+        // 范围过滤：乙支线上什么都没写，点名它必须是空而不是报错
+        assertEquals(0, ((Number) asMap(getOk("/api/wf/variable-instances/count?taskId="
+                + taskB).get("data")).get("count")).intValue());
+        // 作用域过滤：process 那条如果没被剔掉，total 会是 2 而不是 1
+        assertEquals(1, ((Number) asMap(getOk("/api/wf/variable-instances?processInstanceId="
+                + processId + "&scope=process").get("data")).get("total")).intValue());
+
+        // 按 executionId 查：这是 REST 层唯一露出执行树的地方，
+        // 它要能真的定位到那条 token 上的一层，而不是被 processInstanceId 的条件盖过去。
+        // 甲支线分支级 amount=500 → 走的是小额，token 停在小额待办上
+        String aliceExecution = executionIdAt(processId, "aSmall");
+        assertNotNull(aliceExecution, "甲支线办结后应当停在小额待办上");
+        Map<String, Object> byExecution = asMap(getOk("/api/wf/variable-instances?executionId="
+                + aliceExecution).get("data"));
+        assertEquals(1, ((Number) byExecution.get("total")).intValue(),
+                "这条 token 上只有分支级那一个 amount。实际: " + byExecution.get("records"));
+        assertEquals("execution:" + aliceExecution + "/amount",
+                asList(byExecution.get("records")).get(0).get("id").toString(),
+                "id 里的归属段必须是真的 token id —— 填成 null 的 id 看着仍然像模像样，"
+                        + "但调用方拿它去反查会一无所获");
+    }
+
+    @Test
+    @DisplayName("变量实例端点：一个范围都不给 / 作用域名拼错，都要报错并说清该给什么")
+    void variableInstanceEndpointsRejectBadArguments() throws Exception {
+        ResponseEntity<String> noScope = exchange(HttpMethod.GET,
+                "/api/wf/variable-instances", null);
+        assertEquals(HttpStatus.BAD_REQUEST, noScope.getStatusCode(),
+                "本仓做不到「全系统所有变量实例」，只返回一部分比报错坏得多: " + noScope.getBody());
+
+        ResponseEntity<String> badScope = exchange(HttpMethod.GET,
+                "/api/wf/variable-instances?processInstanceId=x&scope=porcess", null);
+        assertEquals(HttpStatus.BAD_REQUEST, badScope.getStatusCode(),
+                "拼错的作用域名要报错: " + badScope.getBody());
+        assertTrue(badScope.getBody().contains("process")
+                        && badScope.getBody().contains("execution")
+                        && badScope.getBody().contains("task"),
+                "报错要列出合法值，否则调用方只能猜。实际: " + badScope.getBody());
+
+        // 不存在的目标是空结果而不是 500：排障查的常常正是还没发生的流程
+        assertEquals(0, ((Number) asMap(getOk(
+                "/api/wf/variable-instances/count?processInstanceId=no-such-pid")
+                .get("data")).get("count")).intValue());
+    }
+
     @Test
     @DisplayName("局部变量端点：token 不存在 / id 为空要报错")
     void branchVariableEndpointsRejectBadArguments() throws Exception {
@@ -358,6 +460,23 @@ class WfWebApiTest {
         }
         throw new IllegalStateException("办理人 " + assignee + " 在实例 " + processId
                 + " 上没有待办");
+    }
+
+    /**
+     * 停在某个节点上的 token id。
+     *
+     * <p>{@code /api/wf/process/executions} 刻意不返回 token 的 variables
+     * （仓里有测试钉着），所以变量本身只能从变量实例端点拿 ——
+     * 这两个端点正好互补，这也是本用例要连着跑的原因。
+     */
+    private String executionIdAt(String processId, String activityId) throws Exception {
+        for (Map<String, Object> token : asList(
+                getOk("/api/wf/process/executions?processInstanceId=" + processId).get("data"))) {
+            if (activityId.equals(token.get("activityId"))) {
+                return token.get("executionId").toString();
+            }
+        }
+        return null;
     }
 
     /**

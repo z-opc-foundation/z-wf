@@ -363,6 +363,29 @@ class WfIncidentQueryServiceTest {
     }
 
     @Test
+    @DisplayName("incidentsOf 跨过分页上限仍要全给 —— 走分页就是给了一个静默的 1000 上限")
+    void incidentsOfIsNotCappedAtOnePage() {
+        String pid = start();
+        int total = 1001;
+        for (int i = 0; i < total; i++) {
+            WfJob job = new WfJob();
+            job.setId("many-" + i);
+            job.setProcessInstanceId(pid);
+            job.setElementId("waitMsg");
+            job.setType(WfJobType.EVENT_MESSAGE);
+            fail(job, "IllegalStateException: 批量失败 " + i);
+        }
+        // pageSize 传 Integer.MAX_VALUE 时会被 normalizedPageSize() 归一到 1000，
+        // 于是"这个方法不分页"这句话是假的 —— 而故障超过 1000 条的实例
+        // 恰恰是最需要被完整看见的那一种（MAX_SCAN 本身就承认了 5000 这个量级）
+        assertEquals(total, incidents.incidentsOf(pid).size(),
+                "少掉的那条会让调用方以为「只有 1000 个故障」");
+        assertEquals(total, incidents.countIncidents(
+                new WfIncidentQuery().setProcessInstanceId(pid)),
+                "count 走的是匹配全集，同样不该被分页切掉");
+    }
+
+    @Test
     @DisplayName("空查询参数按不筛处理，返回空列表而不是 null")
     void emptyQueryReturnsEmptyList() {
         String pid = start();

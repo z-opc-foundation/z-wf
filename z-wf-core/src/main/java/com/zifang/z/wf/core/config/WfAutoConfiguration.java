@@ -39,6 +39,7 @@ import com.zifang.z.wf.core.service.WfOverdueScanner;
 import com.zifang.z.wf.core.service.WfIncidentService;
 import com.zifang.z.wf.core.service.WfSubscriptionService;
 import com.zifang.z.wf.core.service.WfVariableService;
+import com.zifang.z.wf.core.service.WfVariableQueryService;
 
 /**
  * z-wf 引擎自动装配。
@@ -256,6 +257,20 @@ public class WfAutoConfiguration {
     public WfIncidentService wfIncidentService(WfPersistence persistence,
                                               WfRepositoryService repositoryService) {
         return new WfIncidentService(persistence, repositoryService);
+    }
+
+    /**
+     * 变量实例查询。纯读，不启动任何线程。
+     *
+     * <p>与 {@link WfVariableService} 的分工：那个是<b>按名读写</b>某一个变量
+     * （改动会落审计），这个是<b>按作用域查</b>有哪些变量（什么都不改）。
+     * 两者都需要 —— 知道"有哪些"是排障的入口，知道"哪个挂在哪级"是排障的结论。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WfVariableQueryService wfVariableQueryService(WfPersistence persistence,
+                                                        WfRepositoryService repositoryService) {
+        return new WfVariableQueryService(persistence, repositoryService);
     }
 
     // ==================== 启动部署 ====================

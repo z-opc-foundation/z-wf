@@ -97,12 +97,24 @@ public class WfIncidentService {
         return count;
     }
 
-    /** 某个流程实例当前的故障。 */
+    /**
+     * 某个流程实例当前的故障。
+     *
+     * <p>刻意<b>不分页</b>：{@code pageSize} 会被 {@code normalizedPageSize()} 归一到
+     * 1000，所以"传一个超大 pageSize"实际上是给了调用方一个<b>静默的上限</b> ——
+     * 而故障超过 1000 条的实例正是最需要被完整看见的那一种
+     * （{@link #MAX_SCAN} 允许扫到 5000，说明这个量级是被承认存在的）。
+     * 走匹配全集就没有这个夹层。
+     */
     public List<WfIncidentView> incidentsOf(String processInstanceId) {
-        return listIncidents(new WfIncidentQuery()
-                .setProcessInstanceId(processInstanceId)
-                .setPageNum(1)
-                .setPageSize(Integer.MAX_VALUE));
+        WfIncidentQuery actual = new WfIncidentQuery().setProcessInstanceId(processInstanceId);
+        List<WfIncidentView> matched = new ArrayList<>();
+        for (WfIncidentView view : scan(actual)) {
+            if (matches(actual, view)) {
+                matched.add(view);
+            }
+        }
+        return matched;
     }
 
     // ==================== 扫描 ====================

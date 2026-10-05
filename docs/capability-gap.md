@@ -57,7 +57,7 @@
 | `createProcessInstanceQuery` 流畅查询 | 🟡 | `WfProcessInstanceQuery` 有 10 个条件，但没有 `variableValueEquals`（按变量值查实例，审批系统常用） |
 | **`move` / `moveTaskState`**（流程实例迁移） | 🟡 | **本轮补上 `move`**：`WfRuntimeService#move` 按 token 粒度迁移，撤掉源节点的待办、该 token 的 job 与到达记录，再在目标节点**重新进入**；给 `sourceActivityId` 就只迁指定源，不给就迁全部未结束 token。REST `POST /api/wf/process/move`。**刻意不检查图上可达性** —— 运营改流程后图往往已对不上，强行校验等于"改一次流程就得重画一遍"，代价是目标节点必须在定义里存在（部署期之外做存在性校验）。**仍缺** Camunda 的 `moveTaskState`（按任务状态筛选迁移）与迁移过程自身的历史记录类型 |
 | `createExecutionQuery` | 🟡 | 只有 `getExecutions(processInstanceId)` 列举，没有按条件查 |
-| `createVariableInstanceQuery` | ❌ | |
+| `createVariableInstanceQuery` | ✅ | **本轮补上** `WfVariableQueryService` + `WfVariableInstanceView` + `WfVariableInstanceQuery`，REST `GET /api/wf/variable-instances` 与 `/count`。回答的是**「这个变量挂在哪一级作用域上」** —— 此前 `getVariables(processInstanceId)` 只能看到流程级那一层，分支级与任务级的值根本不在里面，而并行分支排障问的恰恰是级别。视图是**派生**的（变量在本仓没有独立实体，是三个模型上各自的 Map），所以没有自己的 id，只有「作用域:归属 + 变量名」拼成的临时 id，**只在本次查询期间有效**，不该被持久化成订阅条件。两个需要讲清的默认值：`openTasksOnly` 默认 `true`（任务变量在办结后仍然存在，算进「当前变量」会混进十几条历史表单变量）**但显式点名 `taskId` 时不过滤**（那时返回空列表分不清是「没有变量」还是「被过滤了」，而排障查的恰恰多是已办结的任务）；`includeEngineInternal` 默认 `false`（`loopCounter` 混进来只会让人怀疑查错了）。**一个范围都不给直接报错** —— 本仓的「全系统所有变量实例」只能靠全量取回再过滤，只返回一部分比报错坏得多。超过扫描上限（5000）报错而不是给一份看起来完整的清单 |
 | `createEventSubscriptionQuery` | ✅ | **本轮补上** `WfSubscriptionService` + `WfSubscriptionView`（放 core 不放 web：订阅查询通常由独立部署的监控/运维服务消费，放 web 会把它拖进 Spring MVC 运行时）。REST `GET /api/wf/subscriptions` 与 `/subscriptions/count`，并**并进 `GET /api/wf/process/overview`**。回答的是"这条单子怎么不动了"——在等消息的流程没有待办、轨迹没动、也不报错，没有这张表就只能翻 XML 猜。**job 类型归并成"等什么"**（message/signal/timer/external/async）同时**保留原 jobType** 以区分"打断"与"竞速"；竞速分支额外带 `gatewayId`，让人看得出几条是同一次竞速。**超过扫描上限（2000）直接报错**而不是给一份看起来完整的截断列表 |
 | `getActivityInstance`（树形活动实例） | 🟡 | 有扁平轨迹 `getTrail`，没有 Camunda 的树形结构 |
 | `messageEventReceived` / `signalEventReceived` | ✅ | `triggerMessage`（点对点）/ `broadcastSignal`（广播），**本轮补上 REST**：`POST /api/wf/process/message` 与 `POST /api/wf/process/signal`。此前只有 Java 入口，纯 HTTP 的调用方根本没法投递事件，事件网关等于对它们不存在。一个端点同时能叫醒三种等待者（事件网关分支 / 消息边界订阅 / receiveTask），谁先判决定了这条事件落到哪种语义上 |
@@ -295,9 +295,29 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 535 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 552 个测试兜着
 - 从测试与审计中逼出并修复的**真实缺陷 31 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
+- **本轮（变量实例查询）写出 3 个自己造的缺陷，都在流出前抓住**，但其中两个的形态值得记：
+  ① **派生视图的 id 在 setter 之前就拼好了**。`base()` 回头去读视图上的
+     `processInstanceId` / `executionId` / `taskId`，而这些字段是逐个 setter 填的，
+     于是 id 全成了 `process:null/amount` 这种。**它不报错、三段结构齐全、彼此仍然不同** ——
+     而我最初的判据只断言了"三个 id 互不相同"，scope 前缀不同就恒成立，
+     判据对这一整类缺陷零区分力。修法是让归属由调用方显式传进 `base()`，
+     不依赖赋值顺序；判据改成断言**精确的 id 字符串**。
+     ⇒ **「A、B、C 互不相同」这个断言，永远抓不住「A、B、C 全都错成同一个形状」**；
+     要钉住取值就得钉住取值本身。
+  ② **控制器把可选参数的默认值抹成了 null**。`@RequestParam(required = false)` 缺省给
+     `null`，而无条件 `setOpenTasksOnly(null)` 会覆盖掉查询对象里 `TRUE` 的默认值 ——
+     端点看上去支持这个开关，实际上「不传」与「传 false」走同一条路，
+     **而接口文档里写的默认值是假的**。判据是 REST 层的"默认只列两条"那条断言，
+     它在控制器这层变红时立刻就抓到了（core 层测不出来：core 不经过控制器）。
+  ③ 改测试时才发现的**同类潜伏项**：`WfIncidentService#incidentsOf` 传
+     `pageSize = Integer.MAX_VALUE` 想表示"不分页"，而 `normalizedPageSize()` 会把它
+     归一到 1000 —— 于是"这个方法不分页"这句话是假的。故障超过 1000 条的实例
+     恰恰是最需要被完整看见的那一种（`MAX_SCAN` 本身就承认了 5000 这个量级）。
+     本轮连同 `variablesOf` 一起改走匹配全集，并各补了一条**跨过 1000 的判据**
+     （原有用例量级太小，删掉不分页也照样绿）。
 - **本轮（运行期故障查询）没有发现已发布的真缺陷，这一点要照实说**：缺陷计数仍是 31。
   本轮消除了一个**潜伏隐患**并当场抓住一个自己写出来的 bug：
   - 潜伏隐患：`WfJob.exceptionMessage` 一列两义 —— 订阅名（消息/信号/边界/网关分支）
@@ -456,3 +476,46 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 | REST 丢 `sourceActivityId` | 🔴 红 | 变成迁全部 token |
 | 清到达记录 | ⚪ 绿 | `arrivedActivities` 只写不读，见 §7 上文 |
 | `resolveCompletion` | ⚪ 绿 | 正常路径上 `leave` 已兜住，功能测试对它天然无区分（该结论原就写在 `resolveCompletion` 的注释里，本轮探针复现确认） |
+
+---
+
+### 本轮反向验证记录（变量实例查询）
+
+16 条变异，**16 条由绿转红**（首轮 15 红 1 绿，那 1 条是判据缺陷，已补测试后转红）。
+全部在独立 worktree 里跑（`git worktree add` + 逐文件 cp 同步）。
+
+| 变异 | 结果 | 说明 |
+| --- | --- | --- |
+| `internal()` 不再隐藏引擎内部变量 | 🔴 红 | `loopCounter` 混进「当前变量」 |
+| 已结束的分支照样列出局部变量 | 🔴 红 | 终态实例返回一份"曾经存在过" |
+| `base()` 的归属取错字段 | 🔴 红 | **复现本轮修掉的 id 缺陷**：`process:null/amount` |
+| 控制器把 `openTasksOnly` 默认值抹成 null | 🔴 红 | **复现本轮修掉的第二个缺陷**：默认过滤形同虚设 |
+| 取消「一个范围都不给就报错」 | 🔴 红 | 变成"全系统就这几个变量" |
+| 显式 `taskId` 不再绕过办结态过滤 | 🔴 红 | 点名已办结的任务返回空 |
+| `openTasksOnly` 默认值翻转 | 🔴 红 | 历史表单变量混进当前变量 |
+| 摘掉超量护栏 | 🔴 红 | 静默截断一份看起来完整的清单 |
+| `matches()` 的作用域过滤失效 | 🔴 红 | 4 条全出 |
+| 只给 `executionId` 时不反查实例范围 | 🔴 红 | 退化成全表扫任务，撞上限报无关的错 |
+| 任务级变量不再带出节点名 | 🔴 红 | "这个变量属于图上哪个节点"答不出 |
+| `countVariables` 不再走过滤 | 🔴 红 | **首轮绿**，见下 |
+| `variablesOf` 退回走分页 | 🔴 红 | 1001 条被静默截成 1000 |
+| `incidentsOf` 退回走分页 | 🔴 红 | 同上（这是上一轮留下、本轮顺带修掉的） |
+| 点名的 token 不存在时不再直接返回空 | 🔴 红 | 变成全表扫 |
+| 任务级视图不带 `executionId` | 🔴 红 ×2 | 「按 token 查」漏掉同一层的任务变量 |
+
+**这一轮最值钱的一条判据教训**：`countVariables` 不走过滤这条变异**首轮是绿的**，
+查下来是我在 `countMatchesList` 里那条查询**一个过滤条件都没带**（只有 `processInstanceId`），
+于是"过滤"在这条查询上是恒等的 —— count 数匹配数与数扫到行数**都等于 4**。
+补了一条 `setName("amount")` 的查询（匹配 3、扫到 4）之后立刻转红。
+
+⇒ 与前几轮那条「过滤类断言的期望值必须只有一个取值」是同一条，但这次栽在**另一头**：
+不是期望值有两个取值，而是**这条查询压根没有能被过滤掉的差异**。
+判据要能区分两个数，前提是这两个数**本来就是不同的**。
+一个什么条件都不带的查询，永远区分不出"过滤了"与"没过滤"。
+
+**另一条**：`variablesOf` / `incidentsOf` 的"不分页"断言最初**也没有区分力** ——
+用例里的变量数与故障数都是个位数，而分页归一化的上限是 1000。
+补成各造 1001 条（`variablesOf` 那条还顺带加了一条对照：
+同一批数据走 `listVariables` 确实给 1000）之后才真正钉住。
+⇒ **验证"没有上限"的判据，用例的数据量必须越过那个上限**；
+否则它验证的是"上限够大"，不是"没有上限"。
