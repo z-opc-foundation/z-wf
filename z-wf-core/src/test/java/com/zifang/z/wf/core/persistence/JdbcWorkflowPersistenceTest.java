@@ -391,6 +391,110 @@ class JdbcWorkflowPersistenceTest {
         assertTrue(persistence.queryProcessInstances(new WfProcessInstanceQuery()).isEmpty());
     }
 
+    // ==================== 历史流程实例条件 ====================
+
+    /**
+     * 造一条指定状态的流程实例。
+     *
+     * <p>五种状态全都要用上：finishedOnly / unfinishedOnly 各自要能把另外几种分出去，
+     * 少造一种就可能让过滤条件里的枚举列表写错却测不出来。
+     */
+    private void saveProcess(String id, WfProcessStatus status, long startOffsetMillis) {
+        WfProcessInstance instance = new WfProcessInstance(id, "defA", "bk-" + id);
+        instance.setStatus(status);
+        instance.setStartTime(new Date(BASE + startOffsetMillis));
+        if (status.isTerminal()) {
+            instance.setEndTime(new Date(BASE + startOffsetMillis + 100));
+        }
+        persistence.saveProcessInstance(instance);
+    }
+
+    @Test
+    @DisplayName("finishedOnly / unfinishedOnly 在真库上把五种状态分干净")
+    void finishedAndUnfinishedFiltersInSql() {
+        saveProcess("p-active", WfProcessStatus.ACTIVE, 0);
+        saveProcess("p-susp", WfProcessStatus.SUSPENDED, 100);
+        saveProcess("p-done", WfProcessStatus.COMPLETED, 200);
+        saveProcess("p-ext", WfProcessStatus.EXTERNALLY_TERMINATED, 300);
+        saveProcess("p-int", WfProcessStatus.INTERNALLY_TERMINATED, 400);
+
+        List<WfProcessInstance> finished = persistence.queryProcessInstances(
+                new WfProcessInstanceQuery().setFinishedOnly(true)
+                        .setPageNum(1).setPageSize(50));
+        assertEquals(3, finished.size(), "三种终态都算已结束");
+        for (WfProcessInstance i : finished) {
+            assertTrue(i.getStatus().isTerminal(), "混入非终态 " + i.getStatus());
+        }
+        assertEquals(3, persistence.countProcessInstances(
+                new WfProcessInstanceQuery().setFinishedOnly(true)));
+
+        List<WfProcessInstance> running = persistence.queryProcessInstances(
+                new WfProcessInstanceQuery().setUnfinishedOnly(true)
+                        .setPageNum(1).setPageSize(50));
+        assertEquals(2, running.size(), "ACTIVE 与 SUSPENDED 都在途");
+        for (WfProcessInstance i : running) {
+            assertTrue(i.getStatus().isActive(), "混入终态 " + i.getStatus());
+        }
+
+        // 与其它条件叠加
+        assertEquals(1, persistence.queryProcessInstances(new WfProcessInstanceQuery()
+                .setFinishedOnly(true).setDefinitionKey("defA")
+                .setStatus(WfProcessStatus.COMPLETED)
+                .setPageNum(1).setPageSize(50)).size());
+        assertEquals(0, persistence.queryProcessInstances(new WfProcessInstanceQuery()
+                .setFinishedOnly(true).setDefinitionKey("nope")
+                .setPageNum(1).setPageSize(50)).size());
+    }
+
+    @Test
+    @DisplayName("流程实例条件矛盾时 JDBC 侧直接抛错")
+    void contradictoryProcessFlagsAreRejected() {
+        saveProcess("p1", WfProcessStatus.ACTIVE, 0);
+        assertThrows(IllegalArgumentException.class, () -> persistence.queryProcessInstances(
+                new WfProcessInstanceQuery().setFinishedOnly(true).setUnfinishedOnly(true)));
+        assertThrows(IllegalArgumentException.class, () -> persistence.queryProcessInstances(
+                new WfProcessInstanceQuery().setFinishedOnly(true)
+                        .setStatus(WfProcessStatus.ACTIVE)));
+        assertThrows(IllegalArgumentException.class, () -> persistence.queryProcessInstances(
+                new WfProcessInstanceQuery().setUnfinishedOnly(true)
+                        .setStatus(WfProcessStatus.COMPLETED)));
+        assertThrows(IllegalArgumentException.class, () -> persistence.queryProcessInstances(
+                new WfProcessInstanceQuery().setStartTimeFrom(new Date(2000L))
+                        .setStartTimeTo(new Date(1000L))));
+    }
+
+    @Test
+    @DisplayName("流程实例分页下推到 SQL 后各页不重不漏")
+    void processPaginationIsPushedDown() {
+        // 5 条在途 + 2 条终态，按 START_TIME 倒序
+        for (int i = 0; i < 5; i++) {
+            saveProcess("p-open" + i, WfProcessStatus.ACTIVE, 1000L * (i + 1));
+        }
+        saveProcess("p-done1", WfProcessStatus.COMPLETED, 6000);
+        saveProcess("p-done2", WfProcessStatus.EXTERNALLY_TERMINATED, 7000);
+
+        java.util.Set<String> seen = new java.util.LinkedHashSet<String>();
+        for (int page = 1; page <= 2; page++) {
+            List<WfProcessInstance> rows = persistence.queryProcessInstances(
+                    new WfProcessInstanceQuery().setPageNum(page).setPageSize(3));
+            assertEquals(3, rows.size(), "第 " + page + " 页应满 3 条");
+            for (WfProcessInstance i : rows) {
+                assertTrue(seen.add(i.getId()), "第 " + page + " 页出现重复行 " + i.getId());
+            }
+        }
+        List<WfProcessInstance> last = persistence.queryProcessInstances(
+                new WfProcessInstanceQuery().setPageNum(3).setPageSize(3));
+        assertEquals(1, last.size(), "7 条分 3 页，最后一页只剩 1 条");
+        for (WfProcessInstance i : last) {
+            assertTrue(seen.add(i.getId()), "第 3 页出现重复行 " + i.getId());
+        }
+        assertEquals(7, seen.size(), "三页合起来必须正好覆盖 7 条");
+        assertEquals(0, persistence.queryProcessInstances(
+                new WfProcessInstanceQuery().setPageNum(4).setPageSize(3)).size());
+        assertEquals(7, persistence.countProcessInstances(new WfProcessInstanceQuery()),
+                "total 不受分页影响");
+    }
+
     private WfTask newTask(String id, String assignee, WfTask.Status status, int priority, long time) {
         WfTask task = new WfTask();
         task.setId(id);

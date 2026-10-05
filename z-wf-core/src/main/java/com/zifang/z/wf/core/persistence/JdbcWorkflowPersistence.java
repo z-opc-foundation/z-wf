@@ -438,11 +438,12 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         List<Object> args = new ArrayList<>();
         appendProcessFilters(sql, args, query);
         sql.append(" ORDER BY START_TIME DESC");
-        List<WfProcessInstance> all = queryList(sql.toString(), args.toArray(), instanceMapper());
-        int from = query == null ? 0 : query.getOffset();
-        int size = query == null || query.getPageSize() <= 0 ? 20 : query.getPageSize();
-        return from >= all.size() ? new ArrayList<WfProcessInstance>()
-                : new ArrayList<>(all.subList(from, Math.min(all.size(), from + size)));
+        // 分页下推到 SQL。此前是把全表拉进内存再 subList，
+        // 流程实例表是审批系统里单量最大的一张（每个单据一条），每翻一页付一次全表拉取。
+        sql.append(" LIMIT ? OFFSET ?");
+        args.add(query == null || query.getPageSize() <= 0 ? 20 : query.getPageSize());
+        args.add(query == null ? 0 : query.getOffset());
+        return queryList(sql.toString(), args.toArray(), instanceMapper());
     }
 
     @Override
@@ -463,10 +464,21 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         if (query == null) {
             return;
         }
+        // 条件自相矛盾时在这里就抛，而不是拼出恒假的 SQL 返回空集
+        query.assertConsistent();
         appendIfNotBlank(sql, args, " AND DEF_KEY=?", query.getDefinitionKey());
         appendIfNotBlank(sql, args, " AND BUSINESS_KEY=?", query.getBusinessKey());
         appendIfNotBlank(sql, args, " AND START_USER_ID=?", query.getStartUserId());
         appendIfNotBlank(sql, args, " AND CATEGORY=?", query.getCategory());
+        // 终态/在途是两组状态，枚举字面量在这里显式列出：
+        // 与 WfProcessStatus.isTerminal()/isActive() 一一对应，改枚举时这两行必须一起改
+        if (query.isFinishedOnly()) {
+            sql.append(" AND STATUS IN ('COMPLETED','EXTERNALLY_TERMINATED',"
+                    + "'INTERNALLY_TERMINATED')");
+        }
+        if (query.isUnfinishedOnly()) {
+            sql.append(" AND STATUS IN ('ACTIVE','SUSPENDED')");
+        }
         if (query.getStatus() != null) {
             sql.append(" AND STATUS=?");
             args.add(query.getStatus().name());

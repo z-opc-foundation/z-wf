@@ -179,6 +179,9 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
 
     @Override
     public List<WfProcessInstance> queryProcessInstances(WfProcessInstanceQuery query) {
+        if (query != null) {
+            query.assertConsistent();
+        }
         List<WfProcessInstance> matched = new ArrayList<>();
         for (WfProcessInstance instance : processInstances.values()) {
             if (matches(instance, query)) {
@@ -217,6 +220,12 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
             return false;
         }
         if (query.getStatus() != null && query.getStatus() != instance.getStatus()) {
+            return false;
+        }
+        if (query.isFinishedOnly() && !instance.getStatus().isTerminal()) {
+            return false;
+        }
+        if (query.isUnfinishedOnly() && !instance.getStatus().isActive()) {
             return false;
         }
         if (isNotBlank(query.getResult()) && !query.getResult().equals(instance.getResult())) {

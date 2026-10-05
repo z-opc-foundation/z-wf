@@ -19,10 +19,12 @@ import com.zifang.z.wf.core.engine.WfEngine;
 import com.zifang.z.wf.core.hook.WfHookDispatcher;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfProcessInstance;
+import com.zifang.z.wf.core.model.WfProcessStatus;
 import com.zifang.z.wf.core.model.WfTask;
 import com.zifang.z.wf.core.persistence.InMemoryWorkflowPersistence;
 import com.zifang.z.wf.core.persistence.WfHistoricActivityInstanceQuery;
 import com.zifang.z.wf.core.persistence.WfPersistence;
+import com.zifang.z.wf.core.persistence.WfProcessInstanceQuery;
 import com.zifang.z.wf.core.persistence.WfTaskQuery;
 
 /**
@@ -449,6 +451,91 @@ class WfHistoryQueryTest {
                         + "下一次复用同一个对象查待办就会莫名其妙少一条");
         assertEquals(firstPass, history.queryCompletedTasks(caller).size(),
                 "同一个查询对象连用两次，结果必须一致");
+    }
+
+    // ==================== 历史流程实例 ====================
+
+    @Test
+    @DisplayName("历史实例：三种终态都算已结束，被终止的单子不能从历史里消失")
+    void finishedCoversAllTerminalStates() {
+        fresh();
+        String completed = runToCompletion("H-1");
+        String terminated = startOnly("H-2");
+        terminateExternally(terminated);
+        String running = startOnly("H-3");
+
+        List<WfProcessInstance> finished = history.queryFinishedProcesses(
+                new WfProcessInstanceQuery().setPageNum(1).setPageSize(50));
+        assertEquals(2, finished.size(),
+                "正常完成与外部终止都是历史 —— 事后最常被问的恰恰是"
+                        + "『这单怎么没的』，把它排除掉等于让这个问题无法回答");
+        assertEquals(2, history.countFinishedProcesses(new WfProcessInstanceQuery()));
+
+        List<String> ids = new java.util.ArrayList<String>();
+        for (WfProcessInstance i : finished) {
+            assertTrue(i.getStatus().isTerminal(), "只应收终态，实际混入 " + i.getStatus());
+            ids.add(i.getId());
+        }
+        assertTrue(ids.contains(completed), "正常完成的应在内");
+        assertTrue(ids.contains(terminated), "外部终止的也应在内");
+        assertTrue(!ids.contains(running), "在途的 " + running + " 不该出现在历史里");
+
+        assertEquals(0, history.queryFinishedProcesses(
+                new WfProcessInstanceQuery().setBusinessKey("H-3")
+                        .setPageNum(1).setPageSize(50)).size(),
+                "在途流程不是历史");
+    }
+
+    @Test
+    @DisplayName("历史实例查询：定义 + 发起人可组合，count 与列表同口径")
+    void finishedProcessesAreComposable() {
+        fresh();
+        runToCompletion("H-1");
+        runToCompletion("H-2");
+        startOnly("H-3");
+
+        assertEquals(2, history.queryFinishedProcesses(new WfProcessInstanceQuery()
+                .setDefinitionKey("histProcess").setStartUserId("alice")
+                .setPageNum(1).setPageSize(50)).size());
+        assertEquals(2, history.countFinishedProcesses(new WfProcessInstanceQuery()
+                .setDefinitionKey("histProcess").setStartUserId("alice")));
+        assertEquals(0, history.queryFinishedProcesses(new WfProcessInstanceQuery()
+                .setDefinitionKey("other").setPageNum(1).setPageSize(50)).size());
+    }
+
+    @Test
+    @DisplayName("历史实例查询拒绝 unfinishedOnly 与矛盾的 status")
+    void finishedQueryRejectsContradictions() {
+        fresh();
+        runToCompletion("H-1");
+
+        assertThrows(IllegalArgumentException.class, () -> history.queryFinishedProcesses(
+                new WfProcessInstanceQuery().setUnfinishedOnly(true)));
+        assertThrows(IllegalArgumentException.class, () -> history.countFinishedProcesses(
+                new WfProcessInstanceQuery().setUnfinishedOnly(true)));
+
+        // finishedOnly 配非终态 status：恒假条件，不该静默返回空
+        assertThrows(IllegalArgumentException.class, () -> history.queryFinishedProcesses(
+                new WfProcessInstanceQuery().setStatus(WfProcessStatus.ACTIVE)));
+        // 两个方向同时为真
+        assertThrows(IllegalArgumentException.class, () -> history.queryFinishedProcesses(
+                new WfProcessInstanceQuery().setFinishedOnly(true).setUnfinishedOnly(true)));
+    }
+
+    /** 起一条流程但不办结，留下在途实例。 */
+    private String startOnly(String businessKey) {
+        WfDefinition definition = new WfXmlParser().parse(BPMN);
+        new WfRepositoryService(repo).deploy(definition);
+        return runtime.startProcessInstance(definition, businessKey, "alice", null,
+                new HashMap<String, Object>());
+    }
+
+    private void terminateExternally(String processInstanceId) {
+        WfProcessInstance instance = repo.findProcessInstance(processInstanceId);
+        instance.setStatus(WfProcessStatus.EXTERNALLY_TERMINATED);
+        instance.setEndTime(new Date());
+        instance.nextRevision();
+        repo.saveProcessInstance(instance);
     }
 
     // ==================== 清理 ====================

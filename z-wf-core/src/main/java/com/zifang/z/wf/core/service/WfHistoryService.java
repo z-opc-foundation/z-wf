@@ -1,6 +1,5 @@
 package com.zifang.z.wf.core.service;
 
-import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -85,6 +84,51 @@ public class WfHistoryService {
      * <p>不改动调用方传进来的对象：{@code WfTaskQuery} 是可变的链式 builder，
      * 复用同一个实例改条件会波及调用方手里还在用的那一份。
      */
+    /**
+     * 查历史流程实例（已结束的流程）。
+     *
+     * <p>同样复用 {@link WfProcessInstanceQuery}：本引擎的"历史实例"就是
+     * 终态的实例行，没有另一张表可查。
+     *
+     * <p>"已结束"在本仓有三种终态（正常完成 / 外部终止 / 内部终止），
+     * 所以本方法强制 {@code finishedOnly} 而不是把 status 写死成 COMPLETED ——
+     * 写死的话，被人工终止和被 BPMN 错误终止的单子会从历史里消失，
+     * 而"这单怎么没的"恰恰是事后最常被问的问题。
+     */
+    public List<WfProcessInstance> queryFinishedProcesses(WfProcessInstanceQuery query) {
+        return persistence.queryProcessInstances(asFinished(query));
+    }
+
+    /** 与 {@link #queryFinishedProcesses} 同条件的条数。 */
+    public long countFinishedProcesses(WfProcessInstanceQuery query) {
+        return persistence.countProcessInstances(asFinished(query));
+    }
+
+    private WfProcessInstanceQuery asFinished(WfProcessInstanceQuery query) {
+        if (query != null && query.isUnfinishedOnly()) {
+            throw new IllegalArgumentException(
+                    "历史流程实例查询不接受 unfinishedOnly："
+                            + "在途的流程不是历史。要查在途请用 WfProcessInstanceQuery#setUnfinishedOnly。");
+        }
+        WfProcessInstanceQuery copy = query == null ? new WfProcessInstanceQuery() : copyOf(query);
+        return copy.setFinishedOnly(true);
+    }
+
+    private WfProcessInstanceQuery copyOf(WfProcessInstanceQuery source) {
+        WfProcessInstanceQuery copy = new WfProcessInstanceQuery();
+        copy.setDefinitionKey(source.getDefinitionKey());
+        copy.setBusinessKey(source.getBusinessKey());
+        copy.setStartUserId(source.getStartUserId());
+        copy.setCategory(source.getCategory());
+        copy.setStatus(source.getStatus());
+        copy.setStartTimeFrom(source.getStartTimeFrom());
+        copy.setStartTimeTo(source.getStartTimeTo());
+        copy.setResult(source.getResult());
+        copy.setPageNum(source.getPageNum());
+        copy.setPageSize(source.getPageSize());
+        return copy;
+    }
+
     private WfTaskQuery asHistoric(WfTaskQuery query) {
         if (query != null && query.isOpenOnly()) {
             throw new IllegalArgumentException(
@@ -169,35 +213,6 @@ public class WfHistoryService {
     /** 瓶颈分析的默认样本量。 */
     private static final int BOTTLENECK_SAMPLE_LIMIT = 1000;
 
-    /**
-     * 已完成的流程实例。
-     */
-    public List<WfProcessInstance> getCompletedInstances(int pageNum, int pageSize) {
-        List<WfProcessInstance> all = new ArrayList<>();
-        for (WfProcessInstance instance : persistence.queryProcessInstances(
-                new WfProcessInstanceQuery().setPageNum(1).setPageSize(Integer.MAX_VALUE))) {
-            if (instance.getStatus() == WfProcessStatus.COMPLETED) {
-                all.add(instance);
-            }
-        }
-        return paginate(all, pageNum, pageSize);
-    }
-
-    /**
-     * 某用户发起的已完成流程。
-     */
-    public List<WfProcessInstance> getCompletedInstancesByUser(String userId, int pageNum, int pageSize) {
-        List<WfProcessInstance> all = new ArrayList<>();
-        for (WfProcessInstance instance : persistence.queryProcessInstances(
-                new WfProcessInstanceQuery().setStartUserId(userId)
-                        .setPageNum(1).setPageSize(Integer.MAX_VALUE))) {
-            if (instance.getStatus() == WfProcessStatus.COMPLETED) {
-                all.add(instance);
-            }
-        }
-        return paginate(all, pageNum, pageSize);
-    }
-
     /*
      * 关于"已办列表"与"审批轨迹"：
      * 这两件事已有各自唯一的入口，不再在本类重复一份。
@@ -245,18 +260,5 @@ public class WfHistoryService {
         overview.put("comments", persistence.findComments(processInstanceId));
         overview.put("durationMillis", instance.durationMillis());
         return overview;
-    }
-
-    private <T> List<T> paginate(List<T> list, int pageNum, int pageSize) {
-        if (list.isEmpty()) {
-            return new ArrayList<>();
-        }
-        int size = pageSize < 1 ? 20 : pageSize;
-        int from = Math.max(0, (pageNum - 1) * size);
-        if (from >= list.size()) {
-            return new ArrayList<>();
-        }
-        int to = Math.min(list.size(), from + size);
-        return new ArrayList<>(list.subList(from, to));
     }
 }
