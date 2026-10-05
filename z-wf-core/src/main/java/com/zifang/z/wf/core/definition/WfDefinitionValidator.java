@@ -255,6 +255,21 @@ public class WfDefinitionValidator {
             if (node.getType() == WfNodeType.COMPLEX_GATEWAY) {
                 validateComplexGateway(id, node, outs, defaultCount);
             }
+            if (node.getType() == WfNodeType.EVENT_BASED_GATEWAY) {
+                validateEventGateway(definition, id, outs);
+            }
+        }
+
+        // ---- 事件网关分支：出线目标必须是中间捕获事件，且入线唯一 ----
+        // 这条放在图形状校验里而不是节点校验里，因为它要看线（两个方向都要看），
+        // 而"分支的兄弟集合"在运行时正是靠入线反查出来的 —— 部署期不把这条锁死，
+        // 触发时就找不到该作废谁。
+        for (String id : ids) {
+            WfNode node = definition.node(id);
+            if (node == null || node.getType() != WfNodeType.INTERMEDIATE_CATCH_EVENT) {
+                continue;
+            }
+            validateCatchEvent(definition, id, node, definition.incomingFlows(id));
         }
 
         // ---- 孤立节点 ----
@@ -311,8 +326,79 @@ public class WfDefinitionValidator {
     }
 
     /**
-     * 便捷判定：是否含 ERROR 级问题。
+     * 事件网关：出线必须全部落在中间捕获事件上，且至少两条。
+     *
+     * <p>出线指向别的节点不是"退化"，是<b>整个竞速机制落空</b>：引擎把 token
+     * 分叉过去之后，只有中间捕获事件会挂订阅并停住。指向普通节点的话那些分支
+     * 当场就跑完了，等事件到达时一条订阅都找不到，而流程已经走到结束 ——
+     * 模型上写着"三选一"，实际是"三条全走"。所以必须在部署期拒绝。
      */
+    private void validateEventGateway(WfDefinition definition, String id, List<WfFlow> outs) {
+        if (outs.size() < 2) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "事件网关至少要有 2 条出线（BPMN 规范如此），当前只有 " + outs.size()
+                            + " 条。少于两条就不存在「竞速」，它退化成了普通网关");
+        }
+        for (WfFlow flow : outs) {
+            WfNode target = definition.node(flow.getTargetRef());
+            if (target == null) {
+                // 目标节点不存在由连线级校验报，这里不重复
+                continue;
+            }
+            if (target.getType() != WfNodeType.INTERMEDIATE_CATCH_EVENT) {
+                add(WfValidationIssue.Severity.ERROR, id,
+                        "事件网关的出线 " + flow.getId() + " 指向 " + target.getId()
+                                + "（" + target.getType() + "），必须是 intermediateCatchEvent。"
+                                + "指向别的节点意味着该分支不会挂订阅、不会等事件，"
+                                + "会在分叉当场直接跑完 —— 那是「三条全走」而不是「三选一」");
+            }
+        }
+    }
+
+    /**
+     * 中间捕获事件：必须有本引擎等得住的事件定义，入线必须唯一且来自事件网关。
+     */
+    private void validateCatchEvent(WfDefinition definition, String id, WfNode node,
+                                    List<WfFlow> inFlows) {
+        if (!node.hasEventDefinition()) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "中间捕获事件没有任何事件定义（messageEventDefinition / "
+                            + "signalEventDefinition / timerEventDefinition），"
+                            + "它在图上是一条永远等不到的死路");
+        } else if (!node.isSupportedCatchEvent()) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "中间捕获事件 " + id + " 用的是 " + describeUnsupportedCatch(node)
+                            + "，本引擎目前只支持 messageEventDefinition 与 "
+                            + "signalEventDefinition。定时器捕获事件要等 duedate 到点、"
+                            + "由扫描器捞起来续跑，而那条续跑路径认的是「宿主节点」——"
+                            + "中间捕获事件没有宿主，挂上去只会得到一个永不响、也不报错的哑表");
+        }
+        if (inFlows.size() != 1) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "中间捕获事件必须恰好有 1 条入线，当前有 " + inFlows.size() + " 条。"
+                            + "运行时靠这条唯一的入线反查所属事件网关"
+                            + "（没有它就找不到该作废哪些兄弟分支）");
+            return;
+        }
+        WfNode source = definition.node(inFlows.get(0).getSourceRef());
+        if (source == null || source.getType() != WfNodeType.EVENT_BASED_GATEWAY) {
+            // 普通中间捕获事件（流程里直接写、等消息继续）是合法的，运行时只前进自己、
+            // 不作废任何兄弟 —— 所以这里只提醒，不报错。
+            add(WfValidationIssue.Severity.WARN, id,
+                    "中间捕获事件 " + id + " 不是从事件网关进来的，"
+                            + "它会一直等到事件到达为止，且不会与任何其他分支互斥");
+        }
+    }
+
+    private String describeUnsupportedCatch(WfNode node) {
+        if (node.isTimerEvent()) {
+            return "timerEventDefinition（定时器捕获）";
+        }
+        return "conditionalEventDefinition / escalationEventDefinition 等未支持的捕获事件";
+    }
+
+    /**
+     * 便捷判定：是否含 ERROR 级问题。     */
     public static boolean hasError(List<WfValidationIssue> issues) {
         if (issues == null) {
             return false;

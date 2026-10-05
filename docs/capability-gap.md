@@ -57,9 +57,9 @@
 | `createProcessInstanceQuery` 流畅查询 | 🟡 | `WfProcessInstanceQuery` 有 10 个条件，但没有 `variableValueEquals`（按变量值查实例，审批系统常用） |
 | `createExecutionQuery` | 🟡 | 只有 `getExecutions(processInstanceId)` 列举，没有按条件查 |
 | `createVariableInstanceQuery` | ❌ | |
-| `createEventSubscriptionQuery` | ❌ | |
+| `createEventSubscriptionQuery` | ❌ | 订阅都落在 `ZWF_JOB` 里，但没有面向调用方的订阅查询 |
 | `getActivityInstance`（树形活动实例） | 🟡 | 有扁平轨迹 `getTrail`，没有 Camunda 的树形结构 |
-| `messageEventReceived` / `signalEventReceived` | ✅ | **本轮新增** `triggerMessage` / `broadcastSignal` |
+| `messageEventReceived` / `signalEventReceived` | ✅ | `triggerMessage`（点对点）/ `broadcastSignal`（广播），**本轮补上 REST**：`POST /api/wf/process/message` 与 `POST /api/wf/process/signal`。此前只有 Java 入口，纯 HTTP 的调用方根本没法投递事件，事件网关等于对它们不存在。一个端点同时能叫醒三种等待者（事件网关分支 / 消息边界订阅 / receiveTask），谁先判决定了这条事件落到哪种语义上 |
 | `correlate`（关联消息到执行） | ❌ | |
 | `getBusinessKey` / `setProcessInstanceName` | 🟡 | businessKey 有；流程名称没有 |
 
@@ -145,8 +145,9 @@
 | **嵌入式 `subProcess`** | ❌ | **内联内容永远不执行。** 解析器把内联节点收进扁平表，引擎却直接穿透。现在部署期报 ERROR 挡住，可用 callActivity 代替 |
 | **`multiInstance`**（会签/或签/计数） | 🟡 | **本轮补上**：`loopCardinality` + `completionCondition`，任务类节点并行展开。缺 `collection` 集合迭代与 `isSequential` 串行（部署期报 ERROR 挡住，不做半套） |
 | `boundaryEvent` | 🟡 | **错误边界**：`<errorEventDefinition errorRef>` + `WfRuntimeService#handleBpmnError` + `BpmnError`。**定时器边界**：`<timerEventDefinition>` + Job 执行器。**消息/信号边界**：`<messageEventDefinition messageRef>` / `<signalEventDefinition signalRef>`，token 一进入宿主节点就作为订阅挂在 `ZWF_JOB` 上，`triggerMessage`（点对点）/ `broadcastSignal`（广播）到达时**打断**在办的流程：宿主待办作废、token 走补偿分支。非中断型（`cancelActivity="false"`）**部署期报 ERROR**（需要另一套订阅存活状态，不做半套） |
-| **`intermediateCatchEvent` / `intermediateThrowEvent`** | ❌ | 中间事件 |
-| `eventBasedGateway` | ❌ | 现在会被校验器**报错挡住**（见 §4），不会静默退化 |
+| **`intermediateCatchEvent`** | 🟡 | ✅ 已实现（消息 / 信号两种事件定义）：token 停在该节点挂一条 `EVENT_MESSAGE` / `EVENT_SIGNAL` 订阅，**不建人工待办** —— 它等的是消息不是某个人，退化成待办的话事件网关就变成"让 N 个人同时点"。**也支持不经网关的普通用法**（流程里直接写、等消息继续），此时只前进自己不与任何分支互斥。**剩余**：`timerEventDefinition`（见下）与 `conditionalEventDefinition` / `escalationEventDefinition` / `linkEventDefinition` |
+| `intermediateThrowEvent` | ❌ | **部署期报 ERROR**（见 §4），并建议改用等价的 `sendTask` |
+| `eventBasedGateway` | 🟡 | ✅ 已实现：token 分叉到各中间捕获事件，**谁的事件先到就走谁，其余分支连同各自的订阅一并作废**（落选分支在轨迹上留 `eventGatewayLost` 一条）。竞速的兄弟集合从**流程定义**反查（捕获事件唯一入线的源头就是网关），不另存副本。订阅用 `EVENT_MESSAGE`/`EVENT_SIGNAL` 两种新 job 类型，与消息/信号**边界订阅**分开 —— 后者是打断，前者是竞速，混用时触发路径必须去猜而猜错的后果是流程静默走错分支。**剩余**：定时器分支（`timerEventDefinition`）、`conditionalEventDefinition` 分支 |
 | `complexGateway` | 🟡 | ✅ 已实现：按变量**取值**分派（`zifang:caseVariable` + 出线 `zifang:caseValue`），`camunda:caseExpression` 同样识别。**剩余**：Camunda 侧的后置条件（`condition` 元素）、配对/非配对语义差异 |
 | `transaction` / `adHocSubProcess` | ❌ | 同上，报错挡住 |
 | **定时器** `timerEventDefinition` | ✅ | `timeDuration`（PT5M / P1DT2H / P1Y）与 `timeDate`（2026-12-31T18:00:00Z）已实现，可写 `${变量}` 由流程实例决定时限。**`timeCycle` 循环定时器刻意不支持**，部署期报 ERROR |
@@ -225,8 +226,8 @@ Camunda 差距最大的是细粒度事件点。本轮补了三个（`WfTransitio
 
 **不支持的 BPMN 元素现在会在部署时报 ERROR，而不是静默退化成人工任务。**
 
-改之前：解析器把认不出的元素名（`eventBasedGateway` / `transaction` /
-`intermediateCatchEvent` / `adHocSubProcess`）一律退化成 `TASK`，
+改之前：解析器把认不出的元素名（`transaction` / `intermediateThrowEvent` /
+`adHocSubProcess`）一律退化成 `TASK`，
 校验器一条 issue 都不报，部署照过。探针实测：
 
 ```
@@ -240,9 +241,14 @@ intermediateCatchEvent -> TASK   adHocSubProcess -> TASK
 
 改之后：解析期仍然宽松（能读进来才给得出有用诊断），但退化出的节点会带上
 原始元素名，校验器报 **ERROR**，`deploy` 据此拒绝部署。
-等价替代关系会给出建议（`intermediateThrowEvent` → `sendTask`），
-但 `eventBasedGateway` 刻意不给——拿 `exclusiveGateway` 顶替它不是简化，
+等价替代关系会给出建议（`intermediateThrowEvent` → `sendTask`），但
+`eventBasedGateway` 刻意不给——拿 `exclusiveGateway` 顶替它不是简化，
 是把"多路竞速"换成"顺序选一"，照着改会得到更难发现的错流程。
+
+> 本节原先还把 `eventBasedGateway` 与 `intermediateCatchEvent` 列为退化元素。
+> 这两者已实现（见 §2），退化名单换成了 `transaction` / `intermediateThrowEvent` /
+> `adHocSubProcess`；`UnsupportedBpmnElementTest` 里另有一条
+> `eventBasedGatewayIsNowNative` 守着"已实现的元素不许再被当成退化节点"。
 
 ---
 
@@ -279,7 +285,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 历史查询体系（活动 / 任务 / 流程实例 / **变量变更审计** + 历史清理已实现）·
 ~~Repository 完整化~~（定义停用/启用 + 模型回读 + 定义查询 + 物理删除已实现）·
 ~~任务挂起~~（suspend/activate + 七处闸门 + 查询过滤 + REST 已实现）·
-~~运行时增删候选人~~（含 `candidateOrAssigned` 待办或语义 + 可认领列表按人过滤）· ~~复杂网关~~ · 事件网关 · Filter
+~~运行时增删候选人~~（含 `candidateOrAssigned` 待办或语义 + 可认领列表按人过滤）· ~~复杂网关~~ · ~~事件网关~~（消息/信号分支已实现，定时器分支待补）· Filter
 
 ### P2 —— 管理便利
 
@@ -289,8 +295,8 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 435 个测试兜着
-- 从测试与审计中逼出并修复的**真实缺陷 28 项**，其中 4 项属于"能力看着在、实际不生效"：
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 457 个测试兜着
+- 从测试与审计中逼出并修复的**真实缺陷 29 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **两处"两套实现语义不一致"值得单独记**：内存版 `lockExternalTasks` 直接改内部引用，
   绕过了 `saveJob` 的乐观锁契约（表现为"领一次活就把 job 永久锁死在乐观锁异常里"）；
@@ -298,6 +304,11 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
   而开发期默认用内存实现，于是这类问题要么炸在开发期、要么全炸在生产期
 - **扩展面明显比 Camunda 窄**（3 个 hook vs 几十个监听点），这是与 Camunda 差距最大、
   也最难靠"补功能"追平的一项
+- **本轮新逼出的一处隐性契约**：改一个<b>既有</b> token 的状态（`setState`）必须同时
+  `markTouched`，否则 `persistAll` 不会把它写回库。症状是"内存里作废了、库里还是 WAITING" ——
+  事件网关的落选分支因此永远留在那儿，流程再也结束不了，而引擎日志一片正常
+- **`broadcastSignal` 曾只推进不返回**：三类等待者里，边界订阅那一路的实例没进返回值，
+  调用方拿到空列表以为没人订阅，而流程其实已经被打断了
 - 引擎面缺口按上面 P0/P1 排期推进；身份/表单/鉴权/CMMN 有意不做
 
 > 维护约定：新增或移除一项能力时，**同步改这份文档**。

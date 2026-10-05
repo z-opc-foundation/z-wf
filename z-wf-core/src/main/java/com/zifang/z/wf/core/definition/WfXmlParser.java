@@ -94,8 +94,6 @@ public class WfXmlParser {
     private static final String[][] NODE_ELEMENTS = {
             {"startEvent", "startEvent"},
             {"endEvent", "endEvent"},
-            {"intermediateThrowEvent", "intermediateThrowEvent"},
-            {"intermediateCatchEvent", "intermediateCatchEvent"},
             {"userTask", "userTask"},
             {"serviceTask", "serviceTask"},
             {"scriptTask", "scriptTask"},
@@ -108,6 +106,11 @@ public class WfXmlParser {
             {"inclusiveGateway", "inclusiveGateway"},
             {"complexGateway", "complexGateway"},
             {"eventBasedGateway", "eventBasedGateway"},
+            // 事件网关的出线只能是中间捕获事件。intermediateThrowEvent 收进来是为了
+            // 让校验器报出"抛事件未实现"而不是让它退化成任务 —— 抛事件的语义是
+            // "主动打断别人"，退化成"等人来点"是另一个流程
+            {"intermediateCatchEvent", "intermediateCatchEvent"},
+            {"intermediateThrowEvent", "intermediateThrowEvent"},
             {"subProcess", "subProcess"},
             {"transaction", "transaction"},
             {"adHocSubProcess", "adHocSubProcess"},

@@ -51,7 +51,26 @@ public enum WfJobType {
      *
      * <p>job 执行时<b>离开</b>该节点、沿出线前进 —— 节点本身不会再跑一遍。
      */
-    ASYNC_AFTER("异步后置");
+    ASYNC_AFTER("异步后置"),
+
+    /**
+     * 事件网关的<b>消息分支</b>：token 停在这个网关的某个中间捕获事件上等这条消息。
+     *
+     * <p><b>必须与 {@link #MESSAGE} 分开</b>，因为两者的触发后果完全不同：
+     * {@link #MESSAGE} 是<b>打断</b>（宿主上的待办作废、token 被拉到边界事件上走补偿分支），
+     * 而这里是<b>竞速</b>（本分支前进，其余分支连同各自的等待一并作废）。
+     * 共用一个类型的话，触发路径必须去查"这到底是打断还是竞速"，
+     * 而查错的后果不是报错，是流程静默走错分支。
+     *
+     * <p>事件名存在 {@code exceptionMessage} 里，与 {@link #MESSAGE} 同一约定。
+     */
+    EVENT_MESSAGE("事件网关-消息"),
+
+    /**
+     * 事件网关的<b>信号分支</b>。与 {@link #EVENT_MESSAGE} 同理，信号可以命中多条分支，
+     * 每条命中都要各自走一次竞速（而不是只走一条）。
+     */
+    EVENT_SIGNAL("事件网关-信号");
 
     private final String label;
 

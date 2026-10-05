@@ -330,4 +330,70 @@ public final class WfRequests {
             this.content = content;
         }
     }
+
+    /**
+     * 投递消息 / 广播信号。
+     *
+     * <p>事件网关、消息边界与接收任务共用这一个请求体：三者等的是同一个"事件名"，
+     * 拆成三个 DTO 只会让调用方为了换个等待方式而改整个请求结构。
+     */
+    public static class EventDelivery implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        /** 消息名或信号名，对应 {@code messageRef} / {@code signalRef}。 */
+        private String name;
+
+        /** 限定在某个流程实例内；为空表示全局查找。 */
+        private String processInstanceId;
+
+        /** 触发人，记入评论与轨迹。 */
+        private String userId;
+
+        /** 随事件带进的流程变量。 */
+        private Map<String, Object> variables;
+
+        /** 写进评论的一句话说明。 */
+        private String comment;
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public String getProcessInstanceId() {
+            return processInstanceId;
+        }
+
+        public void setProcessInstanceId(String processInstanceId) {
+            this.processInstanceId = processInstanceId;
+        }
+
+        public String getUserId() {
+            return userId;
+        }
+
+        public void setUserId(String userId) {
+            this.userId = userId;
+        }
+
+        public Map<String, Object> getVariables() {
+            return variables;
+        }
+
+        public void setVariables(Map<String, Object> variables) {
+            this.variables = variables;
+        }
+
+        public String getComment() {
+            return comment;
+        }
+
+        public void setComment(String comment) {
+            this.comment = comment;
+        }
+    }
 }

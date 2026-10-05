@@ -1,5 +1,6 @@
 package com.zifang.z.wf.web.api;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -72,6 +73,43 @@ public class WfProcessOperationController {
     public Result<Void> terminate(@RequestBody WfRequests.ProcessOperation request) {
         runtimeService.terminate(request.getProcessInstanceId(), request.getReason());
         return Result.success();
+    }
+
+    /**
+     * 投递消息（点对点）。
+     *
+     * <p>一个端点同时能叫醒三种等待者：事件网关的分支、消息边界订阅、receiveTask。
+     * 顺序由 {@link WfRuntimeService#triggerMessage} 定死并在那边写了理由 ——
+     * 事件网关是竞速、消息边界是打断、receiveTask 是等着继续，三者对同一条消息的
+     * 反应完全不同，谁先判就决定了这条消息落到哪种语义上。
+     */
+    @PostMapping("/message")
+    @Operation(summary = "012_投递消息：点对点，可唤醒事件网关分支 / 消息边界 / 接收任务")
+    public Result<WfViews.ProcessInstanceView> deliverMessage(
+            @RequestBody WfRequests.EventDelivery request) {
+        WfProcessInstance instance = runtimeService.triggerMessage(request.getName(),
+                request.getProcessInstanceId(), request.getUserId(),
+                request.getVariables(), request.getComment());
+        return Result.success(viewMapper.toProcessView(instance));
+    }
+
+    /**
+     * 广播信号：叫醒<b>全部</b>等待该信号名的接收者。
+     *
+     * <p>与消息分两个端点而不是加一个 boolean 开关，是为了让"我以为我唤醒了一个"
+     * 这种误用在调用处就暴露出来 —— 那是这类接口最常见的线上事故。
+     */
+    @PostMapping("/signal")
+    @Operation(summary = "013_广播信号：唤醒全部等待者，可同时推进多个实例")
+    public Result<List<WfViews.ProcessInstanceView>> broadcastSignal(
+            @RequestBody WfRequests.EventDelivery request) {
+        List<WfProcessInstance> advanced = runtimeService.broadcastSignal(request.getName(),
+                request.getUserId(), request.getVariables(), request.getComment());
+        List<WfViews.ProcessInstanceView> payload = new ArrayList<>();
+        for (WfProcessInstance instance : advanced) {
+            payload.add(viewMapper.toProcessView(instance));
+        }
+        return Result.success(payload);
     }
 
     @PostMapping("/comment")

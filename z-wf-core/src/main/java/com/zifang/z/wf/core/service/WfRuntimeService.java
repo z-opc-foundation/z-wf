@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 
 import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.WfDefinitionException;
+import com.zifang.z.wf.core.definition.WfFlow;
 import com.zifang.z.wf.core.definition.WfNode;
 import com.zifang.z.wf.core.definition.WfNodeType;
 import com.zifang.z.wf.core.definition.WfTimerSupport;
@@ -511,6 +512,14 @@ public class WfRuntimeService implements WfSubProcessLauncher {
     public WfProcessInstance triggerMessage(String messageName, String processInstanceId,
                                             String userId, Map<String, Object> variables,
                                             String comment) {
+        // 事件网关分支优先于消息边界：两者都是"等一条消息"，但网关分支的等待
+        // 是<b>竞速</b>（其余分支同时作废），边界的等待是<b>打断</b>。
+        // 谁先判谁就决定了同名事件落到哪种语义上，所以放在最前面并说清楚顺序。
+        WfProcessInstance raced = fireEventGatewayBranches(WfJobType.EVENT_MESSAGE, messageName,
+                processInstanceId, userId, comment);
+        if (raced != null) {
+            return raced;
+        }
         // 消息边界优先：它会打断在办的流程，而 receiveTask 是"等这条消息来"。
         // 两者同名时先看有没有订阅 —— 有订阅说明作者写的是打断语义。
         WfProcessInstance interrupted = fireSubscriptions(WfJobType.MESSAGE, messageName,
@@ -549,19 +558,32 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      */
     public List<WfProcessInstance> broadcastSignal(String signalName, String userId,
                                                    Map<String, Object> variables, String comment) {
+        // 信号可以命中多个实例上的多个分支，每一个都要各自走一次竞速
+        List<WfProcessInstance> advanced = new ArrayList<>();
+        WfProcessInstance raced = fireEventGatewayBranches(WfJobType.EVENT_SIGNAL,
+                signalName, null, userId, comment);
+        if (raced != null) {
+            advanced.add(raced);
+        }
         // 信号边界订阅也算订阅者：广播的语义本来就是"叫醒所有在听的"
         List<WfProcessInstance> interrupted = fireAllSubscriptions(WfJobType.SIGNAL,
                 signalName, userId, comment);
         List<WfTask> matched = findWaitingReceiveTasks(signalName, null);
-        if (matched.isEmpty() && interrupted.isEmpty()) {
-            throw new WfEngineException("没有等待信号 [" + signalName + "] 的接收任务或信号订阅");
+        if (matched.isEmpty() && interrupted.isEmpty() && advanced.isEmpty()) {
+            throw new WfEngineException("没有等待信号 [" + signalName + "] 的接收任务、信号订阅"
+                    + "或事件网关分支");
         }
-        List<WfProcessInstance> advanced = new ArrayList<>(interrupted);
+        // 三路收集的实例都要进返回值。漏掉任何一路的后果是"事情做了但调用方看不见"：
+        // 边界订阅那一路曾经只推进不返回，于是广播一次信号后调用方拿到空列表，
+        // 以为没人订阅，而流程其实已经被打断了。
+        for (WfProcessInstance each : interrupted) {
+            advanced.add(each);
+        }
         for (WfTask task : matched) {
             advanced.add(completeTask(task.getId(), userId, comment, variables));
         }
-        log.info("广播信号 [{}] 触发 {} 个信号订阅，唤醒 {} 个接收任务",
-                signalName, interrupted.size(), matched.size());
+        log.info("广播信号 [{}] 唤醒 {} 个事件网关分支，触发 {} 个信号订阅，唤醒 {} 个接收任务",
+                signalName, raced == null ? 0 : 1, interrupted.size(), matched.size());
         return advanced;
     }
 
@@ -988,6 +1010,212 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             }
         }
         return null;
+    }
+
+    // ==================== 事件网关 ====================
+
+    /**
+     * 事件到达，唤醒它对应的那一条分支，并作废其余分支。
+     *
+     * <p>这就是"事件定向唤醒 token"的全部机制，共三步：
+     * <ol>
+     *   <li><b>认领</b>：确认这条 job 的 token 仍停在这个捕获事件上。
+     *       token 已经走了还唤醒，等于把流程从别处拽回来 —— 与
+     *       {@link #fireEventBoundary} 里那道闸门同构。</li>
+     *   <li><b>作废兄弟</b>：把同一网关下其余分支的 token 结束掉、
+     *       订阅 job 删掉、轨迹上留一条"未选中"。不这么做的话，
+     *       流程会同时跑两条分支然后在汇合点碰头 —— 那不是竞速，是"全都走"。</li>
+     *   <li><b>前进</b>：被唤醒的 token 沿自己的出线离开。</li>
+     * </ol>
+     *
+     * <p>兄弟的判定来自<b>流程定义</b>而不是 job 上的某个字段：捕获事件的入线
+     * 在部署期就被限定为"只有一条，且来自事件网关"，所以顺着入线就能找到网关，
+     * 再顺着网关的出线就能列出全部兄弟。多一份存储就多一处可能与定义不一致的副本。
+     *
+     * @return 是否真的唤醒了（token 已挪走这类"该响没响"要能被调用方区分开）
+     */
+    public boolean fireEventGatewayBranch(WfJob job, String userId, String reason) {
+        WfProcessInstance instance = requireInstance(job.getProcessInstanceId());
+        if (instance.getStatus().isTerminal()) {
+            fireJobExecuted(null, instance.getId(), job, false);
+            log.warn("流程 {} 已是终态 {}，却还有事件网关订阅 {} 到期，忽略触发",
+                    instance.getId(), instance.getStatus(), job.getId());
+            return false;
+        }
+        WfDefinition definition = definitionOf(instance);
+        WfExecution token = job.getExecutionId() == null
+                ? null : persistence.findExecution(job.getExecutionId());
+        if (token == null || token.isEnded()
+                || !job.getElementId().equals(token.getActivityId())) {
+            // 这道闸门是**第二道**：真正挡住"同一条分支被走两遍"的是下面那句
+            // deleteJob（先删再推进），并发投递时后到的那次根本查不到 job。
+            // 保留它是为了覆盖"token 挪走了而订阅没被清掉"这种脏数据 ——
+            // 此时若继续推进，等于把流程从别处拽回来，而它正在等的那个事件其实已经无关。
+            // 返回 false 而不是抛异常，让调用方把它算成"没触发"而不是失败重试。
+            fireJobExecuted(definition, instance.getId(), job, false);
+            log.info("事件网关订阅 {} 触发时 token 已不在 {} 上（当前 {}），按已唤醒处理",
+                    job.getId(), job.getElementId(),
+                    token == null ? "不存在" : token.getActivityId());
+            return false;
+        }
+
+        WfNode catchEvent = definition.node(job.getElementId());
+        WfNode gateway = gatewayOf(definition, catchEvent);
+
+        // 先删再推进：与 WfJobService#fire、completeExternalTask 同一顺序。
+        // 并发投递时后到的那次会落到上面那道"token 已挪走"的闸门，
+        // 而不是把同一条分支走两遍。
+        persistence.deleteJob(job.getId());
+
+        WfContext context = newContext(definition, instance, token);
+        // 触发者要一路带进轨迹与评论：事件网关的竞速结果事后追责时，
+        // "这条分支是谁的消息选中的"是第一个要回答的问题
+        context.setAuthenticatedUserId(userId == null || userId.trim().isEmpty()
+                ? "system" : userId);
+        context.setProcessExecutions(
+                persistence.findExecutionsByProcessInstance(instance.getId()));
+
+        int cancelled = gateway == null ? 0 : cancelSiblingBranches(context, definition, gateway,
+                catchEvent.getId());
+        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                instance.getId(), context.getAuthenticatedUserId(), "job",
+                reason + "，走事件网关分支 " + catchEvent.getId()
+                        + (cancelled > 0 ? "，作废其余 " + cancelled + " 条分支" : "")));
+        log.info("流程 {} 事件网关 {}：事件 {} 命中分支 {}，作废其余 {} 条",
+                instance.getId(), gateway == null ? "?" : gateway.getId(),
+                job.getExceptionMessage(), catchEvent.getId(), cancelled);
+
+        // 捕获事件只"等"，没有任何动作要执行，事件到了直接离开。
+        // 走 startFrom（它同样是 leave，不是重进）并把触发原因先挂成结果，
+        // 让 leave 写出唯一那条活动记录 —— 与 fireEventBoundary 同一套写法。
+        // 这样两条分支在轨迹上是对称的：赢的那条记"被什么事件选中的"，
+        // 输的那些各记一条 eventGatewayLost；不这么做的话赢的那条压根不出现，
+        // 而"这次竞速选中了谁"只能靠猜。
+        context.setPendingActivityOutcome(reason);
+        engine.startFrom(context, token);
+        persistAll(context);
+        resolveCompletion(context);
+        fireJobExecuted(definition, instance.getId(), job, true);
+        return true;
+    }
+
+    /**
+     * 作废同一事件网关下除 {@code winnerId} 外的所有分支。
+     *
+     * @return 作废了几条
+     */
+    private int cancelSiblingBranches(WfContext context, WfDefinition definition,
+                                      WfNode gateway, String winnerId) {
+        List<String> siblingIds = new ArrayList<>();
+        for (WfFlow flow : definition.outgoingFlows(gateway.getId())) {
+            if (flow.getTargetRef() != null && !flow.getTargetRef().equals(winnerId)) {
+                siblingIds.add(flow.getTargetRef());
+            }
+        }
+        if (siblingIds.isEmpty()) {
+            return 0;
+        }
+        int cancelled = 0;
+        for (WfExecution execution : context.getProcessExecutions()) {
+            if (execution == null || execution.isEnded()) {
+                continue;
+            }
+            if (!siblingIds.contains(execution.getActivityId())) {
+                continue;
+            }
+            // 先撤订阅再结束 token：反过来的话 token 已 ENDED，
+            // 而按 executionId 删 job 的那条路径会顺手判"token 不在了"而跳过删除
+            deleteCatchJobsOf(context, execution);
+            context.recordActivity(execution.getActivityId(), null, "intermediateCatchEvent",
+                    "eventGatewayLost");
+            execution.setState(WfExecution.State.ENDED);
+            // setState 只改内存对象。既有 token 要重新落库必须登记进 touched，
+            // 漏了这一句的症状是"内存里作废了、库里还是 WAITING" ——
+            // 落选的分支会永远留在那里，流程再也结束不了，而引擎日志一片正常
+            context.markTouched(execution);
+            cancelled++;
+        }
+        return cancelled;
+    }
+
+    /**
+     * 捕获事件所属的事件网关 —— 顺着它唯一的入线找源头。
+     *
+     * <p>入线不唯一时<b>抛异常</b>而不是返回 {@code null}：返回 null 的话这一轮竞速
+     * 会因为"没有网关"而一个兄弟都不作废，流程于是把全部分支都跑一遍 ——
+     * 那正是这个功能存在的理由被推翻，且从外面看一切正常。
+     * 部署期本来就该拦住这种定义（见 {@code WfDefinitionValidator}），
+     * 抛出来是为了让"绕过部署期"这件事本身变得可见。
+     *
+     * <p>入线唯一但源头不是事件网关时返回 {@code null}，那是合法的：普通的
+     * 中间捕获事件（流程里直接写、等消息继续）触发时只前进自己。
+     */
+    private WfNode gatewayOf(WfDefinition definition, WfNode catchEvent) {
+        if (catchEvent == null) {
+            throw new WfEngineException("事件网关订阅指向的节点在定义里不存在："
+                    + "多半是定义被换过而残留的旧 job");
+        }
+        List<WfFlow> inFlows = definition.incomingFlows(catchEvent.getId());
+        if (inFlows.size() != 1) {
+            throw new WfEngineException("中间捕获事件 " + catchEvent.getId() + " 有 "
+                    + inFlows.size() + " 条入线，认不出它属于哪个事件网关，"
+                    + "也就不知道该作废哪些兄弟分支。这是部署期就应当拦下的定义错误");
+        }
+        WfNode source = definition.node(inFlows.get(0).getSourceRef());
+        return source != null && source.getType() == WfNodeType.EVENT_BASED_GATEWAY ? source : null;
+    }
+
+    /** 删掉某个 token 上还挂着的捕获事件订阅。 */
+    private void deleteCatchJobsOf(WfContext context, WfExecution execution) {
+        WfJobQuery query = new WfJobQuery()
+                .setProcessInstanceId(execution.getProcessInstanceId())
+                .setPageNum(1).setPageSize(200);
+        for (WfJob job : persistence.queryJobs(query)) {
+            if (job != null && execution.getId().equals(job.getExecutionId())
+                    && isEventGatewayJob(job.getType())) {
+                persistence.deleteJob(job.getId());
+            }
+        }
+    }
+
+    private static boolean isEventGatewayJob(WfJobType type) {
+        return type == WfJobType.EVENT_MESSAGE
+                || type == WfJobType.EVENT_SIGNAL;
+    }
+
+    /**
+     * 事件网关的分支与边界订阅是<b>两种不同的触发后果</b>，所以分两条路走：
+     * 边界是"打断宿主"，网关是"竞速兄弟分支"。
+     *
+     * @return 被唤醒的流程实例；没有匹配分支时返回 {@code null}
+     */
+    private WfProcessInstance fireEventGatewayBranches(WfJobType type, String eventName,
+                                                       String processInstanceId, String userId,
+                                                       String comment) {
+        String wanted = eventName == null ? null : eventName.trim();
+        if (wanted == null || wanted.isEmpty()) {
+            throw new WfEngineException("事件名不能为空");
+        }
+        WfJobQuery query = new WfJobQuery().setType(type);
+        if (processInstanceId != null) {
+            query.setProcessInstanceId(processInstanceId);
+        }
+        WfProcessInstance advanced = null;
+        int fired = 0;
+        for (WfJob job : persistence.queryJobs(query.setPageNum(1).setPageSize(500))) {
+            if (!wanted.equals(job.getExceptionMessage())) {
+                continue;
+            }
+            if (fireEventGatewayBranch(job, userId, type.outcomePrefix() + type.getLabel()
+                    + " [" + wanted + "]" + (comment == null ? "" : "：" + comment))) {
+                fired++;
+                advanced = requireInstance(job.getProcessInstanceId());
+            }
+        }
+        if (fired > 0) {
+            log.info("{} [{}] 唤醒 {} 个事件网关分支", type.getLabel(), wanted, fired);
+        }
+        return advanced;
     }
 
     /**

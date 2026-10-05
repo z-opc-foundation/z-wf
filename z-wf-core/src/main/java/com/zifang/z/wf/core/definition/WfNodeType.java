@@ -69,6 +69,26 @@ public enum WfNodeType {
      */
     COMPLEX_GATEWAY("complexGateway"),
 
+    /**
+     * 事件网关：把 token <b>分叉</b>到若干个中间捕获事件上，谁先来就走谁。
+     *
+     * <p>与并行网关的差别不在"分叉"，在<b>分叉之后各分支互相排斥</b>：
+     * 并行网关的 N 个分支最终要汇合，而事件网关只要有一个事件到达，
+     * <b>其余分支连同它们各自的等待一并作废</b>。典型用法是
+     * "等主管批 / 等超时 / 等业务系统回执，谁先来听谁的"。
+     */
+    EVENT_BASED_GATEWAY("eventBasedGateway"),
+
+    /**
+     * 中间捕获事件：<b>停在该节点等一个外部事件</b>，事件到了才沿出线离开。
+     *
+     * <p>与 {@link #RECEIVE_TASK} 的差别是<b>不产生人工待办</b> —— 它等的人不是某个用户，
+     * 而是一条消息、一个信号或一次超时。把两者混为一谈的代价是：
+     * 事件网关的出线全是中间捕获事件，退化成人工任务的话
+     * 网关就从"自动竞速"变成"让 N 个人同时点"，而作者不会收到任何提示。
+     */
+    INTERMEDIATE_CATCH_EVENT("intermediateCatchEvent"),
+
     /** 子流程：内嵌一个流程定义（或内联子图）。 */
     SUB_PROCESS("subProcess"),
 
@@ -105,7 +125,8 @@ public enum WfNodeType {
      */
     public boolean isGateway() {
         return this == EXCLUSIVE_GATEWAY || this == PARALLEL_GATEWAY
-                || this == INCLUSIVE_GATEWAY || this == COMPLEX_GATEWAY;
+                || this == INCLUSIVE_GATEWAY || this == COMPLEX_GATEWAY
+                || this == EVENT_BASED_GATEWAY;
     }
 
     /**
@@ -231,7 +252,9 @@ public enum WfNodeType {
                 SERVICE_TASK.bpmnName, SCRIPT_TASK.bpmnName, MANUAL_TASK.bpmnName,
                 SEND_TASK.bpmnName, RECEIVE_TASK.bpmnName, EXCLUSIVE_GATEWAY.bpmnName,
                 PARALLEL_GATEWAY.bpmnName, INCLUSIVE_GATEWAY.bpmnName,
-                COMPLEX_GATEWAY.bpmnName, SUB_PROCESS.bpmnName, CALL_ACTIVITY.bpmnName,
+                COMPLEX_GATEWAY.bpmnName, EVENT_BASED_GATEWAY.bpmnName,
+                INTERMEDIATE_CATCH_EVENT.bpmnName,
+                SUB_PROCESS.bpmnName, CALL_ACTIVITY.bpmnName,
                 TASK.bpmnName,
                 BOUNDARY_EVENT.bpmnName));
     }

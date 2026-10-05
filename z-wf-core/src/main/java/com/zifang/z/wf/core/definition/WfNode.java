@@ -215,6 +215,52 @@ public class WfNode implements Serializable {
         return isTimerBoundary() || isMessageBoundary() || isSignalBoundary();
     }
 
+    // ==================== 事件定义（边界事件与中间捕获事件共用） ====================
+
+    /**
+     * 消息事件定义（{@code messageEventDefinition}）。
+     *
+     * <p>与 {@link #isMessageBoundary()} 分开：后者额外要求"没有信号"，那是
+     * <b>边界</b>事件的取舍（两种定义同时出现时边界事件只认信号），
+     * 而这里要回答的是"这个节点等的是不是一条消息"，与它挂在哪儿无关。
+     */
+    public boolean isMessageEvent() {
+        return !isBlank(messageName);
+    }
+
+    /** 信号事件定义（{@code signalEventDefinition}）。 */
+    public boolean isSignalEvent() {
+        return !isBlank(signalName);
+    }
+
+    /** 定时器事件定义（{@code timerEventDefinition}）。 */
+    public boolean isTimerEvent() {
+        return timerType != null;
+    }
+
+    /**
+     * 本节点是否带任意一种事件定义 —— 也就是"它在等什么"。
+     *
+     * <p>中间捕获事件靠它决定该挂哪种订阅；校验器靠它判断一个没有事件定义的
+     * 捕获事件是不是"永远等不到"，那等价于一条死路。
+     */
+    public boolean hasEventDefinition() {
+        return isMessageEvent() || isSignalEvent() || isTimerEvent();
+    }
+
+    /**
+     * 本引擎当前能真的等住的捕获事件种类。
+     *
+     * <p><b>只有消息与信号</b>。定时器捕获事件要等 `duedate` 到点、由扫描器捞起来，
+     * 而扫描器只认 {@code JOB_TYPE=TIMER}；给事件网关分支也挂 TIMER 的话，
+     * 定时器边界事件那条续跑路径会把它当成"宿主节点"，而中间捕获事件没有宿主，
+     * 结果是<b>定时器永远不响且没有任何报错</b>。与其那样，不如在部署期明确拒绝，
+     * 并把缺的那一块说清楚。
+     */
+    public boolean isSupportedCatchEvent() {
+        return isMessageEvent() || isSignalEvent();
+    }
+
     private static boolean isBlank(String s) {
         return s == null || s.trim().isEmpty();
     }

@@ -1382,6 +1382,66 @@ class WfWebApiTest {
     }
 
     @Test
+    @DisplayName("事件投递端点：消息走到事件网关的对应分支，其余分支被作废")
+    void eventGatewayOverHttp() throws Exception {
+        postOk("/api/wf/definitions/deploy", body("key", "webRace", "xml", RACE_BPMN));
+        // start 端点的 data 是流程实例 id（裸字符串），不是视图对象
+        String pid = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webRace", "businessKey", "RACE-1",
+                        "userId", "web-race-alice")).get("data");
+        assertNotNull(pid);
+
+        // 等事件期间一条待办都不该有：中间捕获事件等的是消息，不是某个人
+        assertTrue(asList(asMap(getOk("/api/approval-center/tasks/todo?userId=web-race-ops")
+                .get("data")).get("records")).isEmpty(),
+                "事件网关分支等的是消息，不该产生任何待办");
+
+        postOk("/api/wf/process/message", body("name", "bossApprove",
+                "processInstanceId", pid, "userId", "web-race-boss", "comment", "主管批了"));
+
+        // 走完消息分支后只剩一条待办；落选分支的 token 若没被作废，实例永远停在运行态
+        List<Map<String, Object>> records = asList(asMap(getOk(
+                "/api/approval-center/tasks/todo?userId=web-race-ops").get("data"))
+                .get("records"));
+        assertEquals(1, records.size(),
+                "竞速之后只应剩命中的那一条分支产生待办，实际 " + records.size());
+
+        Map<String, Object> done = postOk("/api/approval-center/tasks/complete",
+                body("taskId", records.get(0).get("taskId"), "userId", "web-race-ops",
+                        "comment", "办结"));
+        assertEquals("COMPLETED", asMap(done.get("data")).get("status"),
+                "落选分支没被作废的话实例永远结束不了 —— 这条断言是竞速是否生效的最终判据");
+    }
+
+    /** 带事件网关的测试定义，事件由 REST 端点投递。 */
+    private static final String RACE_BPMN =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+            + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+            + "  <process id=\"webRaceProcess\" isExecutable=\"true\">\n"
+            + "    <startEvent id=\"wrs\"/>\n"
+            + "    <eventBasedGateway id=\"wreg\"/>\n"
+            + "    <intermediateCatchEvent id=\"wrWaitMsg\" name=\"等主管批\">\n"
+            + "      <messageEventDefinition messageRef=\"bossApprove\"/>\n"
+            + "    </intermediateCatchEvent>\n"
+            + "    <intermediateCatchEvent id=\"wrWaitSignal\" name=\"等回执\">\n"
+            + "      <signalEventDefinition signalRef=\"erpDone\"/>\n"
+            + "    </intermediateCatchEvent>\n"
+            + "    <userTask id=\"wrApprove\" name=\"批了\" zifang:assignee=\"web-race-ops\"/>\n"
+            + "    <userTask id=\"wrErp\" name=\"回执到了\" zifang:assignee=\"web-race-erp\"/>\n"
+            + "    <endEvent id=\"wre1\"/>\n"
+            + "    <endEvent id=\"wre2\"/>\n"
+            + "    <sequenceFlow id=\"wrf1\" sourceRef=\"wrs\" targetRef=\"wreg\"/>\n"
+            + "    <sequenceFlow id=\"wrf2\" sourceRef=\"wreg\" targetRef=\"wrWaitMsg\"/>\n"
+            + "    <sequenceFlow id=\"wrf3\" sourceRef=\"wreg\" targetRef=\"wrWaitSignal\"/>\n"
+            + "    <sequenceFlow id=\"wrf4\" sourceRef=\"wrWaitMsg\" targetRef=\"wrApprove\"/>\n"
+            + "    <sequenceFlow id=\"wrf5\" sourceRef=\"wrWaitSignal\" targetRef=\"wrErp\"/>\n"
+            + "    <sequenceFlow id=\"wrf6\" sourceRef=\"wrApprove\" targetRef=\"wre1\"/>\n"
+            + "    <sequenceFlow id=\"wrf7\" sourceRef=\"wrErp\" targetRef=\"wre2\"/>\n"
+            + "  </process>\n"
+            + "</definitions>\n";
+
+    @Test
     @DisplayName("图元端点：没有 DI 段时返回 empty，而不是报错")
     void diagramWithoutDiSectionOverHttp() throws Exception {
         // key 必须是写进 XML 的那一份。之前这里在拼 XML 时调一次 System.nanoTime()、

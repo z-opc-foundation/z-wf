@@ -249,6 +249,24 @@ public class WfEngine {
             return;
         }
 
+        // ---- 中间捕获事件：停下挂订阅，不建人工待办 ----
+        //
+        // 必须排在 createsTask() 之前，而它自己 createsTask() 为 false ——
+        // 两道闸缺一不可：这里不 return 的话会掉进"其他节点"分支，
+        // 而 WfBehaviorRegistry 里没有它的行为（它不执行任何动作，只等），
+        // 拿到的是 null 行为；反过来若把它算进 createsTask()，
+        // 行为返回的 null 会被当成"决定不建任务直接通过"，流程当场穿过去。
+        if (node.getType() == WfNodeType.INTERMEDIATE_CATCH_EVENT) {
+            com.zifang.z.wf.core.model.WfJob catchJob = eventCatchJob(context, node, token);
+            if (catchJob == null) {
+                // eventCatchJob 已经把失败原因写进 context 并把流程标成内部终止
+                return;
+            }
+            context.addCreatedJob(catchJob);
+            token.setState(WfExecution.State.WAITING);
+            return;
+        }
+
         // ---- 外部任务：停下挂 job，不在引擎里执行 ----
         // 必须在 createsTask 之前：它是 serviceTask，不建 WfTask，而是等外部 worker 领走。
         //
@@ -303,6 +321,42 @@ public class WfEngine {
             return;
         }
         leave(context, depth + 1);
+    }
+
+    /**
+     * 为中间捕获事件建一条"等消息 / 等信号"的订阅 job。
+     *
+     * <p>{@code elementId} 记的是<b>捕获事件本身</b>而不是网关：事件到达时要能
+     * 精确唤醒"停在这一格上的那一条 token"，而不是"某个网关上的某条 token"。
+     * 竞速的粒度就在这一格上。
+     *
+     * <p>网关 id <b>不存</b>，触发时从流程定义里查出来：捕获事件的入线只有一条，
+     * 源头就是网关。存一份反而多出一个可能与定义不一致的副本。
+     */
+    private com.zifang.z.wf.core.model.WfJob eventCatchJob(WfContext context, WfNode node,
+                                                            WfExecution token) {
+        if (!node.isSupportedCatchEvent()) {
+            // 走到这里说明部署期校验被绕过了（自定义装配、或直接调引擎不经过部署）。
+            // 挂一个永远不会被触发的哑订阅，等于让流程停在那里且无人报错 ——
+            // 与其那样，不如把流程停成"内部终止 + 写明原因"，让人一眼看出卡在哪。
+            fail(context, "中间捕获事件 " + node.getId() + " 缺少本引擎等得住的事件定义"
+                    + "（当前只支持 messageEventDefinition 与 signalEventDefinition），"
+                    + "它在图上是一条永远等不到的死路");
+            return null;
+        }
+        com.zifang.z.wf.core.model.WfJob job = new com.zifang.z.wf.core.model.WfJob();
+        job.setProcessInstanceId(context.getProcessInstanceId());
+        job.setExecutionId(token.getId());
+        job.setElementId(node.getId());
+        job.setType(node.isSignalEvent()
+                ? com.zifang.z.wf.core.model.WfJobType.EVENT_SIGNAL
+                : com.zifang.z.wf.core.model.WfJobType.EVENT_MESSAGE);
+        // 订阅型 job 没有触发时刻，duedate 留空：留了会被定时器扫描器当成"到点了"
+        job.setDuedate(null);
+        job.setExceptionMessage(node.isSignalEvent() ? node.getSignalName() : node.getMessageName());
+        job.setCreateTime(new java.util.Date());
+        job.setRetries(com.zifang.z.wf.core.model.WfJob.DEFAULT_RETRIES);
+        return job;
     }
 
     /**
@@ -557,6 +611,17 @@ public class WfEngine {
         List<WfFlow> selected = new ArrayList<>();
 
         if (node.getType() == WfNodeType.PARALLEL_GATEWAY) {
+            selected.addAll(flows);
+            return selected;
+        }
+
+        if (node.getType() == WfNodeType.EVENT_BASED_GATEWAY) {
+            // 全部分叉出去，每条分支各自停在自己的捕获事件上等。
+            // 这里放行全部出线与并行网关同形，但<b>后果不同</b>：
+            // 并行网关的分支最终要汇合，事件网关的分支互相排斥 ——
+            // 谁先被事件唤醒，其余分支连同各自的订阅一起作废。
+            // 互斥发生在触发侧（见 WfRuntimeService#fireEventGatewayBranch），
+            // 不是在这里筛线：分叉的那一刻还没有任何一条分支知道自己会不会被选中。
             selected.addAll(flows);
             return selected;
         }

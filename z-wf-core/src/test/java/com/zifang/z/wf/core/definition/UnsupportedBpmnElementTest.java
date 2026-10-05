@@ -18,9 +18,14 @@ import com.zifang.z.wf.core.service.WfRepositoryService;
  *
  * <p>背景：解析器为了让设计器导出的扩展类型不至于让整份定义解析失败，
  * 会把认不出的元素名退化成 {@link WfNodeType#TASK}。这在 {@code <task>} 上是合理的，
- * 但 {@code <eventBasedGateway>} 退化过去就不是"少支持一个特性"，
- * 而是把"多路事件竞速"换成了"建个人工任务等人来点"——流程照跑、部署照过、
+ * 但 {@code <transaction>}（事务子流程）退化过去就不是"少支持一个特性"，
+ * 而是把"原子子流程"换成了"建个人工任务等人来点"——流程照跑、部署照过、
  * 作者与实际运行行为之间零提示。
+ *
+ * <p>本类原先拿 {@code <eventBasedGateway>} 当例子，那是因为它当时尚未实现。
+ * 事件网关补上之后，改用仍在退化名单里的 {@code <transaction>}；
+ * 另有一条 {@code eventBasedGatewayIsNowNative} 守着"已实现的元素不许再被当成退化节点"，
+ * 免得有人日后把支持列表改回去时，这里也跟着悄悄失效。
  *
  * <p>所以契约是：<b>解析期宽松，部署期严格</b>。解析仍要成功（能读进来才能给出有用的诊断），
  * 但节点会带上 {@link WfNode#PROPERTY_UNSUPPORTED_BPMN_ELEMENT} 标记，
@@ -51,13 +56,13 @@ class UnsupportedBpmnElementTest {
     }
 
     @Test
-    @DisplayName("eventBasedGateway 退化后必须留下原名，并被校验器判为 ERROR")
-    void eventBasedGatewayIsMarkedAndRejected() {
-        WfDefinition definition = new WfXmlParser().parse(bpmnWith("eventBasedGateway"));
-        WfNode gateway = nodeOf(definition, "x1");
-        assertNotNull(gateway, "eventBasedGateway 应当被解析出来（解析期要宽松）");
-        assertEquals(WfNodeType.TASK, gateway.getType(), "退化后落成人工任务");
-        assertEquals("eventBasedGateway", gateway.unsupportedBpmnElement(),
+    @DisplayName("transaction 退化后必须留下原名，并被校验器判为 ERROR")
+    void transactionIsMarkedAndRejected() {
+        WfDefinition definition = new WfXmlParser().parse(bpmnWith("transaction"));
+        WfNode node = nodeOf(definition, "x1");
+        assertNotNull(node, "transaction 应当被解析出来（解析期要宽松）");
+        assertEquals(WfNodeType.TASK, node.getType(), "退化后落成人工任务");
+        assertEquals("transaction", node.unsupportedBpmnElement(),
                 "必须记录原始元素名，否则 type=TASK 无法与真正的 task 区分");
 
         List<WfValidationIssue> issues = new WfDefinitionValidator().validate(definition);
@@ -70,16 +75,33 @@ class UnsupportedBpmnElementTest {
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("未针对 x1 报出问题: " + issues));
         assertEquals(WfValidationIssue.Severity.ERROR, issue.getSeverity());
-        assertTrue(issue.getMessage().contains("eventBasedGateway"),
+        assertTrue(issue.getMessage().contains("transaction"),
                 "报错信息必须点名是哪个元素： " + issue.getMessage());
     }
 
     @Test
-    @DisplayName("eventBasedGateway 不给替代建议——拿 exclusiveGateway 顶替是换了个更隐蔽的错")
+    @DisplayName("eventBasedGateway 已原生支持：不再被当成退化节点")
+    void eventBasedGatewayIsNowNative() {
+        // 这条守着"支持列表不许悄悄缩回去"。写法错了的症状不是测试变红，
+        // 而是一条能部署、能跑、但完全不是事件竞速的流程安静上线
+        WfDefinition definition = new WfXmlParser().parse(bpmnWith("eventBasedGateway"));
+        WfNode node = nodeOf(definition, "x1");
+        assertEquals(WfNodeType.EVENT_BASED_GATEWAY, node.getType());
+        assertNull(node.unsupportedBpmnElement(),
+                "事件网关已经实现，不该再被标成退化节点");
+    }
+
+    @Test
+    @DisplayName("事件网关写错时也不给替代建议——拿 exclusiveGateway 顶替是换了个更隐蔽的错")
     void eventBasedGatewayGetsNoMisleadingSubstitute() {
+        // bpmnWith 的构图是 s1 -> x1 -> e1，出线指向的是 endEvent 而不是中间捕获事件。
+        // 这时校验器要报"出线必须是 intermediateCatchEvent"，且不能顺嘴建议改用排他网关：
+        // 排他网关是"条件选一条"，事件网关是"事件竞速"，换过去作者得到的是另一个流程
         WfDefinition definition = new WfXmlParser().parse(bpmnWith("eventBasedGateway"));
         String rendered = WfDefinitionValidator.render(
                 new WfDefinitionValidator().validate(definition));
+        assertTrue(rendered.contains("intermediateCatchEvent"),
+                "应当报出线类型不对：" + rendered);
         assertTrue(!rendered.contains("exclusiveGateway"),
                 "事件网关没有等价物，不应诱导改写成排他网关：" + rendered);
     }
@@ -133,13 +155,13 @@ class UnsupportedBpmnElementTest {
     void jsonEntryIsEquallyStrict() {
         String json = "{\"key\":\"p1\",\"startEventId\":\"s1\",\"nodes\":["
                 + "{\"id\":\"s1\",\"type\":\"startEvent\"},"
-                + "{\"id\":\"g1\",\"type\":\"eventBasedGateway\"},"
+                + "{\"id\":\"g1\",\"type\":\"transaction\"},"
                 + "{\"id\":\"e1\",\"type\":\"endEvent\"}],"
                 + "\"flows\":[{\"from\":\"s1\",\"to\":\"g1\"},{\"from\":\"g1\",\"to\":\"e1\"}]}";
         WfDefinition definition = new WfJsonParser().parse(json);
-        WfNode gateway = nodeOf(definition, "g1");
-        assertNotNull(gateway);
-        assertEquals("eventBasedGateway", gateway.unsupportedBpmnElement(),
+        WfNode node = nodeOf(definition, "g1");
+        assertNotNull(node);
+        assertEquals("transaction", node.unsupportedBpmnElement(),
                 "JSON 定义走的是另一个解析器，必须打同样的标记");
         assertTrue(WfDefinitionValidator.hasError(
                         new WfDefinitionValidator().validate(definition)),
@@ -151,11 +173,11 @@ class UnsupportedBpmnElementTest {
     void deployRejectsUnsupportedElement() {
         InMemoryRepo repo = new InMemoryRepo();
         WfRepositoryService service = new WfRepositoryService(repo);
-        WfDefinition definition = new WfXmlParser().parse(bpmnWith("eventBasedGateway"));
+        WfDefinition definition = new WfXmlParser().parse(bpmnWith("transaction"));
         WfDefinitionException ex = assertThrows(WfDefinitionException.class,
                 () -> service.deploy(definition),
                 "deploy 必须在校验 ERROR 时拒绝");
-        assertTrue(ex.getMessage().contains("eventBasedGateway"),
+        assertTrue(ex.getMessage().contains("transaction"),
                 "异常信息要能定位到具体元素: " + ex.getMessage());
     }
 
