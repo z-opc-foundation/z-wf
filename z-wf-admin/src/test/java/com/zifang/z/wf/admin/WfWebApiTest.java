@@ -1311,6 +1311,138 @@ class WfWebApiTest {
      *
      * <p>process id 固定（重复部署会升版本），所以每次起流程都要用独立的 businessKey。
      */
+    @Test
+    @DisplayName("图元端点：回读节点坐标与连线折点，并带一致性核对")
+    void diagramOverHttp() throws Exception {
+        // 部署端点回显的是定义摘要对象（key/version/suspended），不是裸字符串，
+        // 所以 key 与版本都得从这里取，而不是自己按 process id 拼 —— 拼的那份
+        // 未必是服务端认的那份，猜对了也只是碰巧
+        Map<String, Object> deployed = asMap(postOk("/api/wf/definitions/deploy",
+                body("xml", DIAGRAM_BPMN)).get("data"));
+        String key = (String) deployed.get("key");
+        assertNotNull(key, "部署端点应回显 key");
+        int version = ((Number) deployed.get("version")).intValue();
+
+        Map<String, Object> data = asMap(getOk(
+                "/api/wf/definitions/diagram?key=" + key + "&version=" + version).get("data"));
+        assertEquals(Boolean.FALSE, data.get("empty"), "带 DI 段的模型不该是 empty");
+        assertFalse(asList(data.get("shapes")).isEmpty(), "应当有节点图元");
+
+        boolean sawApprove = false;
+        for (Map<String, Object> shape : asList(data.get("shapes"))) {
+            if ("approve".equals(shape.get("id"))) {
+                sawApprove = true;
+                assertEquals("审批", shape.get("name"), "名称要靠流程定义补齐");
+                assertEquals("userTask", shape.get("type"), "类型决定前端画什么形状");
+                assertTrue(((Number) shape.get("x")).doubleValue() > 0, "坐标应当读出来");
+            }
+        }
+        assertTrue(sawApprove, "审批节点应当有图元");
+
+        assertFalse(asList(data.get("edges")).isEmpty(), "应当有连线图元");
+        assertEquals(Boolean.TRUE, data.get("consistent"),
+                "自部署的模型图与逻辑必然一致。实际 缺图=" + data.get("missingNodeIds")
+                        + " 多框=" + data.get("orphanShapeIds"));
+    }
+
+    @Test
+    @DisplayName("图元端点：图与逻辑对不上时如实报出来，不返回一个一切正常的图")
+    void diagramInconsistencyIsSurfacedOverHttp() throws Exception {
+        // 必须在 web 这一层也测一次"对不上"。只测"一致"的话，
+        // checkConsistency 整个不跑也是绿的：三个列表都是空的，isConsistent 照样返回 true。
+        // 那样这条端点就成了"看起来接好了"，实际把悬挂项全吞了
+        String xml = DIAGRAM_BPMN
+                .replace("id=\"webDiagram\"", "id=\"webDiagramSkewed\"")
+                .replace("    </bpmndi:BPMNPlane>",
+                        "      <bpmndi:BPMNShape id=\"WSX\" bpmnElement=\"ghostShape\">\n"
+                        + "        <dc:Bounds x=\"10\" y=\"10\" width=\"10\" height=\"10\"/>\n"
+                        + "      </bpmndi:BPMNShape>\n"
+                        + "      <bpmndi:BPMNEdge id=\"WEX\" bpmnElement=\"ghostFlow\">\n"
+                        + "        <di:waypoint x=\"1\" y=\"1\"/>\n"
+                        + "      </bpmndi:BPMNEdge>\n"
+                        + "    </bpmndi:BPMNPlane>");
+        // 字符串手术必须真的落到 XML 上。改缩进这类事很容易让 replace 静默失配，
+        // 那样部署的是一份完全一致的图，下面的断言仍然"通过"，但什么都没测到
+        assertTrue(xml.contains("ghostShape") && xml.contains("ghostFlow"),
+                "幽灵图元必须真的插进 DI 段，否则这条用例测的是上一条");
+        assertTrue(xml.contains("webDiagramSkewed"), "process id 必须换掉，否则会顶掉上面那条的版本");
+        Map<String, Object> deployed = asMap(postOk("/api/wf/definitions/deploy",
+                body("xml", xml)).get("data"));
+        String key = (String) deployed.get("key");
+        int version = ((Number) deployed.get("version")).intValue();
+
+        Map<String, Object> data = asMap(getOk(
+                "/api/wf/definitions/diagram?key=" + key + "&version=" + version).get("data"));
+        assertEquals(Boolean.FALSE, data.get("consistent"),
+                "图上多了一个框和一根线，接口不能回一个 consistent=true");
+        assertTrue(((List<?>) data.get("orphanShapeIds")).contains("ghostShape"),
+                "多出来的框要报出来。实际 " + data.get("orphanShapeIds"));
+        assertTrue(((List<?>) data.get("orphanEdgeIds")).contains("ghostFlow"),
+                "多出来的线要报出来。实际 " + data.get("orphanEdgeIds"));
+    }
+
+    @Test
+    @DisplayName("图元端点：没有 DI 段时返回 empty，而不是报错")
+    void diagramWithoutDiSectionOverHttp() throws Exception {
+        // key 必须是写进 XML 的那一份。之前这里在拼 XML 时调一次 System.nanoTime()、
+        // 查接口时再调一次，两次得到的值不同，查询必然打在不存在的定义上。
+        // 变量的作用就是把"部署用的 id"和"查询用的 id"绑成同一个事实。
+        String key = "noDi" + System.nanoTime();
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"" + key + "\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"ns\"/>\n"
+                + "    <endEvent id=\"ne\"/>\n"
+                + "    <sequenceFlow id=\"nf\" sourceRef=\"ns\" targetRef=\"ne\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        postOk("/api/wf/definitions/deploy", body("xml", xml));
+
+        Map<String, Object> data = asMap(getOk(
+                "/api/wf/definitions/diagram?key=" + key + "&version=1").get("data"));
+        assertEquals(Boolean.TRUE, data.get("empty"), "没有 DI 段时应当是 empty 而不是失败");
+    }
+
+    /** 带 BPMN DI 的定义，坐标与折点都要能被读出来。 */
+    private static final String DIAGRAM_BPMN =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+            + " xmlns:bpmndi=\"http://www.omg.org/spec/BPMN/20100524/DI\""
+            + " xmlns:dc=\"http://www.omg.org/spec/DD/20100524/DC\""
+            + " xmlns:di=\"http://www.omg.org/spec/DD/20100524/DI\""
+            + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+            + "  <process id=\"webDiagram\" isExecutable=\"true\">\n"
+            + "    <startEvent id=\"ds\"/>\n"
+            + "    <userTask id=\"approve\" name=\"审批\" zifang:assignee=\"web-diagram-leader\"/>\n"
+            + "    <endEvent id=\"de\"/>\n"
+            + "    <sequenceFlow id=\"df1\" sourceRef=\"ds\" targetRef=\"approve\"/>\n"
+            + "    <sequenceFlow id=\"df2\" sourceRef=\"approve\" targetRef=\"de\"/>\n"
+            + "  </process>\n"
+            + "  <bpmndi:BPMNDiagram id=\"WD1\">\n"
+            + "    <bpmndi:BPMNPlane id=\"WP1\" bpmnElement=\"webDiagram\">\n"
+            + "      <bpmndi:BPMNShape id=\"WS1\" bpmnElement=\"ds\">\n"
+            + "        <dc:Bounds x=\"100\" y=\"150\" width=\"36\" height=\"36\"/>\n"
+            + "      </bpmndi:BPMNShape>\n"
+            + "      <bpmndi:BPMNShape id=\"WS2\" bpmnElement=\"approve\">\n"
+            + "        <dc:Bounds x=\"220\" y=\"128\" width=\"100\" height=\"80\"/>\n"
+            + "      </bpmndi:BPMNShape>\n"
+            + "      <bpmndi:BPMNShape id=\"WS3\" bpmnElement=\"de\">\n"
+            + "        <dc:Bounds x=\"420\" y=\"150\" width=\"36\" height=\"36\"/>\n"
+            + "      </bpmndi:BPMNShape>\n"
+            + "      <bpmndi:BPMNEdge id=\"WE1\" bpmnElement=\"df1\">\n"
+            + "        <di:waypoint x=\"136\" y=\"168\"/>\n"
+            + "        <di:waypoint x=\"220\" y=\"168\"/>\n"
+            + "      </bpmndi:BPMNEdge>\n"
+            + "      <bpmndi:BPMNEdge id=\"WE2\" bpmnElement=\"df2\">\n"
+            + "        <di:waypoint x=\"320\" y=\"168\"/>\n"
+            + "        <di:waypoint x=\"380\" y=\"168\"/>\n"
+            + "        <di:waypoint x=\"420\" y=\"168\"/>\n"
+            + "      </bpmndi:BPMNEdge>\n"
+            + "    </bpmndi:BPMNPlane>\n"
+            + "  </bpmndi:BPMNDiagram>\n"
+            + "</definitions>\n";
+
     private void deployAsyncProcess() {
         String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
                 + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""

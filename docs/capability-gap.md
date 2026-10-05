@@ -42,7 +42,7 @@
 | `createProcessDefinitionQuery` 流畅查询 | 🟡 | `queryDefinitions(keyLike, nameLike, suspended)`：key 与显示名都能模糊、停用状态可筛、每个 key 只出最新版本。**仍无**按 category / key 精确 / deploymentId 的组合查询 —— 现有 `getDefinitionVersions` / `getDefinitionsByCategory` 覆盖了大部分场景，暂不另造查询 DSL |
 | `suspendProcessDefinitionById` / `activate` | ✅ | `WfRepositoryService#suspendDefinition / activateDefinition`，REST `POST /api/wf/definitions/suspend\|activate`。**真源只有 `ZWF_DEFINITION.SUSPENDED` 一列**（不进 codec，列与图 JSON 各存一份必然漂）。闸门在 `startProcessInstance` 上判、且判的是**持久化那份**而不是入参对象 —— 拿入参判的话，调用方手里停用前取的旧定义就能绕过。已在跑的实例完全不受影响：停用是下架版本，不是终止在跑的 |
 | `getProcessModel`（回读 BPMN XML） | ✅ | `WfRepositoryService#getProcessModel(key, version)`，REST `GET /api/wf/definitions/model`。顺带修了一个隐藏缺陷：读路径只 `SELECT DEF_GRAPH`，而 `sourceXml` / `startTime` 存在列里从没被取过 —— 两者在 JDBC 读回来的定义上恒为 null，`getProcessModel` 与部署时间一起失效，且从表结构上完全看不出原因 |
-| `getProcessModelGraphic`（流程图） | 🟡 | web 层有 `/graph` 端点，但那是 z-wf 自己的图元 JSON，不是 BPMN DI |
+| `getProcessModelGraphic`（流程图） | ✅ | `WfRepositoryService#getProcessDiagram(key, version)`，REST `GET /api/wf/definitions/diagram?key=&version=`，返回 `WfDiagramInfo`（shapes/edges + 一致性核对结果）。解析的是 **BPMN DI 标准段**（`BPMNDiagram`/`BPMNPlane`/`BPMNShape`/`BPMNEdge`），不自造图元 —— 坐标只存在于 XML 的 DI 段，自造等于让用户导入模型后手工重画。**按本地名匹配**（`bpmndi:BPMNShape` / 裸 `<BPMNShape>` 两种写法都认得）：用 `getElementsByTagNameNS` 的话，不少工具保存的模型会"解析成功但一个图元都没有"。**不抛异常**：拿不到图不是部署错误，很多流程是手写的没图，返回 `empty=true` 即可。**带一致性核对**（`missingNodeIds`/`orphanShapeIds`/`orphanEdgeIds`/`missingFlowIds`）：图与逻辑分开存，就必然会出现"图上多一个框/少一根线"，而渲染端只看图元、且无任何报错 |
 | `getDefaultProcessDefinition` / `setDefault` | ❌ | |
 | `createDeploymentQuery`（按部署批次查） | ❌ | `deployAll` 一次部署多个，但没有"部署批次"这个概念 |
 
@@ -283,13 +283,13 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ### P2 —— 管理便利
 
-引擎指标 · 实例迁移（`move`）· 流程模型图形回读
+引擎指标 · 实例迁移（`move`）· ~~流程模型图形回读~~（BPMN DI 解析 + REST 已实现，见 §1.1）
 
 ---
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 415 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 435 个测试兜着
 - 从测试与审计中逼出并修复的**真实缺陷 28 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **两处"两套实现语义不一致"值得单独记**：内存版 `lockExternalTasks` 直接改内部引用，

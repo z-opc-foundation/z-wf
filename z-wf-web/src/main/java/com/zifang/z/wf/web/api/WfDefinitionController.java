@@ -73,6 +73,13 @@ public class WfDefinitionController {
         return Result.success(repositoryService.getProcessModel(key, version));
     }
 
+    @GetMapping("/diagram")
+    @Operation(summary = "010_回读流程图元（节点坐标 + 连线折点，供前端渲染）")
+    public Result<com.zifang.z.wf.core.view.WfDiagramInfo> diagram(
+            @RequestParam String key, @RequestParam Integer version) {
+        return Result.success(repositoryService.getProcessDiagram(key, version));
+    }
+
     @DeleteMapping("/definition")
     @Operation(summary = "007_物理删除某个版本（仍有在途实例时拒绝）")
     public Result<Void> delete(@RequestParam String key, @RequestParam Integer version) {

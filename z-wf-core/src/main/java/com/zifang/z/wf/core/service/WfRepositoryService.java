@@ -298,6 +298,28 @@ public class WfRepositoryService {
     }
 
     /**
+     * 回读流程图元（对应 Camunda 的 {@code getProcessModelGraphic}）。
+     *
+     * <p>解析部署时留存的原始 XML 里的 BPMN DI 段，拿到每个节点的坐标与每条线的折点。
+     * 没有它的话，导入一个别人画好的模型只能自己重排一遍版 —— 而坐标信息
+     * <b>只存在于 XML 里</b>，引擎解析出的图结构（节点+连线）不含它。
+     *
+     * <p>与 {@link #getProcessModel} 的差别是<b>不抛异常</b>：没有 DI 段时返回
+     * {@code empty=true} 的结果。拿不到图不是部署错误（很多流程本来就是手写的，
+     * 没有图），为一个只读的渲染请求抛异常会让调用方无从区分"没图"与"流程坏了"。
+     * 一致性核对结果（缺图 / 多图）随结果一起返回，不做静默修正。
+     */
+    public com.zifang.z.wf.core.view.WfDiagramInfo getProcessDiagram(String key, int version) {
+        WfDefinition definition = getDefinition(key, version);
+        com.zifang.z.wf.core.view.WfDiagramInfo info =
+                com.zifang.z.wf.core.definition.WfDiagramParser.parse(
+                        definition.getSourceXml(), key, version);
+        com.zifang.z.wf.core.definition.WfDiagramParser.fillNodeInfo(info, definition);
+        com.zifang.z.wf.core.definition.WfDiagramParser.checkConsistency(info, definition);
+        return info;
+    }
+
+    /**
      * 全部流程分类（去重）。
      * <p>给流程分组管理页提供选项列表。
      */
