@@ -143,6 +143,45 @@ public class WfContext {
     /** 本次推进的触发人。 */
     private String authenticatedUserId;
 
+    /**
+     * 本次推进处于异步 job 的续跑状态；{@link #NONE} 表示是一次普通的流程推进。
+     *
+     * <p>它必须区分方向，因为两个方向要绕开的东西不同：
+     * <ul>
+     *   <li>{@link #ENTER}（异步前置续跑）—— 绕开"再挂一个异步前置 job"，
+     *       否则每续跑一次排一次单，执行器无限循环、流程永远不动；</li>
+     *   <li>{@link #LEAVE}（异步后置续跑）—— 除了同样要绕开"再挂一个异步后置 job"，
+     *       还要绕开<b>重复记一条节点历史</b>：节点在那次正常的 leave 里已经记过了，
+     *       续跑再记一遍的话轨迹上会出现两次"审批"，而"一次节点访问一条"是硬约定。</li>
+     * </ul>
+     *
+     * <p>它是一次性的（每次续跑重新构造 context），所以放 context 上就够，
+     * 不必进 {@code WfExecution} 加列。
+     */
+    public enum Resume {
+        /** 普通推进。 */
+        NONE,
+        /** 异步前置的续跑：正在进入尚未执行的节点。 */
+        ENTER,
+        /** 异步后置的续跑：正在离开已经执行完的节点。 */
+        LEAVE
+    }
+
+    private Resume resume = Resume.NONE;
+
+    public Resume getResume() {
+        return resume;
+    }
+
+    public void setResume(Resume resume) {
+        this.resume = resume == null ? Resume.NONE : resume;
+    }
+
+    /** 本次推进是不是异步 job 的续跑。 */
+    public boolean isAsyncContinuation() {
+        return this.resume != Resume.NONE;
+    }
+
     /** 引擎异常信息（内部终止时填充）。 */
     private String failureMessage;
 

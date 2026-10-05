@@ -94,6 +94,78 @@ public class WfJobService {
     }
 
     /**
+     * 执行所有到期且还留有重试次数的<b>异步</b> job。
+     *
+     * <p>与 {@link #executeDueJobs} 分开而不是合进同一个方法：两者的触发节奏通常不同 ——
+     * 定时器边界是业务节奏（催办每 5 分钟），异步 job 是"队列越快排空越好"，
+     * 合并后调用方只能取一个折中的频率，往往两边都不合适。
+     *
+     * <p>同样<b>不自带定时器</b>：多久扫一次由宿主决定。
+     *
+     * @return 实际续跑成功的 job 数
+     */
+    public int executeAsyncJobs(Date now) {
+        if (now == null) {
+            throw new WfEngineException("执行时刻不能为空：没有时间点就没有到点这个概念，"
+                    + "传 null 会在下游变成扫描全部 job");
+        }
+        int executed = 0;
+        for (WfJob job : findAsyncJobs(now, 200)) {
+            try {
+                if (resumeAsync(job)) {
+                    executed++;
+                }
+            } catch (RuntimeException e) {
+                log.warn("异步 job {} 续跑失败: {}", job.getId(), e.getMessage(), e);
+                recordFailure(job, e);
+            }
+        }
+        if (executed > 0) {
+            log.info("续跑到期异步 job {} 个（时刻 {}）", executed, now);
+        }
+        return executed;
+    }
+
+    /**
+     * 到期的异步 job（排序稳定，与内存实现的顺序一致）。
+     *
+     * <p>一个 SQL 捞两种类型而不是捞出来再过滤：异步 job 的量按"队列深度"涨，
+     * 一旦积压就是成千上万条，先捞后滤等于把整条队列读进内存。
+     */
+    private List<WfJob> findAsyncJobs(Date now, int max) {
+        java.util.List<WfJob> due = persistence.queryJobs(new WfJobQuery()
+                .setDueBefore(now)
+                .setType(com.zifang.z.wf.core.model.WfJobType.ASYNC_BEFORE)
+                .setRetriesExhausted(Boolean.FALSE)
+                .setPageNum(1).setPageSize(max));
+        // 后置的单独查一次再拼上：WfJobQuery 的 type 是单值而不是集合，
+        // 加"多类型"支持会让这个查询对象多出一个只在两处用到的字段
+        for (WfJob job : persistence.queryJobs(new WfJobQuery()
+                .setDueBefore(now)
+                .setType(com.zifang.z.wf.core.model.WfJobType.ASYNC_AFTER)
+                .setRetriesExhausted(Boolean.FALSE)
+                .setPageNum(1).setPageSize(max))) {
+            due.add(job);
+        }
+        return due;
+    }
+
+    /**
+     * 续跑一个异步 job。
+     *
+     * <p><b>不在这里删 job</b>：删除由 {@code WfRuntimeService#executeAsyncJob} 在
+     * 全部校验通过之后做。这里先删的话，"token 已经挪到别处、这次不该续跑"那条早退
+     * 路径会把 job 一起吞掉 —— 那是把一件还没做的事当成做完了。
+     * 与 {@code completeExternalTask} 的处理一致：被忽略的交差/续跑不删 job。
+     *
+     * <p>（对比 {@link #fire}：那里 job 在推进前就删掉是对的，因为
+     * {@code fireTimerBoundary} 没有任何早退分支，删了必然接着推进。）
+     */
+    private boolean resumeAsync(WfJob job) {
+        return runtimeService.executeAsyncJob(job);
+    }
+
+    /**
      * 记一次失败并扣重试次数。
      *
      * <p>扣到 0 之后不再重试：一个必然失败的 job 每轮都重试，会把执行器

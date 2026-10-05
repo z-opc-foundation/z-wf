@@ -1037,6 +1037,74 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         return instance;
     }
 
+    /**
+     * 续跑一个异步 job —— 异步前置与异步后置共用这一个入口。
+     *
+     * <p>两者的区别全部落在 {@link WfEngine#resumeEnter} 与
+     * {@link WfEngine#resumeLeave} 上：前置要把节点真的跑一遍，后置只补"离开"这个动作。
+     * 放在一个方法里而不是两个，是因为它们的校验、事务边界、落库管线完全一样，
+     * 拆开会各自漂移 —— 而漂移的表现是"异步 job 执行了但流程没动"。
+     *
+     * <p>先删 job 再续跑，顺序与 {@code WfJobService#fire}、
+     * {@link #completeExternalTask} 一致：异步 job 排一次队执行一次，
+     * 留着会被下一次扫描再执行一遍。前置的话节点行为会被跑第二遍
+     * （delegate 调两次、审批任务重建），后置的话流程会多走一格。
+     *
+     * @return 是否真的续跑了（流程已结束、token 已挪走这类"该做没做"要能被区分开）
+     */
+    public boolean executeAsyncJob(com.zifang.z.wf.core.model.WfJob job) {
+        com.zifang.z.wf.core.model.WfJobType type = job.getType();
+        boolean before = type == com.zifang.z.wf.core.model.WfJobType.ASYNC_BEFORE;
+        boolean after = type == com.zifang.z.wf.core.model.WfJobType.ASYNC_AFTER;
+        if (!before && !after) {
+            throw new WfEngineException("job " + job.getId() + " 不是异步 job（类型 "
+                    + type + "），不能按异步续跑处理");
+        }
+        WfProcessInstance instance = requireInstance(job.getProcessInstanceId());
+        if (instance.getStatus().isTerminal()) {
+            // 流程已经结束还在续跑：多半是残留 job（清理逻辑漏了）。
+            // 返回 false 而不是抛异常 —— 抛出去会被执行器算成失败并重试，
+            // 而重试永远不会有用
+            log.warn("流程 {} 已是终态 {}，却还有异步 job {} 待续跑，忽略",
+                    instance.getId(), instance.getStatus(), job.getId());
+            return false;
+        }
+        WfDefinition definition = definitionOf(instance);
+        WfNode node = definition.node(job.getElementId());
+        if (node == null) {
+            throw new WfEngineException("异步 job " + job.getId() + " 指向的节点不存在: "
+                    + job.getElementId() + "。流程定义可能在 job 建立后被替换过");
+        }
+        WfExecution token = job.getExecutionId() == null
+                ? null : persistence.findExecution(job.getExecutionId());
+        // token 必须还停在这一步上。早就走了还续跑，等于把流程从别处拽回来 ——
+        // 与 fireEventBoundary / completeExternalTask 里的同构闸门是同一个道理。
+        if (token == null || token.isEnded() || !job.getElementId().equals(token.getActivityId())) {
+            log.info("异步 job {} 续跑时 token 已不在节点 {} 上（当前 {}），忽略",
+                    job.getId(), job.getElementId(),
+                    token == null ? "不存在" : token.getActivityId());
+            return false;
+        }
+
+        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                instance.getId(), "system", "job",
+                (before ? "异步前置" : "异步后置") + "续跑节点 " + node.getId()));
+        persistence.deleteJob(job.getId());
+
+        WfContext context = contextForError(instance, definition, token, null);
+        context.setAuthenticatedUserId("system");
+        if (before) {
+            engine.resumeEnter(context, token);
+        } else {
+            engine.resumeLeave(context, token);
+        }
+        persistAll(context);
+        resolveCompletion(context);
+        log.info("流程 {} 的异步{} job {} 已续跑，token 位于 {}",
+                instance.getId(), before ? "前置" : "后置", job.getId(), token.getActivityId());
+        return true;
+    }
+
     private WfContext contextForError(WfProcessInstance instance, WfDefinition definition,
                                       WfExecution execution, Map<String, Object> variables) {
         WfContext context = engine.newContext(definition, instance, execution);

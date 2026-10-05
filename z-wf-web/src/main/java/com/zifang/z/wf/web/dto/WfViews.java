@@ -803,12 +803,52 @@ public final class WfViews {
         private String executionId;
         private String elementId;
         private String attachedToRef;
+
+        /**
+         * job 种类（TIMER / MESSAGE / SIGNAL / EXTERNAL / ASYNC_BEFORE / ASYNC_AFTER）。
+         *
+         * <p>不暴露就分不清表里一堆 job 哪些是"等时间到"、哪些是"等外部 worker 领"、
+         * 哪些是"等异步续跑" —— 排障时只能挨个点开看，碰到没到期的更是完全无从判断。
+         * 这是持久化层早就有的字段（决定执行器捞不捞它），只是漏进了对外视图。
+         */
+        private String type;
+
+        /** 外部任务的主题名；非外部任务为 null。 */
+        private String topic;
+
+        /** 外部任务当前锁在谁手里；为 null/空表示可被领取。 */
+        private String lockedBy;
+
         private long duedate;
         private int retries;
         private boolean retriesExhausted;
         private String exceptionMessage;
         private long createTime;
         private long lastFailureTime;
+
+        public String getType() {
+            return type;
+        }
+
+        public void setType(String type) {
+            this.type = type;
+        }
+
+        public String getTopic() {
+            return topic;
+        }
+
+        public void setTopic(String topic) {
+            this.topic = topic;
+        }
+
+        public String getLockedBy() {
+            return lockedBy;
+        }
+
+        public void setLockedBy(String lockedBy) {
+            this.lockedBy = lockedBy;
+        }
 
         public String getJobId() {
             return jobId;

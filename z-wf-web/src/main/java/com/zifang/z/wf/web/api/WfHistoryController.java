@@ -215,6 +215,13 @@ public class WfHistoryController {
                 now == null ? new Date() : new Date(now)));
     }
 
+    @PostMapping("/jobs/execute-async")
+    @Operation(summary = "010_执行到期异步 job（asyncBefore/asyncAfter 续跑）")
+    public Result<Integer> executeAsyncJobs(@RequestParam(required = false) Long now) {
+        return Result.success(jobService.executeAsyncJobs(
+                now == null ? new Date() : new Date(now)));
+    }
+
     // ==================== 变量变更审计 ====================
 
     @GetMapping("/variable-changes")

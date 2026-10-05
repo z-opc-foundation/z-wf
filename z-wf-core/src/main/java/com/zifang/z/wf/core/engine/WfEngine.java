@@ -214,6 +214,20 @@ public class WfEngine {
         // 但放在一起读起来更顺 —— 起表与节点是否真的停下无关，交给 job 自己去判断。
         context.startTimerJobs(definition.eventBoundariesOf(node.getId()));
 
+        // ---- 异步前置：节点还没执行，先挂起 ----
+        // 位置在 arriveAt 之后、任何业务行为之前：asyncBefore 的定义就是
+        // "进入这一步之前先排一次队"，所以定时器边界（也要在停留类节点之前起表）
+        // 排在它前面，节点类型分支一律排在它后面。
+        //
+        // asyncContinuation 是必须的：续跑动作正是"进入这个节点"，
+        // 不切断的话每续跑一次就再挂一个 job，执行器无限循环，流程永远不动。
+        if (node.isAsyncBefore() && !context.isAsyncContinuation()) {
+            context.addCreatedJob(asyncJob(context, node, token,
+                    com.zifang.z.wf.core.model.WfJobType.ASYNC_BEFORE));
+            token.setState(WfExecution.State.WAITING);
+            return;
+        }
+
         // ---- 结束事件 ----
         if (node.getType() == WfNodeType.END_EVENT) {
             evaluateResult(context, node);
@@ -470,7 +484,14 @@ public class WfEngine {
         // 压根到不了 leave。写在这里是把"网关不进历史"这条规则钉在唯一该钉的
         // 地方：将来若把网关改成经由 leave 推进，这行就是拦住误记的那道闸。
         // WfHistoryQueryTest#gatewaysAreNotRecorded 负责证明这条规则确实成立。
-        if (!node.getType().isGateway()) {
+        // 异步后置的续跑不再记一条：节点在那次正常的 leave 里已经记过了。
+        // 记两条的话轨迹上会出现两次"审批"，而"一次节点访问一条"是本引擎的硬约定 ——
+        // 排障时看到同一单审了两次而实际只有一个人办过一次。
+        //
+        // 异步前置的续跑（ENTER）不适用这条豁免：它走 enter 而不是直接来 leave，
+        // 真正的 leave 发生在节点执行完时，那一条才是该记的。
+        if (!node.getType().isGateway()
+                && context.getResume() != WfContext.Resume.LEAVE) {
             String outcome = context.consumePendingActivityOutcome();
             context.recordActivity(node.getId(), node.getName(), node.getType().bpmnName(),
                     outcome == null || outcome.trim().isEmpty() ? "completed" : outcome);
@@ -482,6 +503,20 @@ public class WfEngine {
         // 不撤的后果是审批系统里最招骂的那类 bug —— 人已经按时办完了，
         // 30 分钟后定时器照样响，把一条正常结束的流程拽进"超时"分支。
         context.clearJobsOf(token.getId());
+
+        // ---- 异步后置：节点已经执行完，离开之前先排一次队 ----
+        //
+        // 放在 clearJobsOf 之后：那个调用会清掉本 token 上的全部 job，
+        // 排在它前面的话，这里刚挂的 job 会在同一次落库里被自己撤掉 ——
+        // 症状是"异步后置的 job 从来没出现过"，而流程看起来完全正常。
+        //
+        // asyncContinuation 同样必须切断：续跑动作就是 leave，不切断就是死循环。
+        if (node.isAsyncAfter() && !context.isAsyncContinuation()) {
+            context.addCreatedJob(asyncJob(context, node, token,
+                    com.zifang.z.wf.core.model.WfJobType.ASYNC_AFTER));
+            token.setState(WfExecution.State.WAITING);
+            return;
+        }
 
         // ---- 网关离开：先记历史，选线由 handleGateway 在进入时已完成 ----
         List<WfFlow> flows = definition.outgoingFlows(node.getId());
@@ -568,6 +603,72 @@ public class WfEngine {
             }
         }
         return result;
+    }
+
+    // ==================== 异步续跑 ====================
+
+    /**
+     * 为异步节点建 job。
+     *
+     * <p>{@code duedate} 设为当前时刻：异步 job 一排好队就该被下一次扫描捞走，
+     * 留空反而捞不到（{@code DUEDATE <= ?} 对 null 恒不成立）。
+     * 需要延后执行的场景由业务侧推迟扫描时刻，不在本版范围内。
+     *
+     * <p>{@code attachedToRef} 与 {@code elementId} 都填节点本身：异步 job 不挂在
+     * 某个边界事件上，续跑时靠 {@code elementId} 找到该进/该离的节点。
+     */
+    private com.zifang.z.wf.core.model.WfJob asyncJob(WfContext context, WfNode node,
+                                                        WfExecution token,
+                                                        com.zifang.z.wf.core.model.WfJobType type) {
+        com.zifang.z.wf.core.model.WfJob job = new com.zifang.z.wf.core.model.WfJob();
+        job.setProcessInstanceId(context.getProcessInstanceId());
+        job.setExecutionId(token.getId());
+        job.setElementId(node.getId());
+        job.setAttachedToRef(node.getId());
+        job.setType(type);
+        job.setDuedate(new java.util.Date());
+        job.setCreateTime(new java.util.Date());
+        job.setRetries(com.zifang.z.wf.core.model.WfJob.DEFAULT_RETRIES);
+        return job;
+    }
+
+    /**
+     * 异步 job 的续跑：<b>进入</b> token 当前所在的节点并执行它。
+     *
+     * <p>供 {@code ASYNC_BEFORE} 使用：那次节点还没跑过，续跑就是把它的行为补上
+     * （建任务 / 跑 delegate / 路由网关），跑完可能停在节点上（任务类），
+     * 也可能直接继续往下（穿透型）。
+     *
+     * <p>会打上 {@code asyncContinuation} 标记：{@link #enter} 里那个"要不要挂
+     * 异步前置 job"的判断必须看见它，否则续跑会再挂一个 job，执行器无限循环。
+     */
+    public void resumeEnter(WfContext context, WfExecution token) {
+        context.setResume(WfContext.Resume.ENTER);
+        WfExecution saved = context.getCurrentExecution();
+        context.setCurrentExecution(token);
+        try {
+            enter(context, 0);
+        } finally {
+            context.setCurrentExecution(saved);
+        }
+    }
+
+    /**
+     * 异步 job 的续跑：<b>离开</b> token 当前所在的节点、沿出线前进。
+     *
+     * <p>供 {@code ASYNC_AFTER} 使用：那次节点已经执行完（人已办结 / delegate 已跑过），
+     * 续跑只是补上"离开这一步"的动作，<b>绝不能重跑节点行为</b> ——
+     * 重跑一次意味着审批任务被重建、delegate 被调第二遍。
+     */
+    public void resumeLeave(WfContext context, WfExecution token) {
+        context.setResume(WfContext.Resume.LEAVE);
+        WfExecution saved = context.getCurrentExecution();
+        context.setCurrentExecution(token);
+        try {
+            leave(context, 0);
+        } finally {
+            context.setCurrentExecution(saved);
+        }
     }
 
     // ==================== 网关 ====================

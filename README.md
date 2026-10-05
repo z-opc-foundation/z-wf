@@ -418,7 +418,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
 | `WfDefinitionParserTest` | 17 | XML/JSON 解析、校验器、类型归一、与 z-util-wf 的解析 parity |
-| `ZUtilWfBridgeTest` | 14 | 协议��返、fail-closed、已知限制、桥接定义真的能跑完审批 |
+| `ZUtilWfBridgeTest` | 14 | 协议往返、fail-closed、已知限制、桥接定义真的能跑完审批 |
 | `JdbcWorkflowPersistenceTest` | 17 | H2 上的建表 / CRUD / 乐观锁 / 查询 |
 | `InMemoryWorkflowPersistenceTest` | 11 | 内存存储语义、深拷贝隔离 |
 | `WfEngineEndToEndTest` | 18 | 线性 / 排他 / 并行 / 走默认流 四种审批链 |

@@ -1238,6 +1238,95 @@ class WfWebApiTest {
      * process id 固定（重复部署会升版本），所以每次起流程都要用独立的 businessKey，
      * 否则断言里按 processInstanceId 过滤会一次比中多条。
      */
+    @Test
+    @DisplayName("异步端点：起流程挂异步 job，执行端点把它续跑掉")
+    void asyncExecutionOverHttp() throws Exception {
+        deployAsyncProcess();
+        String suffix = String.valueOf(System.nanoTime());
+        String businessKey = "WEB-ASYNC-" + suffix;
+
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webAsyncProcess", "businessKey", businessKey,
+                        "userId", "async-owner-" + suffix)).get("data");
+
+        // 1) 起流程即挂一个异步 job，且它是"异步前置"而不是定时器
+        Map<String, Object> listed = getOk("/api/wf/history/jobs?processInstanceId=" + processId);
+        List<Map<String, Object>> jobs = asList(asMap(listed.get("data")).get("records"));
+        assertEquals(1, jobs.size(), "到达异步节点就应挂一个 job。实际 " + jobs);
+        assertEquals("ASYNC_BEFORE", jobs.get(0).get("type"),
+                "job 类型要能区分异步前置与定时器，否则执行器会串");
+
+        // 2) 定时器执行端点不该碰它
+        Map<String, Object> byTimer = postOk("/api/wf/history/jobs/execute?now="
+                + (System.currentTimeMillis() + 3_600_000L), null);
+        assertEquals(0, ((Number) byTimer.get("data")).intValue(),
+                "定时器执行器只处理 TIMER，不该消费异步 job");
+
+        // 3) 异步执行端点把它续跑掉
+        Map<String, Object> resumed = postOk("/api/wf/history/jobs/execute-async?now="
+                + (System.currentTimeMillis() + 3_600_000L), null);
+        assertEquals(1, ((Number) resumed.get("data")).intValue(), "应当续跑一个异步 job");
+
+        // 4) job 消失，且待办出现（续跑才建出待办）
+        Map<String, Object> after = getOk("/api/wf/history/jobs?processInstanceId=" + processId);
+        assertTrue(asList(asMap(after.get("data")).get("records")).isEmpty(),
+                "续跑过的 job 应当被删掉");
+        Map<String, Object> todo = getOk("/api/approval-center/tasks/todo?userId=web-async-leader");
+        assertFalse(asList(asMap(todo.get("data")).get("records")).isEmpty(),
+                "续跑后待办才该出现");
+    }
+
+    @Test
+    @DisplayName("异步执行端点：再跑一次不重复推进（不会死循环）")
+    void asyncExecutionIsIdempotentOverHttp() throws Exception {
+        deployAsyncProcess();
+        String suffix = String.valueOf(System.nanoTime());
+        postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webAsyncProcess", "businessKey", "WEB-ASYNC2-" + suffix,
+                        "userId", "async2-owner-" + suffix));
+
+        String future = String.valueOf(System.currentTimeMillis() + 3_600_000L);
+        assertEquals(1, ((Number) postOk(
+                "/api/wf/history/jobs/execute-async?now=" + future, null).get("data")).intValue());
+
+        // 记下第一次续跑后的待办数。断言的是"数量不变"而不是"不存在"——
+        // 第一次续跑本来就会建出一个待办，拿存在性去断言必然失败
+        int tasksAfterFirst = asList(asMap(getOk(
+                "/api/approval-center/tasks/todo?userId=web-async-leader")
+                .get("data")).get("records")).size();
+
+        // 第二次必须为 0：续跑若又挂了新 job，这里会变成 1 并无限循环
+        assertEquals(0, ((Number) postOk(
+                "/api/wf/history/jobs/execute-async?now=" + future, null).get("data")).intValue(),
+                "续跑不能再次排队，否则执行端点会被打爆且流程原地不动");
+
+        assertEquals(tasksAfterFirst, asList(asMap(getOk(
+                "/api/approval-center/tasks/todo?userId=web-async-leader")
+                .get("data")).get("records")).size(),
+                "重复续跑不该让待办变多 —— 变多说明节点被执行了第二遍");
+    }
+
+    /**
+     * 部署一个带异步前置的测试定义。
+     *
+     * <p>process id 固定（重复部署会升版本），所以每次起流程都要用独立的 businessKey。
+     */
+    private void deployAsyncProcess() {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"webAsyncProcess\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"was\"/>\n"
+                + "    <userTask id=\"webAsyncApprove\" name=\"异步之后审批\""
+                + " zifang:assignee=\"web-async-leader\" zifang:asyncBefore=\"true\"/>\n"
+                + "    <endEvent id=\"wae1\"/>\n"
+                + "    <sequenceFlow id=\"waf1\" sourceRef=\"was\" targetRef=\"webAsyncApprove\"/>\n"
+                + "    <sequenceFlow id=\"waf2\" sourceRef=\"webAsyncApprove\" targetRef=\"wae1\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        repositoryService.deploy(new com.zifang.z.wf.core.definition.WfXmlParser().parse(xml));
+    }
+
     private void deployExternalProcess() {
         String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
                 + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""

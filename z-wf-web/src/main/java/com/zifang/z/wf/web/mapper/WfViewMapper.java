@@ -258,6 +258,9 @@ public class WfViewMapper {
         view.setExecutionId(job.getExecutionId());
         view.setElementId(job.getElementId());
         view.setAttachedToRef(job.getAttachedToRef());
+        view.setType(job.getType() == null ? null : job.getType().name());
+        view.setTopic(job.getTopic());
+        view.setLockedBy(job.getLockedBy());
         view.setDuedate(time(job.getDuedate()));
         view.setRetries(job.getRetries());
         view.setRetriesExhausted(job.isRetriesExhausted());

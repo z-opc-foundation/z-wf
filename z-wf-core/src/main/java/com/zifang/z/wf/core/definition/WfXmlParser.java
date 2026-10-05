@@ -306,6 +306,11 @@ public class WfXmlParser {
         }
 
         node.setTopic(extension(element, "topic"));
+        // 异步两个方向都读 zifang: 与 camunda: 两个前缀：Camunda 导出的模型带的是
+        // camunda:asyncBefore，照搬过来却因为前缀不同而不被识别，用户会以为
+        // "z-wf 不支持异步" —— 而它其实支持。async 是 Camunda 里最常被直接沿用的扩展之一。
+        node.setAsyncBefore(booleanExtension(element, "asyncBefore"));
+        node.setAsyncAfter(booleanExtension(element, "asyncAfter"));
         node.setCandidateUsers(splitList(extension(element, "candidateUsers")));
         node.setCandidateGroups(splitList(extension(element, "candidateGroups")));
         node.setRequiredVariables(splitList(extension(element, "requiredVariables")));
@@ -571,6 +576,22 @@ public class WfXmlParser {
             return underscored.trim();
         }
         return null;
+    }
+
+    /**
+     * 读布尔型扩展属性：先试 zifang 前缀，再试 camunda 前缀。
+     *
+     * <p>只认 {@code "true"}（不分大小写）。其它值一律当没配 —— 写
+     * {@code asyncBefore="1"} 或 {@code =""} 的人多半是想开，但如果因此报部署错误，
+     * 那会在迁移别人的模型时把一整批本来能跑的流程全挡下来，而挡的理由是
+     * 一个拼写。真的想要严格校验应该由 {@code WfDefinitionValidator} 报，而不是解析器抛。
+     */
+    private boolean booleanExtension(Element element, String name) {
+        String value = extension(element, name);
+        if (value == null) {
+            value = element == null ? null : element.getAttribute("camunda:" + name);
+        }
+        return "true".equalsIgnoreCase(value == null ? null : value.trim());
     }
 
     /**

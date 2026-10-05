@@ -94,9 +94,9 @@ public class WfOverdueScanner {
      *
      * <p>没设 dueDate 的任务<b>不算超期</b>——没有截止时间的任务没有"超时"可言。
      * 把它算成超期会让所有没配截止时间的单据天天发提醒，
-     * 几天之后没人再看得���那条通知，于是真超期的也一起被无视了。
+     * 几天之后没人再看得见那条通知，于是真超期的也一起被无视了。
      */
-    /** ���了多少分钟，供通知正文用；下界取 0，避免 dueDate 恰好等于 now 时算出负数。 */
+    /** 过了多少分钟，供通知正文用；下界取 0，避免 dueDate 恰好等于 now 时算出负数。 */
     private long overdueMinutes(WfTask task, Date now) {
         Date due = task.getDueDate();
         if (due == null) {

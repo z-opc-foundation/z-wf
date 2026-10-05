@@ -106,6 +106,7 @@ public class WfDefinitionValidator {
                                 + "。引擎会在进入该节点时挂起等外部交差，"
                                 + "而这类节点没有可等待的外部动作语义，流程会停在这里不再前进");
             }
+            validateAsync(node);
             if (node.getType() == WfNodeType.SCRIPT_TASK) {
                 if (isBlank(node.getScript())) {
                     add(WfValidationIssue.Severity.ERROR, node.getId(), "scriptTask 缺少 script");
@@ -441,6 +442,38 @@ public class WfDefinitionValidator {
      * </ul>
      * 最后一条是这组规则里最要紧的：它不会立刻失败，它让整个流程静默停住。
      */
+    private void validateAsync(WfNode node) {
+        if (!node.isAsync()) {
+            return;
+        }
+        // 外部任务与异步互斥：外部任务在 enter 里就要挂 job 并 return，
+        // 异步前置的判断排在它之前，两者同开时"排队等外部 worker"这个语义
+        // 根本轮不到 —— 流程会先挂一个异步 job，而没有人会去领它
+        if (node.isExternalStep()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "同一个节点不能既是外部任务（zifang:topic）又配 asyncBefore/asyncAfter。"
+                            + "引擎会先排一次异步 job，而没有任何 worker 会去领它，流程永远停在这里");
+        }
+        // 多实例 + 异步：并行会签的每个实例 token 都会各挂一个异步后置 job，
+        // 而"这一步做完没有"是合取语义 —— 要么全部实例都续跑完流程才算走完。
+        // 本实现的续跑是单 token 粒度的，没有"等所有实例都离开这个节点"的汇合点，
+        // 放行的话会变成"最后一个实例离开时流程先走了，前面的实例还在等"
+        if (node.isMultiInstance()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "多实例节点暂不支持 asyncBefore/asyncAfter。本实现的异步续跑是单 token "
+                            + "粒度的，而会签要等所有实例都离开这一步才走得通，"
+                            + "两者合在一起会让流程在最后一个实例离开时就往前走");
+        }
+        // endEvent 不走 leave，所以异步后置永远不会被挂出来 ——
+        // 写上它的人以为"结束前再排一次队"，实际那行配置毫无作用
+        if (node.isAsyncAfter() && node.getType() == WfNodeType.END_EVENT) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "endEvent 不走 leave，asyncAfter 在它上面永远不会被触发。"
+                            + "结束节点没有【离开之后】可言，请改用 asyncBefore"
+                            + "（它能在进入结束节点前排一次队）");
+        }
+    }
+
     private void validateMultiInstance(WfNode node) {
         if (!node.isMultiInstance()) {
             return;

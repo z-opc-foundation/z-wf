@@ -37,7 +37,7 @@ import com.zifang.z.wf.core.service.WfRuntimeService;
  * <p>结论是：<b>"解析得出来"和"类存在"都不能证明功能可用</b>。
  * 所以这里对每一种节点类型都断言它的<b>实际运行结果</b>——
  * 停不停、任务建不建、分支怎么走、token 落在哪。
- * 任何一种退化��"看起来跑通了"，本类都会红。
+ * 任何一种退化都"看起来跑通了"，本类都会红。
  */
 class WfNodeTypeCoverageTest {
 

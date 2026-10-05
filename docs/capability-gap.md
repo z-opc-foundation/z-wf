@@ -108,7 +108,7 @@
 
 | Camunda 能力 | z-wf | 说明 |
 |---|---|---|
-| **Job / 定时器** `createJobQuery` / `executeJob` / `setJobRetries` | 🟡 | **本轮补上 job 机制**：`WfJob` + `ZWF_JOB` 表 + `WfJobService#executeDueJobs`（重试计数、耗尽可查）。**本轮再补外部任务**（`externalTask`）：`WfExternalTaskService` + `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制领活、`fail` 解锁+退避、重试耗尽留档不删。**剩余**：异步执行（`asyncBefore/asyncAfter`）、`jobPriority`、循环定时器都没做 |
+| **Job / 定时器** `createJobQuery` / `executeJob` / `setJobRetries` | 🟡 | **本轮补上 job 机制**：`WfJob` + `ZWF_JOB` 表 + `WfJobService#executeDueJobs`（重试计数、耗尽可查）。**本轮再补外部任务**（`externalTask`）：`WfExternalTaskService` + `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制领活、`fail` 解锁+退避、重试耗尽留档不删。**异步执行也已补上**（`asyncBefore`/`asyncAfter`，`camunda:` 前缀同样识别）。**剩余**：`jobPriority`、循环定时器、异步 job 的优先级与手动触发 REST 入口 |
 | `createIncidentQuery` | ❌ | 无运行期故障的概念 |
 | `createMetricQuery`（引擎指标） | 🟡 | 只有 `getProcessStatusCounts` 一个自定义统计 |
 | `getTableCount` / `getTableNames` / `getProperties` | ❌ | |
@@ -150,7 +150,7 @@
 | `complexGateway` | ❌ | |
 | `transaction` / `adHocSubProcess` | ❌ | 同上，报错挡住 |
 | **定时器** `timerEventDefinition` | ✅ | `timeDuration`（PT5M / P1DT2H / P1Y）与 `timeDate`（2026-12-31T18:00:00Z）已实现，可写 `${变量}` 由流程实例决定时限。**`timeCycle` 循环定时器刻意不支持**，部署期报 ERROR |
-| **异步** `asyncBefore` / `asyncAfter` | ❌ | 载体已通用（`WfJob` 复用同一张表），但缺"从 job 续跑"的通用机制，只做了边界事件专用的 `startFrom`，故留到下一轮 |
+| **异步** `asyncBefore` / `asyncAfter` | 🟡 | ✅ 已实现：`zifang:` 与 `camunda:` 双前缀；`ASYNC_BEFORE`/`ASYNC_AFTER` 两个 job 类型 + `WfJobService#executeAsyncJobs`。**剩余**：异步 job 的优先级（`asyncBefore` 配 exclusive/priority）、`timeCycle` 循环定时器、多实例+异步（部署期已挡） |
 | **外部任务** `externalTask` / `ExternalTaskService` | ✅ | `serviceTask` + `zifang:topic` 标注（`<externalTask>` 不是 BPMN 2.0 元素，Camunda 同样靠标注在 serviceTask 上）。原子"选出+上锁"、租约制、`fail` 解锁+退避、重试耗尽留档。REST 7 端点在 `/api/wf/external-tasks` |
 | `errorRef` / `errorEventDefinition` | ✅ | 见上。**刻意不支持「空 errorRef = 捕获所有错误」**——宽泛捕获会把不相关异常也吸走，让本该崩的流程继续走 |
 | `escalationCode` / `compensation` | ❌ | |
@@ -165,12 +165,14 @@
   （`${approvers[1]}` 可以）。所以逐实例派不同人靠 `zifang:loopAssignees="${approvers}"`
   + `zifang:assignee="${loopAssignee}"`，索引在分叉时用 Java 取，不在表达式里做
 
-**关于异步为什么仍是缺口**：job 载体本身已经在位（`WfJob` / `ZWF_JOB` / `WfJobService`），
-定时器边界事件跑通了"超时提醒/超时升级"，外部任务也补上了（把这一步交给业务系统领走，
-租约 + 锁归属校验 + 失败解锁退避）。剩下的**异步执行**（`asyncBefore` / `asyncAfter`
-把这一步丢到自己的 job 队列）仍缺一个通用的"从 job 续跑"机制 ——
-边界事件用的是专用的 `startFrom`，它挪的是 token 而不是重放节点，通用化需要另一套设计。
-半做一套"能扔进队列但不知道怎么执行"的异步比不做更危险，所以整项留着。
+**关于异步的现状**：载体（`WfJob` / `ZWF_JOB` / `WfJobService`）从定时器边界开始就是通用的，
+现在定时器、消息、信号、外部任务、异步前置、异步后置七种都落在同一张表上，靠 `JOB_TYPE` 区分。
+异步执行做完了，两个方向共用一个执行器但走**相反的续跑动作**：前置 `resumeEnter`（把节点真的跑一遍），
+后置 `resumeLeave`（只补"离开"这一步，绝不重跑节点行为）—— 共用一个的话就会在重跑 delegate 和不执行之间二选一。
+
+**剩余的异步缺口**：`asyncBefore` 的 exclusive（互斥，多实例里只跑一个）、优先级，
+以及 `timeCycle` 循环定时器。多实例 + 异步已在部署期挡住：单 token 粒度的续跑没有
+"等所有实例都离开"的汇合点，放行会让流程在最后一个实例离开时就往前走。
 
 ---
 
@@ -258,7 +260,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 | 1 | ~~**多实例（会签/或签/计数）**~~ | ✅ 本轮已实现（并行）。剩余：`collection` 迭代、串行、变量下标 EL |
 | 2 | ~~**变量服务**~~ | ✅ 本轮已补（`WfVariableService` + REST `GET/POST /api/wf/process/variables`）。剩余缺口：变量实例查询、类型化变量、变量作用域链（execution 级） |
 | 3 | ~~**BPMN 错误事件 + `handleBpmnError`**~~ | ✅ 本轮已实现（错误边界）。剩余：escalation / compensation / 超时与消息边界 |
-| 4 | ~~**边界事件 + 定时器 + Job 执行器**~~ | ✅ **已实现**：定时器 / 错误 / 消息 / 信号 / 外部五种共用 `ZWF_JOB` 一个载体，靠 `JOB_TYPE` 区分触发方式（TIMER 到期、消息点对点、信号广播、EXTERNAL 等人领走）。**剩余**：异步执行（`asyncBefore/asyncAfter`）、循环定时器 |
+| 4 | ~~**边界事件 + 定时器 + Job 执行器**~~ | ✅ **已实现**：定时器 / 错误 / 消息 / 信号 / 外部 / 异步前置 / 异步后置七种共用 `ZWF_JOB` 一个载体，靠 `JOB_TYPE` 区分。**剩余**：循环定时器、异步 job 优先级 |
 
 ### P1 —— 引擎成熟度
 
@@ -275,8 +277,8 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 366 个测试兜着
-- 从测试与审计中逼出并修复的**真实缺陷 22 项**，其中 4 项属于"能力看着在、实际不生效"：
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 389 个测试兜着
+- 从测试与审计中逼出并修复的**真实缺陷 25 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **两处"两套实现语义不一致"值得单独记**：内存版 `lockExternalTasks` 直接改内部引用，
   绕过了 `saveJob` 的乐观锁契约（表现为"领一次活就把 job 永久锁死在乐观锁异常里"）；

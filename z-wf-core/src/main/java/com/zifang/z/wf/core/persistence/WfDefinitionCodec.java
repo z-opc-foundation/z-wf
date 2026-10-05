@@ -129,6 +129,8 @@ public final class WfDefinitionCodec {
         private String messageName;
         private String signalName;
         private String topic;
+        private boolean asyncBefore;
+        private boolean asyncAfter;
         private String resultVariable;
         private boolean multiInstance;
         private String loopCardinality;
@@ -278,6 +280,22 @@ public final class WfDefinitionCodec {
 
         public String getResultVariable() {
             return resultVariable;
+        }
+
+        public boolean isAsyncBefore() {
+            return asyncBefore;
+        }
+
+        public void setAsyncBefore(boolean asyncBefore) {
+            this.asyncBefore = asyncBefore;
+        }
+
+        public boolean isAsyncAfter() {
+            return asyncAfter;
+        }
+
+        public void setAsyncAfter(boolean asyncAfter) {
+            this.asyncAfter = asyncAfter;
         }
 
         public boolean isMultiInstance() {
@@ -501,6 +519,8 @@ public final class WfDefinitionCodec {
             gn.setSignalName(node.getSignalName());
             gn.setTopic(node.getTopic());
             gn.setResultVariable(node.getResultVariable());
+            gn.setAsyncBefore(node.isAsyncBefore());
+            gn.setAsyncAfter(node.isAsyncAfter());
             gn.setMultiInstance(node.isMultiInstance());
             gn.setLoopCardinality(node.getLoopCardinality());
             gn.setCompletionCondition(node.getCompletionCondition());
@@ -587,6 +607,8 @@ public final class WfDefinitionCodec {
             node.setSignalName(gn.getSignalName());
             node.setTopic(gn.getTopic());
             node.setResultVariable(gn.getResultVariable());
+            node.setAsyncBefore(gn.isAsyncBefore());
+            node.setAsyncAfter(gn.isAsyncAfter());
             node.setMultiInstance(gn.isMultiInstance());
             node.setLoopCardinality(gn.getLoopCardinality());
             node.setCompletionCondition(gn.getCompletionCondition());

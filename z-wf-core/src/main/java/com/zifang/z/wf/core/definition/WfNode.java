@@ -90,6 +90,25 @@ public class WfNode implements Serializable {
      */
     private String topic;
 
+    // ==================== 异步执行（asyncBefore / asyncAfter） ====================
+
+    /**
+     * 进入这个节点前先挂起：token 到达即挂 job，节点本身<b>还没执行</b>。
+     *
+     * <p>续跑时要<b>进入</b>这个节点（把它的行为真正跑一遍），与 {@link #asyncAfter}
+     * 的续跑方向正好相反 —— 这是两种模式必须分开的原因，也是它们用不同
+     * {@link com.zifang.z.wf.core.model.WfJobType} 的原因。
+     */
+    private boolean asyncBefore;
+
+    /**
+     * 这个节点执行完之后、离开之前挂起：节点已经跑过了，token 停在本节点上等 job。
+     *
+     * <p>续跑时才真正离开本节点、沿出线前进。挂在 userTask 上时，
+     * 意味着"人已经办完了，但流程还要在离开这一步前排一次队"。
+     */
+    private boolean asyncAfter;
+
     /** callActivity / subProcess：被引用的流程定义 key。 */
     private String calledElementKey;
 
@@ -262,6 +281,27 @@ public class WfNode implements Serializable {
      * Java 做掉，比在表达式引擎里补一个索引解析更可控。
      */
     private String loopAssignees;
+
+    public boolean isAsyncBefore() {
+        return asyncBefore;
+    }
+
+    public void setAsyncBefore(boolean asyncBefore) {
+        this.asyncBefore = asyncBefore;
+    }
+
+    public boolean isAsyncAfter() {
+        return asyncAfter;
+    }
+
+    public void setAsyncAfter(boolean asyncAfter) {
+        this.asyncAfter = asyncAfter;
+    }
+
+    /** 这个节点是否要异步（任一方向）。 */
+    public boolean isAsync() {
+        return asyncBefore || asyncAfter;
+    }
 
     public boolean isMultiInstance() {
         return multiInstance;
