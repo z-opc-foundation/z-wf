@@ -54,6 +54,19 @@ public class WfDefinition implements Serializable {
     /** 部署时间。 */
     private java.util.Date startTime;
 
+    /**
+     * 是否已停用。停用后<b>不能启动新实例</b>，已在跑的实例不受影响。
+     *
+     * <p>对应 Camunda 的 {@code suspensionState}。语义刻意收窄成布尔而不是三态
+     * （ACTIVE / SUSPENDED / SUSPENDED_EXTERNALLY）：本引擎没有"由外部系统挂起"的
+     * 概念，硬凑三态只会给出一个永远没人写的值。
+     *
+     * <p><b>真源只有 ZWF_DEFINITION.SUSPENDED 这一列</b>，不进
+     * {@code WfDefinitionCodec}：列与图 JSON 各存一份必然会漂，而漂了以后
+     * "停用了还能启动"这种问题极难定位。
+     */
+    private boolean suspended;
+
     // ---- 索引（构造时建立，序列化时忽略） ----
 
     private transient Map<String, WfNode> nodeMap;
@@ -317,6 +330,14 @@ public class WfDefinition implements Serializable {
 
     public void setStartTime(java.util.Date startTime) {
         this.startTime = startTime;
+    }
+
+    public boolean isSuspended() {
+        return suspended;
+    }
+
+    public void setSuspended(boolean suspended) {
+        this.suspended = suspended;
     }
 
     @Override

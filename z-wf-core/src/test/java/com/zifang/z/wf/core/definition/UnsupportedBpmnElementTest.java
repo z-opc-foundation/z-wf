@@ -194,6 +194,16 @@ class UnsupportedBpmnElementTest {
         }
 
         @Override
+        public boolean setDefinitionSuspended(String key, int version, boolean suspended) {
+            return false;
+        }
+
+        @Override
+        public List<WfDefinition> findDefinitions(String keyLike, String nameLike, Boolean suspended) {
+            return null;
+        }
+
+        @Override
         public void saveProcessInstance(com.zifang.z.wf.core.model.WfProcessInstance i) {
         }
 

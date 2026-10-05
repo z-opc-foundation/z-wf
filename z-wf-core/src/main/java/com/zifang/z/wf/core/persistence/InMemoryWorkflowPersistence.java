@@ -146,6 +146,49 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
     }
 
     @Override
+    public synchronized boolean setDefinitionSuspended(String key, int version, boolean suspended) {
+        Map<Integer, WfDefinition> versions = definitions.get(key);
+        if (versions == null) {
+            return false;
+        }
+        WfDefinition definition = versions.get(version);
+        if (definition == null) {
+            return false;
+        }
+        // 改的是存储里那一份：查询一律返回副本，调用方拿到的对象改了不落库
+        definition.setSuspended(suspended);
+        return true;
+    }
+
+    @Override
+    public synchronized List<WfDefinition> findDefinitions(String keyLike, String nameLike,
+                                                           Boolean suspended) {
+        List<WfDefinition> result = new ArrayList<>();
+        String keyword = nameLike == null ? null : nameLike.trim();
+        String keyWord = keyLike == null ? null : keyLike.trim();
+        for (WfDefinition definition : findAllDefinitions()) {
+            if (keyWord != null && !keyWord.isEmpty()) {
+                String defKey = definition.getKey();
+                if (defKey == null || !defKey.contains(keyWord)) {
+                    continue;
+                }
+            }
+            if (keyword != null && !keyword.isEmpty()) {
+                String name = definition.getName();
+                // 与 JDBC 的 LIKE '%x%' 一样是"包含"匹配；名字为 null 时不匹配
+                if (name == null || !name.contains(keyword)) {
+                    continue;
+                }
+            }
+            if (suspended != null && definition.isSuspended() != suspended.booleanValue()) {
+                continue;
+            }
+            result.add(definition);
+        }
+        return result;
+    }
+
+    @Override
     public void saveProcessInstance(WfProcessInstance instance) {
         if (instance == null || instance.getId() == null) {
             return;

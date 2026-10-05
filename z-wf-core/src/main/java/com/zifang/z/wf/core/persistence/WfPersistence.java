@@ -76,6 +76,27 @@ public interface WfPersistence {
      */
     List<WfDefinition> findDefinitionsByCategory(String category);
 
+    /**
+     * 改某个版本的停用状态。
+     *
+     * <p>不存在时返回 {@code false}，由上层决定报什么错 —— 持久层不猜"是不是 key 拼错了"。
+     *
+     * @return 是否有那一行被改到
+     */
+    boolean setDefinitionSuspended(String key, int version, boolean suspended);
+
+    /**
+     * 按 key / name 模糊 + 停用状态查定义（最新版本，每个 key 一行）。
+     *
+     * <p>key 与 name <b>都</b>能筛：调用方手里通常只有 key（其他所有端点都以 key 为准），
+     * 只给 name 的话每个列表调用都得先查一次名称，很别扭。
+     *
+     * @param keyLike     key 模糊匹配，{@code null} / 空表示不限
+     * @param nameLike    显示名模糊匹配，{@code null} / 空表示不限
+     * @param suspended   {@code null} 表示不限；{@code TRUE} 只看已停用，{@code FALSE} 只看在用
+     */
+    List<WfDefinition> findDefinitions(String keyLike, String nameLike, Boolean suspended);
+
     // ==================== 流程实例 ====================
 
     /**

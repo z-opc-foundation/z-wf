@@ -91,6 +91,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 + "DEF_GRAPH TEXT,"
                 + "SOURCE_XML CLOB,"
                 + "DEPLOY_TIME TIMESTAMP,"
+                + "SUSPENDED INTEGER NOT NULL DEFAULT 0,"
                 + "PRIMARY KEY (DEF_KEY, DEF_VERSION))");
 
         ddl.add("CREATE TABLE IF NOT EXISTS ZWF_PROCESS ("
@@ -225,6 +226,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             }
             log.info("JDBC 持久化初始化完成（{} 张表）", ddl.size() - 5);
             addDelegateChainColumnIfMissing(connection);
+            addSuspendedColumnIfMissing(connection);
         } catch (SQLException e) {
             throw new WfPersistenceException("建表失败", e);
         } finally {
@@ -253,6 +255,27 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         } catch (SQLException e) {
             // 列已存在（或方言不支持该写法）——正常路径
             log.debug("DELEGATE_CHAIN 列已存在或无需补建: {}", e.getMessage());
+        } finally {
+            closeQuietly(statement);
+        }
+    }
+
+    /**
+     * 给已存在的 ZWF_DEFINITION 补 SUSPENDED 列，理由同 {@link #addDelegateChainColumnIfMissing}。
+     *
+     * <p>这里<b>不能</b>复用 {@code ADD COLUMN IF NOT EXISTS}：MySQL 8 不支持。
+     * 存量行的默认值 0 = 未停用，也就是升级后所有老流程定义仍然可启动 ——
+     * 这是正确的默认值，反过来（默认停用）会让升级即停服。
+     */
+    private void addSuspendedColumnIfMissing(Connection connection) {
+        Statement statement = null;
+        try {
+            statement = connection.createStatement();
+            statement.execute("ALTER TABLE ZWF_DEFINITION "
+                    + "ADD COLUMN SUSPENDED INTEGER DEFAULT 0");
+            log.info("已为既有 ZWF_DEFINITION 补建 SUSPENDED 列");
+        } catch (SQLException e) {
+            log.debug("SUSPENDED 列已存在或无需补建: {}", e.getMessage());
         } finally {
             closeQuietly(statement);
         }
@@ -288,7 +311,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         String graph = WfDefinitionCodec.encode(definition);
         String sql = "INSERT INTO ZWF_DEFINITION "
                 + "(DEF_KEY, DEF_VERSION, DEF_NAME, DEF_CATEGORY, DEF_DESCRIPTION, "
-                + " DEF_GRAPH, SOURCE_XML, DEPLOY_TIME) VALUES (?,?,?,?,?,?,?,?)";
+                + " DEF_GRAPH, SOURCE_XML, DEPLOY_TIME, SUSPENDED) VALUES (?,?,?,?,?,?,?,?,?)";
         Connection connection = null;
         try {
             connection = dataSource.getConnection();
@@ -302,6 +325,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 ps.setString(6, graph);
                 ps.setString(7, definition.getSourceXml());
                 ps.setTimestamp(8, timestamp(definition.getStartTime()));
+                ps.setInt(9, definition.isSuspended() ? 1 : 0);
                 ps.executeUpdate();
             } finally {
                 ps.close();
@@ -313,37 +337,73 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         }
     }
 
+    /**
+     * 定义的读路径统一走这里。
+     *
+     * <p><b>为什么不能只 SELECT DEF_GRAPH</b>：图 JSON 里没有 {@code sourceXml} 与
+     * {@code startTime}（XML 体积大，不适合塞进图结构）。只取 DEF_GRAPH 的话，
+     * 从库里读回来的定义这两个字段恒为 null —— 表现为"getProcessModel 拿不到 XML"
+     * 和"部署时间一直是 null"，两处都很难从表结构上看出原因。
+     */
+    private WfDefinition readDefinition(ResultSet rs) throws SQLException {
+        WfDefinition definition = deserializeDefinition(rs.getString("DEF_GRAPH"));
+        if (definition == null) {
+            return null;
+        }
+        definition.setSourceXml(rs.getString("SOURCE_XML"));
+        Timestamp deployTime = rs.getTimestamp("DEPLOY_TIME");
+        definition.setStartTime(deployTime == null ? null : new Date(deployTime.getTime()));
+        definition.setSuspended(rs.getInt("SUSPENDED") != 0);
+        return definition;
+    }
+
+    /** 只带元数据列的查询（不带 DEF_GRAPH），供按分类/停用状态过滤时用。 */
+    private WfDefinition readDefinitionMeta(ResultSet rs) throws SQLException {
+        WfDefinition definition = new WfDefinition();
+        definition.setKey(rs.getString("DEF_KEY"));
+        definition.setVersion(rs.getInt("DEF_VERSION"));
+        definition.setName(rs.getString("DEF_NAME"));
+        definition.setCategory(rs.getString("DEF_CATEGORY"));
+        definition.setDescription(rs.getString("DEF_DESCRIPTION"));
+        Timestamp deployTime = rs.getTimestamp("DEPLOY_TIME");
+        definition.setStartTime(deployTime == null ? null : new Date(deployTime.getTime()));
+        definition.setSuspended(rs.getInt("SUSPENDED") != 0);
+        return definition;
+    }
+
+    private static final String DEF_SELECT_ALL =
+            "SELECT DEF_KEY, DEF_VERSION, DEF_GRAPH, SOURCE_XML, DEPLOY_TIME, SUSPENDED "
+                    + "FROM ZWF_DEFINITION ";
+
     @Override
     public WfDefinition findLatestDefinition(String key) {
-        String sql = "SELECT DEF_VERSION, DEF_GRAPH FROM ZWF_DEFINITION "
-                + "WHERE DEF_KEY=? ORDER BY DEF_VERSION DESC";
+        String sql = DEF_SELECT_ALL + "WHERE DEF_KEY=? ORDER BY DEF_VERSION DESC";
         return queryOne(sql, key, new RowMapper<WfDefinition>() {
             @Override
             public WfDefinition map(ResultSet rs) throws SQLException {
-                return deserializeDefinition(rs.getString("DEF_GRAPH"));
+                return readDefinition(rs);
             }
         });
     }
 
     @Override
     public WfDefinition findDefinition(String key, int version) {
-        String sql = "SELECT DEF_VERSION, DEF_GRAPH FROM ZWF_DEFINITION "
-                + "WHERE DEF_KEY=? AND DEF_VERSION=?";
+        String sql = DEF_SELECT_ALL + "WHERE DEF_KEY=? AND DEF_VERSION=?";
         return queryOne(sql, new Object[]{key, version}, new RowMapper<WfDefinition>() {
             @Override
             public WfDefinition map(ResultSet rs) throws SQLException {
-                return deserializeDefinition(rs.getString("DEF_GRAPH"));
+                return readDefinition(rs);
             }
         });
     }
 
     @Override
     public List<WfDefinition> findDefinitionVersions(String key) {
-        String sql = "SELECT DEF_GRAPH FROM ZWF_DEFINITION WHERE DEF_KEY=? ORDER BY DEF_VERSION DESC";
+        String sql = DEF_SELECT_ALL + "WHERE DEF_KEY=? ORDER BY DEF_VERSION DESC";
         return queryList(sql, new Object[]{key}, new RowMapper<WfDefinition>() {
             @Override
             public WfDefinition map(ResultSet rs) throws SQLException {
-                return deserializeDefinition(rs.getString("DEF_GRAPH"));
+                return readDefinition(rs);
             }
         });
     }
@@ -351,31 +411,81 @@ public class JdbcWorkflowPersistence implements WfPersistence {
     @Override
     public List<WfDefinition> findAllDefinitions() {
         // 每个 key 只取最大版本
-        String sql = "SELECT DEF_GRAPH FROM ZWF_DEFINITION D WHERE DEF_VERSION = "
+        String sql = DEF_SELECT_ALL + "D WHERE DEF_VERSION = "
                 + "(SELECT MAX(DEF_VERSION) FROM ZWF_DEFINITION WHERE DEF_KEY = D.DEF_KEY)";
         return queryList(sql, new Object[0], new RowMapper<WfDefinition>() {
             @Override
             public WfDefinition map(ResultSet rs) throws SQLException {
-                return deserializeDefinition(rs.getString("DEF_GRAPH"));
+                return readDefinition(rs);
             }
         });
     }
 
     @Override
     public List<WfDefinition> findDefinitionsByCategory(String category) {
-        String sql = "SELECT D.DEF_GRAPH FROM ZWF_DEFINITION D "
+        String sql = DEF_SELECT_ALL + "D "
                 + "WHERE D.DEF_CATEGORY=? AND D.DEF_VERSION = "
                 + "(SELECT MAX(DEF_VERSION) FROM ZWF_DEFINITION WHERE DEF_KEY = D.DEF_KEY)";
         return queryList(sql, new Object[]{category}, new RowMapper<WfDefinition>() {
             @Override
             public WfDefinition map(ResultSet rs) throws SQLException {
-                return deserializeDefinition(rs.getString("DEF_GRAPH"));
+                return readDefinition(rs);
             }
         });
     }
 
-    private WfDefinition deserializeDefinition(String graph) {
-        // 走专用编解码：直接 JsonUtil.fromJson(definition) 会因 Date 字段静默返回 null
+    @Override
+    public boolean setDefinitionSuspended(String key, int version, boolean suspended) {
+        String sql = "UPDATE ZWF_DEFINITION SET SUSPENDED=? WHERE DEF_KEY=? AND DEF_VERSION=?";
+        Connection connection = null;
+        try {
+            connection = dataSource.getConnection();
+            PreparedStatement ps = connection.prepareStatement(sql);
+            try {
+                ps.setInt(1, suspended ? 1 : 0);
+                ps.setString(2, key);
+                ps.setInt(3, version);
+                return ps.executeUpdate() > 0;
+            } finally {
+                ps.close();
+            }
+        } catch (SQLException e) {
+            throw new WfPersistenceException(
+                    "更新流程定义停用状态失败: " + key + ":" + version, e);
+        } finally {
+            close(connection);
+        }
+    }
+
+    @Override
+    public List<WfDefinition> findDefinitions(String keyLike, String nameLike, Boolean suspended) {
+        StringBuilder sql = new StringBuilder(DEF_SELECT_ALL + "D WHERE 1=1");
+        List<Object> args = new ArrayList<>();
+        if (keyLike != null && !keyLike.trim().isEmpty()) {
+            sql.append(" AND D.DEF_KEY LIKE ? ESCAPE '\\'");
+            args.add("%" + escapeLike(keyLike.trim()) + "%");
+        }
+        if (nameLike != null && !nameLike.trim().isEmpty()) {
+            // 与审计的变量名同一个坑：用户给的名字里的 % / _ 必须转义，
+            // 否则一次"模糊查"静默变成"全都能查出来"
+            sql.append(" AND D.DEF_NAME LIKE ? ESCAPE '\\'");
+            args.add("%" + escapeLike(nameLike.trim()) + "%");
+        }
+        if (suspended != null) {
+            sql.append(" AND D.SUSPENDED=?");
+            args.add(suspended ? 1 : 0);
+        }
+        sql.append(" AND D.DEF_VERSION = "
+                + "(SELECT MAX(DEF_VERSION) FROM ZWF_DEFINITION WHERE DEF_KEY = D.DEF_KEY)");
+        return queryList(sql.toString(), args.toArray(), new RowMapper<WfDefinition>() {
+            @Override
+            public WfDefinition map(ResultSet rs) throws SQLException {
+                return readDefinition(rs);
+            }
+        });
+    }
+
+    private WfDefinition deserializeDefinition(String graph) {        // 走专用编解码：直接 JsonUtil.fromJson(definition) 会因 Date 字段静默返回 null
         // （详见 WfDefinitionCodec 的类注释）
         return WfDefinitionCodec.decode(graph);
     }

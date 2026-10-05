@@ -134,6 +134,16 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                     + "请先调用 WfRepositoryService#deploy 部署该定义");
         }
 
+        // ---- 0.5 停用的版本不能再接新单 ----
+        // 判据取 **persisted** 那一份而不是入参 definition：调用方手里的定义对象可能
+        // 是停用之前取的，带着过期的 suspended=false，拿它判等于这道闸门形同虚设。
+        // 已在跑的实例不受影响，停用只挡新启动 —— 这是"下架老版本"和"终止在跑的"两件事。
+        if (persisted.isSuspended()) {
+            throw new WfDefinitionException("流程定义 [" + definition.getKey() + ":"
+                    + definition.getVersion() + "] 已停用，不能启动新实例。"
+                    + "如需恢复请调用 WfRepositoryService#activateDefinition");
+        }
+
         // ---- 1. 前置钩子（可否决）----
         if (!hookDispatcher.fireBeforeStart(definition.getKey(), variables)) {
             log.info("流程启动被钩子否决: {}", definition.getKey());

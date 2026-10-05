@@ -321,6 +321,67 @@ class WfWebApiTest {
     }
 
     @Test
+    @DisplayName("定义管理端点：部署 → 停用 → 启动被拒 → 启用 → 模型回读")
+    void definitionManagementEndpoints() throws Exception {
+        String key = "restDeploy-" + (System.nanoTime() % 100000);
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"" + key + "\" name=\"临时流程\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"ds1\"/>\n"
+                + "    <userTask id=\"dapprove\" name=\"审批\" zifang:assignee=\"d-boss\"/>\n"
+                + "    <endEvent id=\"de1\"/>\n"
+                + "    <sequenceFlow id=\"df1\" sourceRef=\"ds1\" targetRef=\"dapprove\"/>\n"
+                + "    <sequenceFlow id=\"df2\" sourceRef=\"dapprove\" targetRef=\"de1\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+
+        Map<String, Object> deployed = asMap(postOk("/api/wf/definitions/deploy",
+                body("key", key, "xml", xml)).get("data"));
+        assertEquals(key, deployed.get("key"));
+        assertEquals(1, ((Number) deployed.get("version")).intValue());
+        assertEquals(Boolean.FALSE, deployed.get("suspended"));
+        assertEquals(Boolean.TRUE, deployed.get("hasSourceXml"), "刚部署完就该有原始 XML");
+
+        // 模型回读：部署进去的 XML 读得回来，模型编辑器集成靠它
+        String model = (String) getOk("/api/wf/definitions/model?key=" + key + "&version=1")
+                .get("data");
+        assertTrue(model.contains("dapprove"), "回读的应是原始 XML。实际: " + model);
+
+        // 按名称模糊能查到这个定义
+        assertEquals(1, asList(getOk("/api/wf/definitions?keyLike=" + key).get("data")).size());
+
+        // 停用
+        postOk("/api/wf/definitions/suspend?key=" + key + "&version=1", null);
+        List<Map<String, Object>> suspendedList = asList(
+                getOk("/api/wf/definitions?keyLike=" + key).get("data"));
+        assertEquals(1, suspendedList.size());
+        assertEquals(Boolean.TRUE, suspendedList.get(0).get("suspended"));
+        // 按停用状态过滤：不再出现在"在用"列表里
+        assertTrue(asList(getOk("/api/wf/definitions?suspended=false").get("data")).stream()
+                .noneMatch(d -> key.equals(d.get("key"))),
+                "停用后不该出现在[在用]列表里");
+
+        // 停用后启动必须被拒 —— 这条是整个功能的关键。
+        // 状态码跟着 WfExceptionAdvice 的 @ResponseStatus 走，不写死数值：
+        // 状态码是 advice 的职责，本用例只关心"确实被拒了，且拒绝有原因"。
+        ResponseEntity<String> rejectedResponse = exchange(HttpMethod.POST,
+                "/api/approval-center/processes/start",
+                body("definitionKey", key, "businessKey", "SUSP-1", "userId", "alice"));
+        assertEquals(statusOf("onDefinition"), rejectedResponse.getStatusCode(),
+                "停用的版本还能启动新实例，等于停用只是个摆设。实际: " + rejectedResponse.getBody());
+        assertTrue(rejectedResponse.getBody().contains("已停用"),
+                "拒绝的原因要点明是停用，调用方才知道该去启用而不是查流程定义。实际: "
+                        + rejectedResponse.getBody());
+
+        // 启用后恢复
+        postOk("/api/wf/definitions/activate?key=" + key + "&version=1", null);
+        Map<String, Object> started = postOk("/api/approval-center/processes/start",
+                body("definitionKey", key, "businessKey", "SUSP-2", "userId", "alice"));
+        assertNotNull(started.get("data"), "启用后应当能启动");
+    }
+
+    @Test
     @DisplayName("变量端点：读 → 批量写 → 删除，全程留审计")
     void variableEndpoints() throws Exception {
         String businessKey = "WEB-VAR-" + System.nanoTime();

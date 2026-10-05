@@ -1,6 +1,7 @@
 package com.zifang.z.wf.core.persistence;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -106,6 +107,79 @@ class JdbcWorkflowPersistenceTest {
         assertNotNull(loaded.startNode());
         assertEquals(1, loaded.outgoingFlows("start1").size());
         assertNotNull(bundle);
+    }
+
+    @Test
+    @DisplayName("定义的元数据读得回来：原始 XML 与部署时间存在列里，不读就等于没存")
+    void definitionMetadataSurvivesRoundTrip() {
+        WfDefinition definition = new WfDefinition("metaProcess", "元数据流程");
+        WfNodeBundle.of(definition);
+        definition.buildIndex();
+        definition.setSourceXml("<definitions>原始XML</definitions>");
+        definition.setStartTime(new Date(1700000000000L));
+        definition.setDescription("描述");
+        persistence.saveDefinition(definition);
+
+        WfDefinition loaded = persistence.findDefinition("metaProcess", 1);
+        // 读路径以前只 SELECT DEF_GRAPH，sourceXml / startTime 恒为 null
+        assertEquals("<definitions>原始XML</definitions>", loaded.getSourceXml());
+        assertNotNull(loaded.getStartTime(), "部署时间存了 DEPLOY_TIME 列却读不回来");
+        assertEquals(1700000000000L, loaded.getStartTime().getTime());
+        assertEquals("描述", loaded.getDescription());
+    }
+
+    @Test
+    @DisplayName("停用标志真落库：改的是列，不是内存里的对象")
+    void definitionSuspensionIsPersisted() {
+        WfDefinition definition = new WfDefinition("suspProcess", "停用流程");
+        WfNodeBundle.of(definition);
+        definition.buildIndex();
+        persistence.saveDefinition(definition);
+
+        assertFalse(persistence.findDefinition("suspProcess", 1).isSuspended());
+        assertTrue(persistence.setDefinitionSuspended("suspProcess", 1, true));
+        assertTrue(persistence.findDefinition("suspProcess", 1).isSuspended(),
+                "停用状态存进内存对象但没落库的话，重启后就自动复活了");
+
+        assertTrue(persistence.setDefinitionSuspended("suspProcess", 1, false));
+        assertFalse(persistence.findDefinition("suspProcess", 1).isSuspended());
+
+        // 不存在的版本必须返回 false，让上层报错而不是静默成功
+        assertFalse(persistence.setDefinitionSuspended("suspProcess", 99, true));
+        assertFalse(persistence.setDefinitionSuspended("noSuchKey", 1, true));
+    }
+
+    @Test
+    @DisplayName("按名称模糊 + 停用状态过滤，且名字里的通配符被转义")
+    void definitionQueryByNameAndSuspension() {
+        WfDefinition leave = new WfDefinition("q_leave", "请假流程");
+        WfNodeBundle.of(leave);
+        leave.buildIndex();
+        persistence.saveDefinition(leave);
+
+        WfDefinition expense = new WfDefinition("q_expense", "报销流程");
+        WfNodeBundle.of(expense);
+        expense.buildIndex();
+        persistence.saveDefinition(expense);
+
+        assertEquals(2, persistence.findDefinitions(null, null, null).size());
+        assertEquals(1, persistence.findDefinitions(null, "请假", null).size());
+        assertEquals(0, persistence.findDefinitions(null, "出差", null).size());
+        assertEquals(2, persistence.findDefinitions(null, "流程", null).size(), "两个名字都含[流程]");
+
+        // 通配符必须转义：查 "请%" 若不转义，LIKE '%请%%' 会把所有含"请"的都捞出来
+        assertEquals(0, persistence.findDefinitions(null, "请%", null).size(),
+                "名字里的 % 被当通配符了");
+        assertEquals(0, persistence.findDefinitions(null, "请_", null).size(),
+                "名字里的 _ 被当通配符了");
+
+        assertEquals(2, persistence.findDefinitions(null, null, Boolean.FALSE).size());
+        assertEquals(0, persistence.findDefinitions(null, null, Boolean.TRUE).size());
+        assertTrue(persistence.setDefinitionSuspended("q_leave", 1, true));
+        assertEquals(1, persistence.findDefinitions(null, null, Boolean.FALSE).size());
+        assertEquals(1, persistence.findDefinitions(null, null, Boolean.TRUE).size());
+        assertEquals(0, persistence.findDefinitions(null, "请假", Boolean.FALSE).size());
+        assertEquals(1, persistence.findDefinitions(null, "请假", Boolean.TRUE).size());
     }
 
     @Test

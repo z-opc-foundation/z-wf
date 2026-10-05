@@ -38,10 +38,10 @@
 
 | Camunda 能力 | z-wf | 说明 |
 |---|---|---|
-| `deploy` / `undeploy` / `deleteDeployment` | 🟡 | 有 `deployXml/deployJson/deploy`，**无撤销部署**；已跑的实例不受影响，但"下架一个流程版本"做不到 |
-| `createProcessDefinitionQuery` 流畅查询 | 🟡 | 只有 `getLatestDefinition / getDefinition / getAllDefinitions / getDefinitionVersions / getDefinitionsByCategory`。**无按名称模糊、无 suspended 过滤、无 latestVersion 组合** |
-| `suspendProcessDefinitionById` / `activate` | ❌ | 无法停用某个版本。业务含义：老版本流程要停止接受新申请时，现在只能改别的办法绕 |
-| `getProcessModel`（回读 BPMN XML） | ❌ | 部署进去读不回原始 XML。**影响模型编辑器集成** |
+| `deploy` / `undeploy` / `deleteDeployment` | 🟡 | `deployXml/deployJson/deploy`，REST `POST /api/wf/definitions/deploy`。**无撤销部署**。"下架某版本"已由 `suspendDefinition` 覆盖（保留历史、只挡新单）；`deleteDeployment` 是物理删除、语义更重，**未做** |
+| `createProcessDefinitionQuery` 流畅查询 | 🟡 | `queryDefinitions(keyLike, nameLike, suspended)`：key 与显示名都能模糊、停用状态可筛、每个 key 只出最新版本。**仍无**按 category / key 精确 / deploymentId 的组合查询 —— 现有 `getDefinitionVersions` / `getDefinitionsByCategory` 覆盖了大部分场景，暂不另造查询 DSL |
+| `suspendProcessDefinitionById` / `activate` | ✅ | `WfRepositoryService#suspendDefinition / activateDefinition`，REST `POST /api/wf/definitions/suspend\|activate`。**真源只有 `ZWF_DEFINITION.SUSPENDED` 一列**（不进 codec，列与图 JSON 各存一份必然漂）。闸门在 `startProcessInstance` 上判、且判的是**持久化那份**而不是入参对象 —— 拿入参判的话，调用方手里停用前取的旧定义就能绕过。已在跑的实例完全不受影响：停用是下架版本，不是终止在跑的 |
+| `getProcessModel`（回读 BPMN XML） | ✅ | `WfRepositoryService#getProcessModel(key, version)`，REST `GET /api/wf/definitions/model`。顺带修了一个隐藏缺陷：读路径只 `SELECT DEF_GRAPH`，而 `sourceXml` / `startTime` 存在列里从没被取过 —— 两者在 JDBC 读回来的定义上恒为 null，`getProcessModel` 与部署时间一起失效，且从表结构上完全看不出原因 |
 | `getProcessModelGraphic`（流程图） | 🟡 | web 层有 `/graph` 端点，但那是 z-wf 自己的图元 JSON，不是 BPMN DI |
 | `getDefaultProcessDefinition` / `setDefault` | ❌ | |
 | `createDeploymentQuery`（按部署批次查） | ❌ | `deployAll` 一次部署多个，但没有"部署批次"这个概念 |
@@ -250,7 +250,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 ### P1 —— 引擎成熟度
 
 历史查询体系（活动 / 任务 / 流程实例 / **变量变更审计** + 历史清理已实现）·
-Repository 完整化（定义挂起/撤销/模型回读）·
+~~Repository 完整化~~（定义停用/启用 + 模型回读 + 定义查询已实现；**剩余**：deleteDeployment 物理撤销）·
 identity link 与任务挂起 · 复杂网关 · Filter
 
 ### P2 —— 管理便利
@@ -261,7 +261,7 @@ identity link 与任务挂起 · 复杂网关 · Filter
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 278 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 289 个测试兜着
 - 本轮从测试与审计中逼出并修复的**真实缺陷 18 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **扩展面明显比 Camunda 窄**（3 个 hook vs 几十个监听点），这是与 Camunda 差距最大、

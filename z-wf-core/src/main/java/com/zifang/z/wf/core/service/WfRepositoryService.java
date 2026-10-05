@@ -186,6 +186,64 @@ public class WfRepositoryService {
     }
 
     /**
+     * 停用某个版本：之后不能再启动新实例，<b>已在跑的实例完全不受影响</b>。
+     *
+     * <p>这是"老版本流程停止接受新申请"的正解。以前想停用只能改别的地方绕，
+     * 而绕的方式通常是把分类改掉 —— 改分类会连带影响按分类的列表和审批中心的分组展示，
+     * 副作用比它解决的问题大。
+     *
+     * @throws WfDefinitionException 版本不存在
+     */
+    public void suspendDefinition(String key, int version) {
+        if (!persistence.setDefinitionSuspended(key, version, true)) {
+            throw new WfDefinitionException(
+                    "流程定义版本不存在，停用失败: " + key + ":" + version);
+        }
+        log.info("流程定义已停用: {}:{}", key, version);
+    }
+
+    /**
+     * 启用某个版本（对应 {@link #suspendDefinition}）。
+     *
+     * @throws WfDefinitionException 版本不存在
+     */
+    public void activateDefinition(String key, int version) {
+        if (!persistence.setDefinitionSuspended(key, version, false)) {
+            throw new WfDefinitionException(
+                    "流程定义版本不存在，启用失败: " + key + ":" + version);
+        }
+        log.info("流程定义已启用: {}:{}", key, version);
+    }
+
+    /**
+     * 按名称模糊 + 停用状态查定义（最新版本）。
+     *
+     * @param suspended {@code null} 不限
+     */
+    public List<WfDefinition> queryDefinitions(String keyLike, String nameLike, Boolean suspended) {
+        return persistence.findDefinitions(keyLike, nameLike, suspended);
+    }
+
+    /**
+     * 回读部署时留存的原始 BPMN XML（对应 z-camuda 的 {@code getProcessModel}）。
+     *
+     * <p>模型编辑器集成靠它：没有它就只剩引擎解析后的图结构，回显时排版已经丢了。
+     *
+     * @throws WfDefinitionException 版本不存在，或当初不是用 {@code deployXml} 部署的
+     *         （JSON 部署与内存里的测试定义都没有原始 XML）
+     */
+    public String getProcessModel(String key, int version) {
+        WfDefinition definition = getDefinition(key, version);
+        String xml = definition.getSourceXml();
+        if (xml == null || xml.trim().isEmpty()) {
+            // 静默返回空串会让编辑器弹出一个空白画布，用户以为是流程本身没画东西
+            throw new WfDefinitionException("流程定义没有原始 XML（" + key + ":" + version
+                    + "），可能不是通过 deployXml 部署的");
+        }
+        return xml;
+    }
+
+    /**
      * 全部流程分类（去重）。
      * <p>给流程分组管理页提供选项列表。
      */
