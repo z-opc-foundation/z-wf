@@ -29,6 +29,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zifang.z.wf.core.definition.WfDefinitionException;
+import com.zifang.z.wf.core.hook.WfTaskHook;
 import com.zifang.z.wf.core.persistence.WfOptimisticLockException;
 import com.zifang.z.wf.core.persistence.WfPersistenceException;
 import com.zifang.z.wf.web.api.WfExceptionAdvice;
@@ -58,6 +59,12 @@ class WfWebApiTest {
 
     @Autowired
     private TestRestTemplate rest;
+
+    @Autowired
+    private com.zifang.z.wf.core.hook.WfHookDispatcher dispatcher;
+
+    @Autowired
+    private com.zifang.z.wf.core.service.WfTaskService taskService;
 
     private final ObjectMapper json = new ObjectMapper();
 
@@ -419,6 +426,7 @@ class WfWebApiTest {
     void exceptionAdviceStatusMapping() throws Exception {
         // 乐观锁与存储故障在真实链路上难稳定复现，但状态码是前端重试策略的依据，
         // 必须钉住：409 与 503 不是装饰，改成 500 会让前端一律弹"系统错误"而不重试。
+        // 下面 optimisticLockConflictIsReal409 已经把 409 在真链路上跑通了。
         assertEquals(HttpStatus.CONFLICT, statusOf("onOptimisticLock"));
         assertEquals(HttpStatus.SERVICE_UNAVAILABLE, statusOf("onPersistence"));
         assertEquals(HttpStatus.BAD_REQUEST, statusOf("onEngine"));
@@ -428,6 +436,48 @@ class WfWebApiTest {
         // 处理器必须覆盖这四类异常，否则映射写了也不会被调用
         assertHandlerDeclared("onOptimisticLock", WfOptimisticLockException.class);
         assertHandlerDeclared("onPersistence", WfPersistenceException.class);
+    }
+
+    @Test
+    @DisplayName("乐观锁冲突在真链路上返回 409（不是 500），且任务仍可被新办理人正常办结")
+    void optimisticLockConflictIsReal409() throws Exception {
+        String leaderId = "conflict-leader";
+        String taskId = startAndGetLeaderTask(leaderId);
+
+        // 在 onBeforeComplete 里对同一条任务做一次读-改-写（转办），
+        // 这就是"另一个节点在我办结的同时改了这条任务"的确定性复现：
+        // 钩子把库里的 REVISION 顶高一格，引擎随后拿着旧 REVISION 去 CAS 必然落空。
+        // 生产里等价的东西：审计钩子给任务打标、通知钩子指派备办人等任何读-改-写。
+        WfTaskHook interferingHook = new WfTaskHook() {
+            @Override
+            public boolean onBeforeComplete(String hookTaskId, String assignee, Map<String, Object> vars) {
+                if (taskId.equals(hookTaskId)) {
+                    taskService.transfer(taskId, assignee, "concurrent-writer", "并发修改");
+                }
+                return true;
+            }
+        };
+        dispatcher.addTaskHook(interferingHook);
+        try {
+            ResponseEntity<String> response = exchange(HttpMethod.POST,
+                    "/api/approval-center/tasks/complete",
+                    body("taskId", taskId, "userId", leaderId, "comment", "同意"));
+            assertEquals(HttpStatus.CONFLICT, response.getStatusCode(),
+                    "乐观锁冲突必须返回 409，前端据此提示'他人正在处理'并刷新重试。"
+                            + "返回 500 会让前端一律弹'系统错误'而不再重试。实际返回: "
+                            + response.getBody());
+            assertTrue(response.getBody().contains("success\":false"),
+                    "409 也要带标准 Result 信封，前端才能统一解析");
+        } finally {
+            // 必须摘掉：Spring 上下文在测试类之间复用，钩子留着会污染后续用例
+            assertEquals(1, dispatcher.removeTaskHook(interferingHook));
+        }
+
+        // 冲突没有把任务改坏：转办后的新办理人仍能正常办结
+        Map<String, Object> after = asMap(postOk("/api/approval-center/tasks/complete",
+                body("taskId", taskId, "userId", "concurrent-writer", "comment", "改完再批"))
+                .get("data"));
+        assertEquals("ACTIVE", after.get("status"), "冲突后任务应仍可继续推进");
     }
 
     // ==================== 辅助 ====================

@@ -301,7 +301,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 
 ## 9. 测试
 
-90 个测试，全绿。
+91 个测试，全绿。
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
@@ -311,7 +311,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 | `InMemoryWorkflowPersistenceTest` | 11 | 内存存储语义、深拷贝隔离 |
 | `WfEngineEndToEndTest` | 15 | 线性 / 排他 / 并行 / 走默认流 四种审批链 |
 | `WfAdminEndToEndTest` | 6 | Spring 全栈 + JDBC 落库 + 示例流程端到端 |
-| `WfWebApiTest` | 14 | **真实 HTTP**（`RANDOM_PORT` 起容器）跑 34 个端点：VO 边界、分页 total、异常→状态码 |
+| `WfWebApiTest` | 15 | **真实 HTTP**（`RANDOM_PORT` 起容器）跑 34 个端点：VO 边界、分页 total、异常→状态码 |
 
 `z-wf-admin` 用 `h2-test` profile，不依赖外部 MySQL / z-config / z-rpc。
 
