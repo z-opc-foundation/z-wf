@@ -305,6 +305,7 @@ public class WfXmlParser {
             }
         }
 
+        node.setTopic(extension(element, "topic"));
         node.setCandidateUsers(splitList(extension(element, "candidateUsers")));
         node.setCandidateGroups(splitList(extension(element, "candidateGroups")));
         node.setRequiredVariables(splitList(extension(element, "requiredVariables")));

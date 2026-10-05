@@ -78,10 +78,33 @@ public class WfDefinitionValidator {
                 continue;
             }
             if (node.getType() == WfNodeType.SERVICE_TASK) {
-                if (isBlank(node.getDelegateClass()) && isBlank(node.getDelegateExpression())) {
+                // 带 topic 的 serviceTask 交给外部 worker 跑，引擎里没有 delegate 可言；
+                // 同时又配 delegate 则两者互斥 —— 不报错的话引擎只会挑 topic 那条，
+                // 作者写的 delegate 永远不执行，且没有任何提示
+                if (node.isExternalStep()) {
+                    if (!isBlank(node.getDelegateClass()) || !isBlank(node.getDelegateExpression())) {
+                        add(WfValidationIssue.Severity.ERROR, node.getId(),
+                                "serviceTask 同时配了 zifang:topic（外部任务）与 "
+                                        + (isBlank(node.getDelegateClass())
+                                                ? "delegateExpression" : "delegateClass")
+                                        + "，只能留一个。本实现会以 topic 为准，"
+                                        + "delegate 永远不会被执行");
+                    }
+                } else if (isBlank(node.getDelegateClass()) && isBlank(node.getDelegateExpression())) {
                     add(WfValidationIssue.Severity.ERROR, node.getId(),
-                            "serviceTask 需要 delegateClass 或 delegateExpression 之一");
+                            "serviceTask 需要 delegateClass 或 delegateExpression 之一"
+                                    + "（或改用 zifang:topic 交给外部 worker）");
                 }
+            }
+            // topic 写在非 serviceTask 上：引擎在 enter 里对任何节点都会先看 topic，
+            // 于是流程会在一个网关/事件节点上挂起等一个永远不会来的 worker 交差 ——
+            // 表现是"流程走到一半停住，且没有任何 job 记录解释为什么"。
+            // 部署期挡住，不要留到运行时靠人肉排查。
+            if (node.isExternalStep() && node.getType() != WfNodeType.SERVICE_TASK) {
+                add(WfValidationIssue.Severity.ERROR, node.getId(),
+                        "zifang:topic 只能配在 serviceTask 上，当前节点类型是 " + node.getType()
+                                + "。引擎会在进入该节点时挂起等外部交差，"
+                                + "而这类节点没有可等待的外部动作语义，流程会停在这里不再前进");
             }
             if (node.getType() == WfNodeType.SCRIPT_TASK) {
                 if (isBlank(node.getScript())) {

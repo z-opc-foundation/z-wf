@@ -89,6 +89,23 @@ public interface WfPersistence {
     boolean deleteDefinition(String key, int version);
 
     /**
+     * 按 topic 领取外部任务（原子地"选出 + 上锁"）。
+     *
+     * <p>返回的 job 已带 {@code lockedBy=workerId} 与 {@code lockedAt=now}，
+     * 调用方直接存回去即可。<b>必须一次 SQL 完成筛选与上锁</b>：
+     * 分成"先查后锁"的话，两个 worker 会领到同一件活，而外部动作（调接口、发消息）
+     * 通常不可重入，重复执行的后果由外部系统承担。
+     *
+     * @param topic           主题名
+     * @param workerId        领活人
+     * @param maxTasks        最多领几件
+     * @param staleBefore     锁定早于该时刻的视为已过期（worker 崩了），可被别人重新领走；
+     *                        {@code null} 表示不抢占未过期的锁
+     */
+    List<WfJob> lockExternalTasks(String topic, String workerId, int maxTasks,
+                                  java.util.Date staleBefore);
+
+    /**
      * 改某个版本的停用状态。
      *
      * <p>不存在时返回 {@code false}，由上层决定报什么错 —— 持久层不猜"是不是 key 拼错了"。

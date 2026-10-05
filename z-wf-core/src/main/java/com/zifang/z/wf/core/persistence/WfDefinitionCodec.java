@@ -128,6 +128,7 @@ public final class WfDefinitionCodec {
         private String script;
         private String messageName;
         private String signalName;
+        private String topic;
         private String resultVariable;
         private boolean multiInstance;
         private String loopCardinality;
@@ -265,6 +266,14 @@ public final class WfDefinitionCodec {
 
         public void setSignalName(String signalName) {
             this.signalName = signalName;
+        }
+
+        public String getTopic() {
+            return topic;
+        }
+
+        public void setTopic(String topic) {
+            this.topic = topic;
         }
 
         public String getResultVariable() {
@@ -490,6 +499,7 @@ public final class WfDefinitionCodec {
             gn.setScript(node.getScript());
             gn.setMessageName(node.getMessageName());
             gn.setSignalName(node.getSignalName());
+            gn.setTopic(node.getTopic());
             gn.setResultVariable(node.getResultVariable());
             gn.setMultiInstance(node.isMultiInstance());
             gn.setLoopCardinality(node.getLoopCardinality());
@@ -575,6 +585,7 @@ public final class WfDefinitionCodec {
             node.setScript(gn.getScript());
             node.setMessageName(gn.getMessageName());
             node.setSignalName(gn.getSignalName());
+            node.setTopic(gn.getTopic());
             node.setResultVariable(gn.getResultVariable());
             node.setMultiInstance(gn.isMultiInstance());
             node.setLoopCardinality(gn.getLoopCardinality());

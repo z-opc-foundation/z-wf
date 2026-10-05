@@ -22,6 +22,7 @@ import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfJob;
+import com.zifang.z.wf.core.model.WfJobType;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfTask;
 import com.zifang.z.wf.core.service.WfVariableService;
@@ -143,6 +144,63 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
             }
         }
         return result;
+    }
+
+    @Override
+    public synchronized List<WfJob> lockExternalTasks(String topic, String workerId, int maxTasks,
+                                                      java.util.Date staleBefore) {
+        List<WfJob> candidates = new ArrayList<>();
+        java.util.Date now = new java.util.Date();
+        for (WfJob job : jobs.values()) {
+            if (job.getType() != WfJobType.EXTERNAL || !topic.equals(job.getTopic())
+                    || job.isRetriesExhausted()) {
+                continue;
+            }
+            // 退避窗口，与 JDBC 侧的 (DUEDATE IS NULL OR DUEDATE <= ?) 同口径。
+            // 漏了它就是"内存实现下退避不生效、开发测不出来、上线才发现重试瞬间烧光"
+            if (job.getDuedate() != null && job.getDuedate().after(now)) {
+                continue;
+            }
+            boolean free = job.getLockedBy() == null || job.getLockedBy().trim().isEmpty();
+            boolean stale = staleBefore != null && job.getLockedAt() != null
+                    && job.getLockedAt().before(staleBefore);
+            if (free || stale) {
+                candidates.add(job);
+            }
+        }
+        // 先到先得，与 JDBC 侧 ORDER BY CREATE_TIME ASC, JOB_ID ASC 一致
+        candidates.sort(new java.util.Comparator<WfJob>() {
+            @Override
+            public int compare(WfJob a, WfJob b) {
+                Date ca = a.getCreateTime();
+                Date cb = b.getCreateTime();
+                if (ca == null || cb == null) {
+                    return 0;
+                }
+                int cmp = ca.compareTo(cb);
+                return cmp != 0 ? cmp
+                        : String.valueOf(a.getId()).compareTo(String.valueOf(b.getId()));
+            }
+        });
+        List<WfJob> locked = new ArrayList<WfJob>();
+        for (WfJob raw : candidates) {
+            if (locked.size() >= maxTasks) {
+                break;
+            }
+            // 必须在拷贝上改，而不是直接改 jobs.values() 里的内部引用。
+            // saveJob 的乐观锁契约是「调用方先 nextRevision()，使传入对象的
+            // revision == 存储中对象的 revision + 1」—— 直接改内部引用的话，
+            // 存与取是同一个对象，revision 永远是同一个值，检查必然失败，
+            // 于是「领一次活」就把 job 永久锁死在乐观锁异常里。
+            // JDBC 侧因为 findJob 返回独立对象而天然正确，两套实现只有这里是对齐的。
+            WfJob job = copy(raw);
+            job.setLockedBy(workerId);
+            job.setLockedAt(now);
+            job.nextRevision();
+            saveJob(job);
+            locked.add(job);
+        }
+        return locked;
     }
 
     @Override
@@ -921,16 +979,16 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         // 漏了这个条件两套实现就在"带 duedate 的订阅"上分歧：JDBC 侧捞不到，
         // 内存侧捞得到 —— 而开发期默认用内存实现，于是问题到生产才暴露，
         // 现象是"扫描器把消息订阅执行了，流程自己往前走了"
-
-        // 与 JdbcWorkflowPersistence 的 appendJobFilters 同口径。
-        // 漏了这个条件两套实现就在"带 duedate 的订阅"上分歧：JDBC 侧捞不到，
-        // 内存侧捞得到 —— 而开发期默认用内存实现，于是问题到生产才暴露，
-        // 现象是"扫描器把消息订阅执行了，流程自己往前走了"
         if (query.getType() != null && job.getType() != query.getType()) {
             return false;
         }
         if (query.getRetriesExhausted() != null
                 && job.isRetriesExhausted() != query.getRetriesExhausted()) {
+            return false;
+        }
+        // topic 过滤同理：不接的话管理端在内存实现下看到"所有主题的活"，
+        // 而 JDBC 侧是空的
+        if (isNotBlank(query.getTopic()) && !query.getTopic().equals(job.getTopic())) {
             return false;
         }
         return true;

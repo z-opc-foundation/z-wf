@@ -196,6 +196,10 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 // 任何人写 saveJob 都可能漏 —— 漏了的消息订阅会被扫描器当成到期 job
                 // 消费掉，表现为"还没发消息流程自己往前走了"
                 + "JOB_TYPE VARCHAR(16) NOT NULL DEFAULT 'TIMER',"
+                // 外部任务用：worker 按 TOPIC 领活，LOCKED_BY/LOCK_AT 是租约
+                + "TOPIC VARCHAR(128),"
+                + "LOCKED_BY VARCHAR(128),"
+                + "LOCK_AT TIMESTAMP,"
                 + "DUEDATE TIMESTAMP,"
                 + "RETRIES INT,"
                 + "EXCEPTION_MSG VARCHAR(2048),"
@@ -235,6 +239,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             addDelegateChainColumnIfMissing(connection);
             addTaskSuspendedColumnIfMissing(connection);
             addJobTypeColumnIfMissing(connection);
+            addExternalTaskColumnsIfMissing(connection);
             addSuspendedColumnIfMissing(connection);
         } catch (SQLException e) {
             throw new WfPersistenceException("建表失败", e);
@@ -275,6 +280,39 @@ public class JdbcWorkflowPersistence implements WfPersistence {
      * <p>存量行默认 0 = 未挂起，即升级前后行为完全一致 —— 挂起是新增能力，
      * 不该让任何存量待办在升级后突然不能办。
      */
+    /**
+     * 给已存在的 ZWF_JOB 补外部任务三列。
+     *
+     * <p>合成一条 ALTER：逐条 ADD 在大表上会拿三次表锁。
+     */
+    private void addExternalTaskColumnsIfMissing(Connection connection) {
+        Statement statement = null;
+        try {
+            statement = connection.createStatement();
+            statement.execute("ALTER TABLE ZWF_JOB ADD COLUMN TOPIC VARCHAR(128)");
+            log.info("已为既有 ZWF_JOB 补建 TOPIC 列");
+        } catch (SQLException e) {
+            log.debug("TOPIC 列已存在或无需补建: {}", e.getMessage());
+        } finally {
+            closeQuietly(statement);
+        }
+        addJobColumnIfMissing(connection, "LOCKED_BY VARCHAR(128)");
+        addJobColumnIfMissing(connection, "LOCK_AT TIMESTAMP");
+    }
+
+    private void addJobColumnIfMissing(Connection connection, String column) {
+        Statement statement = null;
+        try {
+            statement = connection.createStatement();
+            statement.execute("ALTER TABLE ZWF_JOB ADD COLUMN " + column);
+            log.info("已为既有 ZWF_JOB 补建 {} 列", column);
+        } catch (SQLException e) {
+            log.debug("{} 列已存在或无需补建: {}", column, e.getMessage());
+        } finally {
+            closeQuietly(statement);
+        }
+    }
+
     private void addJobTypeColumnIfMissing(Connection connection) {
         Statement statement = null;
         try {
@@ -1566,13 +1604,17 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         boolean exists = exists("SELECT 1 FROM ZWF_JOB WHERE JOB_ID=?", job.getId());
         if (exists) {
             int affected = update("UPDATE ZWF_JOB SET RETRIES=?, EXCEPTION_MSG=?, LAST_FAIL_TIME=?, "
-                            + "DUEDATE=?, JOB_TYPE=?, REV=? WHERE JOB_ID=? AND REV=?",
+                            + "DUEDATE=?, JOB_TYPE=?, TOPIC=?, LOCKED_BY=?, LOCK_AT=?, "
+                            + "REV=? WHERE JOB_ID=? AND REV=?",
                     job.getRetries(), job.getExceptionMessage(),
                     timestamp(job.getLastFailureTime()), timestamp(job.getDuedate()),
                     // 类型必须跟着 UPDATE 走。只写 INSERT 的话，任何对已有 job 的
                     // 类型调整存回去都会被抹回 TIMER —— 而 job 的类型决定扫描器
                     // 捞不捞它，抹错的直接后果是"消息订阅被当成到期 job 执行"
                     job.getType() == null ? "TIMER" : job.getType().name(),
+                    // 租约三列必须跟着 UPDATE 走：worker 领活就是一次 UPDATE，
+                    // 漏了的话领活不生效 —— 表现为"两个 worker 领到同一件活"
+                    job.getTopic(), job.getLockedBy(), timestamp(job.getLockedAt()),
                     job.getRevision(), job.getId(), job.getRevision() - 1);
             if (affected == 0) {
                 throw new WfOptimisticLockException("job", job.getId(), job.getRevision() - 1);
@@ -1584,8 +1626,9 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             connection = dataSource.getConnection();
             PreparedStatement ps = connection.prepareStatement(
                     "INSERT INTO ZWF_JOB (JOB_ID, PROC_ID, EXEC_ID, ELEMENT_ID, ATTACHED_TO, "
-                            + "JOB_TYPE, DUEDATE, RETRIES, EXCEPTION_MSG, CREATE_TIME, LAST_FAIL_TIME, REV) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
+                            + "JOB_TYPE, TOPIC, LOCKED_BY, LOCK_AT, DUEDATE, RETRIES, "
+                            + "EXCEPTION_MSG, CREATE_TIME, LAST_FAIL_TIME, REV) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
             try {
                 int i = 1;
                 ps.setString(i++, job.getId());
@@ -1594,6 +1637,9 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 ps.setString(i++, job.getElementId());
                 ps.setString(i++, job.getAttachedToRef());
                 ps.setString(i++, job.getType() == null ? "TIMER" : job.getType().name());
+                ps.setString(i++, job.getTopic());
+                ps.setString(i++, job.getLockedBy());
+                ps.setTimestamp(i++, timestamp(job.getLockedAt()));
                 ps.setTimestamp(i++, timestamp(job.getDuedate()));
                 ps.setInt(i++, job.getRetries());
                 ps.setString(i++, job.getExceptionMessage());
@@ -1619,6 +1665,59 @@ public class JdbcWorkflowPersistence implements WfPersistence {
     @Override
     public WfJob findJob(String id) {
         return queryOne("SELECT * FROM ZWF_JOB WHERE JOB_ID=?", id, jobMapper);
+    }
+
+    @Override
+    public List<WfJob> lockExternalTasks(String topic, String workerId, int maxTasks,
+                                         java.util.Date staleBefore) {
+        StringBuilder select = new StringBuilder(
+                "SELECT JOB_ID FROM ZWF_JOB WHERE JOB_TYPE='EXTERNAL' AND TOPIC=? AND RETRIES > 0");
+        List<Object> args = new ArrayList<>();
+        args.add(topic);
+        // 退避窗口：失败后 duedate 被写成"最早可领时刻"，到点前不给人领。
+        // 不加这个条件的话 fail 里的退避时长就是摆设 —— 解锁即被立刻领走，
+        // 重试次数在几毫秒内烧光，而瞬时故障（下游重启）本来重试一次就能过。
+        // NULL 表示"刚挂上、立即可领"，与外部任务首次创建时 duedate 为空一致
+        select.append(" AND (DUEDATE IS NULL OR DUEDATE <= ?)");
+        args.add(timestamp(new java.util.Date()));
+        // 锁条件：没锁的，或者锁已过期的。锁没过期就不给抢 ——
+        // 外部动作通常不可重入，抢别人的活等于让同一件事做两遍
+        if (staleBefore == null) {
+            select.append(" AND (LOCKED_BY IS NULL OR LOCKED_BY='')");
+        } else {
+            select.append(" AND (LOCKED_BY IS NULL OR LOCKED_BY='' OR LOCK_AT < ?)");
+            args.add(timestamp(staleBefore));
+        }
+        select.append(" ORDER BY CREATE_TIME ASC, JOB_ID ASC LIMIT ?");
+        args.add(maxTasks);
+
+        List<String> ids = queryList(select.toString(), args.toArray(),
+                new RowMapper<String>() {
+                    @Override
+                    public String map(ResultSet rs) throws SQLException {
+                        return rs.getString("JOB_ID");
+                    }
+                });
+        List<WfJob> locked = new ArrayList<WfJob>();
+        java.util.Date now = new java.util.Date();
+        for (String id : ids) {
+            WfJob job = findJob(id);
+            if (job == null) {
+                continue;
+            }
+            // 逐条乐观锁上锁：并发领活时只有一方成功，
+            // 失败的那些跳过（对方已经领走了）—— 这也顺带实现了"同一件活只被领一次"
+            job.setLockedBy(workerId);
+            job.setLockedAt(now);
+            job.nextRevision();
+            try {
+                saveJob(job);
+                locked.add(job);
+            } catch (WfOptimisticLockException e) {
+                log.debug("外部任务 {} 已被别的 worker 领走", id);
+            }
+        }
+        return locked;
     }
 
     @Override
@@ -1689,6 +1788,10 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 parts.add("RETRIES > 0");
             }
         }
+        if (query.getTopic() != null && !query.getTopic().trim().isEmpty()) {
+            parts.add("TOPIC=?");
+            args.add(query.getTopic());
+        }
         if (!parts.isEmpty()) {
             sql.append(" WHERE ").append(join(parts, " AND "));
         }
@@ -1708,6 +1811,9 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             // 到期定时器永远不被扫描器捞到
             job.setType(WfJobType.TIMER.name().equals(jobType)
                     ? WfJobType.TIMER : parseJobType(jobType));
+            job.setTopic(rs.getString("TOPIC"));
+            job.setLockedBy(rs.getString("LOCKED_BY"));
+            job.setLockedAt(date(rs.getTimestamp("LOCK_AT")));
             job.setDuedate(date(rs.getTimestamp("DUEDATE")));
             job.setRetries(rs.getInt("RETRIES"));
             job.setExceptionMessage(rs.getString("EXCEPTION_MSG"));

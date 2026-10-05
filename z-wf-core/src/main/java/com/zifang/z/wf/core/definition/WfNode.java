@@ -80,6 +80,16 @@ public class WfNode implements Serializable {
      */
     private String signalName;
 
+    /**
+     * 外部任务主题名。给了 topic 的 serviceTask 不在引擎里执行，
+     * 而是停在这一步等外部 worker 领走。
+     *
+     * <p>用 serviceTask + 扩展属性而不是新增 BPMN 元素 {@code <externalTask>}：
+     * 那不是 BPMN 2.0 的元素，Camunda 也是靠 {@code camunda:type="external"} 标注在
+     * serviceTask 上。新造一个元素类型会让从 Camunda/Flowable 导出的 XML 全都认不出。
+     */
+    private String topic;
+
     /** callActivity / subProcess：被引用的流程定义 key。 */
     private String calledElementKey;
 
@@ -468,6 +478,19 @@ public class WfNode implements Serializable {
 
     public void setMessageName(String messageName) {
         this.messageName = messageName;
+    }
+
+    public String getTopic() {
+        return topic;
+    }
+
+    public void setTopic(String topic) {
+        this.topic = topic;
+    }
+
+    /** 是否是"交给外部 worker 做的一步"。 */
+    public boolean isExternalStep() {
+        return topic != null && !topic.trim().isEmpty();
     }
 
     public String getSignalName() {

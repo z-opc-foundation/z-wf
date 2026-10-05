@@ -81,7 +81,8 @@ public class WfDefinitionController {
     }
 
     @PostMapping("/suspend")
-    @Operation(summary = "004_停用某个版本（不再接新单，在跑的实例不受影响）")    public Result<Void> suspend(@RequestParam String key, @RequestParam Integer version) {
+    @Operation(summary = "004_停用某个版本（不再接新单，在跑的实例不受影响）")
+    public Result<Void> suspend(@RequestParam String key, @RequestParam Integer version) {
         repositoryService.suspendDefinition(key, version);
         return Result.success();
     }

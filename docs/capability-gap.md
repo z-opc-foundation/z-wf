@@ -108,7 +108,7 @@
 
 | Camunda 能力 | z-wf | 说明 |
 |---|---|---|
-| **Job / 定时器** `createJobQuery` / `executeJob` / `setJobRetries` | 🟡 | **本轮补上 job 机制**：`WfJob` + `ZWF_JOB` 表 + `WfJobService#executeDueJobs`（重试计数、耗尽可查）。**剩余**：只有定时器边界一种 job，异步执行（`asyncBefore/asyncAfter`）、外部任务（`externalTask`）、`jobPriority`/定时器事件订阅都没做；也没有 `createJobQuery` 的 REST 入口 |
+| **Job / 定时器** `createJobQuery` / `executeJob` / `setJobRetries` | 🟡 | **本轮补上 job 机制**：`WfJob` + `ZWF_JOB` 表 + `WfJobService#executeDueJobs`（重试计数、耗尽可查）。**本轮再补外部任务**（`externalTask`）：`WfExternalTaskService` + `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制领活、`fail` 解锁+退避、重试耗尽留档不删。**剩余**：异步执行（`asyncBefore/asyncAfter`）、`jobPriority`、循环定时器都没做 |
 | `createIncidentQuery` | ❌ | 无运行期故障的概念 |
 | `createMetricQuery`（引擎指标） | 🟡 | 只有 `getProcessStatusCounts` 一个自定义统计 |
 | `getTableCount` / `getTableNames` / `getProperties` | ❌ | |
@@ -150,7 +150,8 @@
 | `complexGateway` | ❌ | |
 | `transaction` / `adHocSubProcess` | ❌ | 同上，报错挡住 |
 | **定时器** `timerEventDefinition` | ✅ | `timeDuration`（PT5M / P1DT2H / P1Y）与 `timeDate`（2026-12-31T18:00:00Z）已实现，可写 `${变量}` 由流程实例决定时限。**`timeCycle` 循环定时器刻意不支持**，部署期报 ERROR |
-| **异步** `asyncBefore` / `asyncAfter` | ❌ | |
+| **异步** `asyncBefore` / `asyncAfter` | ❌ | 载体已通用（`WfJob` 复用同一张表），但缺"从 job 续跑"的通用机制，只做了边界事件专用的 `startFrom`，故留到下一轮 |
+| **外部任务** `externalTask` / `ExternalTaskService` | ✅ | `serviceTask` + `zifang:topic` 标注（`<externalTask>` 不是 BPMN 2.0 元素，Camunda 同样靠标注在 serviceTask 上）。原子"选出+上锁"、租约制、`fail` 解锁+退避、重试耗尽留档。REST 7 端点在 `/api/wf/external-tasks` |
 | `errorRef` / `errorEventDefinition` | ✅ | 见上。**刻意不支持「空 errorRef = 捕获所有错误」**——宽泛捕获会把不相关异常也吸走，让本该崩的流程继续走 |
 | `escalationCode` / `compensation` | ❌ | |
 | `dataObject` / `dataStore` / 数据关联 | ❌ | |
@@ -165,10 +166,11 @@
   + `zifang:assignee="${loopAssignee}"`，索引在分叉时用 Java 取，不在表达式里做
 
 **关于异步为什么仍是缺口**：job 载体本身已经在位（`WfJob` / `ZWF_JOB` / `WfJobService`），
-定时器边界事件也已经跑通"超时提醒/超时升级"。但**异步执行**（`asyncBefore` / `asyncAfter`
-把这一步丢到 job 队列）与**外部任务**（`externalTask` 把这一步交给业务系统领走）
-还没有对应实现 —— 两者都只差"谁去执行这一步"，载体却已通用。
-先做定时器是因为它有确定的到期时刻、不需要外部系统参与。
+定时器边界事件跑通了"超时提醒/超时升级"，外部任务也补上了（把这一步交给业务系统领走，
+租约 + 锁归属校验 + 失败解锁退避）。剩下的**异步执行**（`asyncBefore` / `asyncAfter`
+把这一步丢到自己的 job 队列）仍缺一个通用的"从 job 续跑"机制 ——
+边界事件用的是专用的 `startFrom`，它挪的是 token 而不是重放节点，通用化需要另一套设计。
+半做一套"能扔进队列但不知道怎么执行"的异步比不做更危险，所以整项留着。
 
 ---
 
@@ -197,7 +199,7 @@
 | 生命周期监听器 | ExecutionListener / TaskListener，按事件类型注册，几十个事件点 | 3 个 hook 接口共 11 个回调（`WfHookDispatcher`）。本轮做完行为级审计后修掉 3 处失效回调，详见下文 |
 | 表达式 | JUEL（`${}` / `#{}`） | z-util EL（`${}`） |
 | Java Delegate | `JavaDelegate` / `DelegateExpression` / `ClassDelegate` | `WfJavaDelegate` + `WfDelegateRegistry` |
-| 外部任务 Worker | `ExternalTaskService` | ⛔ 无（用 `serviceTask` + delegate 代替） |
+| 外部任务 Worker | `ExternalTaskService` | ✅ `WfExternalTaskService`（fetchAndLock / complete / fail / release / list）。**剩余**：Camunda 侧的 `handleBpmnError` / `handleEscalation` 交回流程、`setVariableLocal`、优先级与批量操作 |
 
 **扩展面比 Camunda 窄很多**，这是实话。Camunda 的监听器可以挂在
 "任务创建前/后、实例启动/结束、变量更新、流程图绘制"等几十个点上；
@@ -256,7 +258,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 | 1 | ~~**多实例（会签/或签/计数）**~~ | ✅ 本轮已实现（并行）。剩余：`collection` 迭代、串行、变量下标 EL |
 | 2 | ~~**变量服务**~~ | ✅ 本轮已补（`WfVariableService` + REST `GET/POST /api/wf/process/variables`）。剩余缺口：变量实例查询、类型化变量、变量作用域链（execution 级） |
 | 3 | ~~**BPMN 错误事件 + `handleBpmnError`**~~ | ✅ 本轮已实现（错误边界）。剩余：escalation / compensation / 超时与消息边界 |
-| 4 | ~~**边界事件 + 定时器 + Job 执行器**~~ | ✅ **已实现**：定时器 / 错误 / 消息 / 信号四种边界共用 `ZWF_JOB` 一个载体，靠 `JOB_TYPE` 区分触发方式（TIMER 到期、消息点对点、信号广播）。**剩余**：异步执行（`asyncBefore/asyncAfter`）、外部任务（`externalTask`）、循环定时器 |
+| 4 | ~~**边界事件 + 定时器 + Job 执行器**~~ | ✅ **已实现**：定时器 / 错误 / 消息 / 信号 / 外部五种共用 `ZWF_JOB` 一个载体，靠 `JOB_TYPE` 区分触发方式（TIMER 到期、消息点对点、信号广播、EXTERNAL 等人领走）。**剩余**：异步执行（`asyncBefore/asyncAfter`）、循环定时器 |
 
 ### P1 —— 引擎成熟度
 
@@ -273,9 +275,13 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 334 个测试兜着
-- 本轮从测试与审计中逼出并修复的**真实缺陷 18 项**，其中 4 项属于"能力看着在、实际不生效"：
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 366 个测试兜着
+- 从测试与审计中逼出并修复的**真实缺陷 22 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
+- **两处"两套实现语义不一致"值得单独记**：内存版 `lockExternalTasks` 直接改内部引用，
+  绕过了 `saveJob` 的乐观锁契约（表现为"领一次活就把 job 永久锁死在乐观锁异常里"）；
+  `job INSERT` 写了 15 列却只给 14 个占位符，只有 JDBC 路径能触发 ——
+  而开发期默认用内存实现，于是这类问题要么炸在开发期、要么全炸在生产期
 - **扩展面明显比 Camunda 窄**（3 个 hook vs 几十个监听点），这是与 Camunda 差距最大、
   也最难靠"补功能"追平的一项
 - 引擎面缺口按上面 P0/P1 排期推进；身份/表单/鉴权/CMMN 有意不做

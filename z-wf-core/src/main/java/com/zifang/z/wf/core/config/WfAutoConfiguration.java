@@ -31,6 +31,7 @@ import com.zifang.z.wf.core.persistence.WfPersistence;
 import com.zifang.z.wf.core.service.WfDelegateRegistry;
 import com.zifang.z.wf.core.service.WfHistoryService;
 import com.zifang.z.wf.core.service.WfJobService;
+import com.zifang.z.wf.core.service.WfExternalTaskService;
 import com.zifang.z.wf.core.service.WfRepositoryService;
 import com.zifang.z.wf.core.service.WfRuntimeService;
 import com.zifang.z.wf.core.service.WfTaskService;
@@ -216,6 +217,19 @@ public class WfAutoConfiguration {
     public WfOverdueScanner wfOverdueScanner(WfPersistence persistence,
                                              WfHookDispatcher hookDispatcher) {
         return new WfOverdueScanner(persistence, hookDispatcher);
+    }
+
+    /**
+     * 外部任务服务。
+     *
+     * <p>与 {@link #wfJobService} 同样<b>不自带轮询器</b>：外部 worker 要不要常驻、
+     * 拉取间隔多少，取决于业务上"外部动作能容忍多长的延迟"。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WfExternalTaskService wfExternalTaskService(WfPersistence persistence,
+                                                      WfRuntimeService runtimeService) {
+        return new WfExternalTaskService(persistence, runtimeService);
     }
 
     // ==================== 启动部署 ====================

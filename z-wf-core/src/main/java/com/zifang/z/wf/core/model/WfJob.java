@@ -49,6 +49,20 @@ public class WfJob implements Serializable {
     private Date duedate;
 
     /**
+     * 外部任务的主题名。worker 按 topic 领活。
+     *
+     * <p>单独一列而不是塞进 exceptionMessage：worker 取活是<b>服务端过滤</b>
+     * （SQL 条件），而 message/signal 的名字只在触发那一刻在内存里比对一次。
+     */
+    private String topic;
+
+    /** 当前锁定者（worker id）。{@code null} 表示可被领取。 */
+    private String lockedBy;
+
+    /** 锁定时刻。领活时写入；超过 leaseMillis 没完成就被别的 worker 重新领走。 */
+    private Date lockedAt;
+
+    /**
      * 剩余重试次数。
      *
      * <p>job 执行失败（不是流程失败）时递减；归零后不再重试，
@@ -142,6 +156,30 @@ public class WfJob implements Serializable {
 
     public void setAttachedToRef(String attachedToRef) {
         this.attachedToRef = attachedToRef;
+    }
+
+    public String getTopic() {
+        return topic;
+    }
+
+    public void setTopic(String topic) {
+        this.topic = topic;
+    }
+
+    public String getLockedBy() {
+        return lockedBy;
+    }
+
+    public void setLockedBy(String lockedBy) {
+        this.lockedBy = lockedBy;
+    }
+
+    public Date getLockedAt() {
+        return lockedAt;
+    }
+
+    public void setLockedAt(Date lockedAt) {
+        this.lockedAt = lockedAt;
     }
 
     public WfJobType getType() {

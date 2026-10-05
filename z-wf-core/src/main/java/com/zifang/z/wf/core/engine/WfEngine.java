@@ -235,6 +235,20 @@ public class WfEngine {
             return;
         }
 
+        // ---- 外部任务：停下挂 job，不在引擎里执行 ----
+        // 必须在 createsTask 之前：它是 serviceTask，不建 WfTask，而是等外部 worker 领走。
+        //
+        // 这里不需要区分"首次进入"与"外部完成后重入"：completeExternalTask 走的是
+        // startFrom，而 startFrom 调 leave —— 它让 token 离开当前节点走向出线，
+        // 不会重新 enter 这个节点，所以挂 job 的分支只在流程首次流经它时才会执行。
+        // （曾在这里加过一个 externalResult 标记来防"每次 complete 又挂一个新 job"，
+        //  探针实测证明那个场景不会发生：该标记在当前 startFrom 语义下恒为死代码。）
+        if (node.isExternalStep()) {
+            context.addCreatedJob(externalJob(context, node, token));
+            token.setState(WfExecution.State.WAITING);
+            return;
+        }
+
         // ---- 任务类节点：执行行为创建任务，然后挂起 ----
         if (node.getType().createsTask()) {
             if (node.isMultiInstance()) {
@@ -275,6 +289,27 @@ public class WfEngine {
             return;
         }
         leave(context, depth + 1);
+    }
+
+    /**
+     * 为外部任务节点建 job。
+     *
+     * <p>{@code duedate} 留空：外部任务不由时间触发，留个时间戳只会被扫描器误捞。
+     * {@code JOB_TYPE} 标明它是 EXTERNAL，扫描器只捞 TIMER，worker 取活只捞 EXTERNAL。
+     */
+    private com.zifang.z.wf.core.model.WfJob externalJob(WfContext context, WfNode node,
+                                                         WfExecution token) {
+        com.zifang.z.wf.core.model.WfJob job = new com.zifang.z.wf.core.model.WfJob();
+        job.setProcessInstanceId(context.getProcessInstanceId());
+        job.setExecutionId(token.getId());
+        job.setElementId(node.getId());
+        job.setAttachedToRef(node.getId());
+        job.setTopic(node.getTopic());
+        job.setType(com.zifang.z.wf.core.model.WfJobType.EXTERNAL);
+        job.setDuedate(null);
+        job.setCreateTime(new java.util.Date());
+        job.setRetries(com.zifang.z.wf.core.model.WfJob.DEFAULT_RETRIES);
+        return job;
     }
 
     /**

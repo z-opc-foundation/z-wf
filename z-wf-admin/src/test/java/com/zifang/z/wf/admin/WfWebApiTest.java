@@ -1086,6 +1086,178 @@ class WfWebApiTest {
                         "comment", "同意"));
     }
 
+    // ==================== 外部任务 ====================
+
+    /**
+     * 外部任务端点：走完"起流程 → 领活 → 交差 → 流程推进"的完整闭环。
+     *
+     * <p>这条用例的价值在于它同时压了三层：HTTP 契约、JDBC 落库（含新加的
+     * TOPIC/LOCKED_BY/LOCK_AT 三列与迁移）、以及锁归属校验。
+     * 只在内存实现上测的话，JDBC 侧那些列的读写对不对根本没人知道。
+     */
+    @Test
+    @DisplayName("外部任务端点：起流程挂活、领活上锁、交差后流程推进到用户任务")
+    void externalTaskOverHttp() throws Exception {
+        deployExternalProcess();
+        String suffix = String.valueOf(System.nanoTime());
+        String businessKey = "WEB-EXT-" + suffix;
+
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webExternalProcess", "businessKey", businessKey,
+                        "userId", "ext-owner-" + suffix,
+                        "variables", body("orderNo", "EXT-" + suffix))).get("data");
+
+        // 1) 列表端点能查到这笔活，且 topic 过滤生效
+        Map<String, Object> listed = getOk("/api/wf/external-tasks?topic=web.notify");
+        List<Map<String, Object>> tasks = asList(listed.get("data"));
+        assertFalse(tasks.isEmpty(), "流程停在外部任务上，应当能查到活");
+        Map<String, Object> mine = null;
+        for (Map<String, Object> t : tasks) {
+            if (processId.equals(t.get("processInstanceId"))) {
+                mine = t;
+                break;
+            }
+        }
+        assertNotNull(mine, "刚起的实例应当在外部任务列表里，实际 " + tasks);
+        assertEquals("web.notify", mine.get("topic"));
+        assertEquals("EXT-" + suffix, asMap(mine.get("variables")).get("orderNo"),
+                "领活时带出的变量应当是起流程时传入的");
+
+        // 2) 领活：带上锁，且能拿到租约
+        String taskId = (String) mine.get("id");
+        Map<String, Object> fetched = postOk("/api/wf/external-tasks/fetch",
+                body("topic", "web.notify", "workerId", "web-w1-" + suffix,
+                        "maxTasks", 10, "leaseMillis", 60000));
+        List<Map<String, Object>> got = asList(fetched.get("data"));
+        boolean found = false;
+        for (Map<String, Object> t : got) {
+            if (taskId.equals(t.get("id"))) {
+                found = true;
+                assertEquals("web-w1-" + suffix, t.get("lockedBy"), "返回的活应当已上锁");
+                assertTrue(((Number) t.get("lockExpiresAt")).longValue()
+                        > System.currentTimeMillis(), "租约到期时刻应在将来");
+            }
+        }
+        assertTrue(found, "应当领到刚才那件活，实际领到 " + got);
+
+        // 3) 同一 worker 再领一次，领不到（锁还在）
+        Map<String, Object> again = postOk("/api/wf/external-tasks/fetch",
+                body("topic", "web.notify", "workerId", "web-w1-" + suffix,
+                        "maxTasks", 10, "leaseMillis", 60000));
+        for (Map<String, Object> t : asList(again.get("data"))) {
+            assertFalse(taskId.equals(t.get("id")), "锁还在自己手里，不该再领到同一件活");
+        }
+
+        // 4) 非锁持有者交差被拒 —— 不能把整条流程推给不相干的 worker
+        ResponseEntity<String> stolen = exchange(HttpMethod.POST,
+                "/api/wf/external-tasks/" + taskId + "/complete",
+                body("workerId", "web-w2-" + suffix, "variables", body("x", 1)));
+        assertEquals(HttpStatus.BAD_REQUEST, stolen.getStatusCode(),
+                "非锁持有者交差应当被拒： " + stolen.getBody());
+
+        // 5) 锁持有者交差，流程推进到用户任务
+        Map<String, Object> done = postOk("/api/wf/external-tasks/" + taskId + "/complete",
+                body("workerId", "web-w1-" + suffix,
+                        "variables", body("notifyResult", "sent")));
+        assertEquals(processId, asMap(done.get("data")).get("processInstanceId"));
+
+        // 6) 交差后 job 消失，列表里再也查不到
+        Map<String, Object> after = getOk("/api/wf/external-tasks?topic=web.notify");
+        for (Map<String, Object> t : asList(after.get("data"))) {
+            assertFalse(taskId.equals(t.get("id")), "交差后 job 应当被删掉，不能留成哑表");
+        }
+
+        // 7) 流程真的走到了下一节点（有待办）
+        Map<String, Object> todo = getOk("/api/approval-center/tasks/todo?userId=web-ext-leader");
+        assertFalse(asList(asMap(todo.get("data")).get("records")).isEmpty(),
+                "外部步骤过了，流程应当轮到处在办的用户任务上");
+    }
+
+    @Test
+    @DisplayName("外部任务端点：失败上报会解锁，别的 worker 能接着领")
+    void externalTaskFailUnlocksOverHttp() throws Exception {
+        deployExternalProcess();
+        String suffix = String.valueOf(System.nanoTime());
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webExternalProcess", "businessKey", "WEB-EXTF-" + suffix,
+                        "userId", "extf-owner-" + suffix)).get("data");
+
+        String worker = "web-wf-" + suffix;
+        Map<String, Object> fetched = postOk("/api/wf/external-tasks/fetch",
+                body("topic", "web.notify", "workerId", worker, "maxTasks", 10));
+        String taskId = null;
+        for (Map<String, Object> t : asList(fetched.get("data"))) {
+            if (processId.equals(t.get("processInstanceId"))) {
+                taskId = (String) t.get("id");
+            }
+        }
+        assertNotNull(taskId, "应当领到本实例的活");
+
+        postOk("/api/wf/external-tasks/" + taskId + "/fail",
+                body("workerId", worker, "errorMessage", "下游 503"));
+
+        // 解锁后另一个 worker 应当能领到
+        Map<String, Object> retry = postOk("/api/wf/external-tasks/fetch",
+                body("topic", "web.notify", "workerId", "web-wr-" + suffix, "maxTasks", 10));
+        boolean reclaimed = false;
+        for (Map<String, Object> t : asList(retry.get("data"))) {
+            if (taskId.equals(t.get("id"))) {
+                reclaimed = true;
+                assertTrue(((Number) t.get("retries")).intValue()
+                        < com.zifang.z.wf.core.model.WfJob.DEFAULT_RETRIES,
+                        "重试次数应当被扣过 —— 没扣的话重试等于无限");
+            }
+        }
+        assertTrue(reclaimed, "失败后活应当被解锁，别人能接着领。实际 " + retry.get("data"));
+    }
+
+    @Test
+    @DisplayName("外部任务端点：参数缺失报 400，不静默当成没活")
+    void externalTaskRejectsBadArguments() throws Exception {
+        deployExternalProcess();
+        ResponseEntity<String> noTopic = exchange(HttpMethod.POST, "/api/wf/external-tasks/fetch",
+                body("workerId", "w", "maxTasks", 5));
+        assertEquals(HttpStatus.BAD_REQUEST, noTopic.getStatusCode(),
+                "缺 topic 应当报 400： " + noTopic.getBody());
+
+        ResponseEntity<String> noWorker = exchange(HttpMethod.POST, "/api/wf/external-tasks/fetch",
+                body("topic", "web.notify", "maxTasks", 5));
+        assertEquals(HttpStatus.BAD_REQUEST, noWorker.getStatusCode(),
+                "缺 workerId 应当报 400： " + noWorker.getBody());
+
+        ResponseEntity<String> badMax = exchange(HttpMethod.POST, "/api/wf/external-tasks/fetch",
+                body("topic", "web.notify", "workerId", "w", "maxTasks", 0));
+        assertEquals(HttpStatus.BAD_REQUEST, badMax.getStatusCode(),
+                "maxTasks=0 应当报 400 而不是返回空： " + badMax.getBody());
+    }
+
+    /**
+     * 部署一个带外部任务步骤的测试定义。
+     *
+     * <p>同样不能靠示例流程：现有示例里没有任何 zifang:topic 节点。
+     * process id 固定（重复部署会升版本），所以每次起流程都要用独立的 businessKey，
+     * 否则断言里按 processInstanceId 过滤会一次比中多条。
+     */
+    private void deployExternalProcess() {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"webExternalProcess\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"wes\"/>\n"
+                + "    <serviceTask id=\"webNotify\" name=\"通知下游\""
+                + " zifang:topic=\"web.notify\"/>\n"
+                + "    <userTask id=\"webExtApprove\" name=\"外部之后审批\""
+                + " zifang:assignee=\"web-ext-leader\"/>\n"
+                + "    <endEvent id=\"wee1\"/>\n"
+                + "    <sequenceFlow id=\"wef1\" sourceRef=\"wes\" targetRef=\"webNotify\"/>\n"
+                + "    <sequenceFlow id=\"wef2\" sourceRef=\"webNotify\""
+                + " targetRef=\"webExtApprove\"/>\n"
+                + "    <sequenceFlow id=\"wef3\" sourceRef=\"webExtApprove\" targetRef=\"wee1\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        repositoryService.deploy(new com.zifang.z.wf.core.definition.WfXmlParser().parse(xml));
+    }
+
     /**
      * 部署一个带定时器边界的测试定义。
      *

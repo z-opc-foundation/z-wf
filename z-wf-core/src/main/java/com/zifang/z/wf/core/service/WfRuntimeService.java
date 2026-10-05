@@ -975,6 +975,68 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         return null;
     }
 
+    /**
+     * 外部任务完成：让 token 在原地继续往下走。
+     *
+     * <p>放在 runtime 而不是外部任务服务里，是因为上下文的构造与落库管线只有这里有
+     * （{@code newContext} + {@code persistAll} + {@code resolveCompletion}），
+     * 在外面复制一份的结果是两条管线各自漂移，而漂移的表现是"外部任务完成后流程没往下走"。
+     *
+     * @param jobId     外部任务 job 的 id
+     * @param workerId  完成人（记入评论与轨迹，便于追责）
+     * @param variables 外部返回的变量
+     */
+    public WfProcessInstance completeExternalTask(String jobId, String workerId,
+                                                   Map<String, Object> variables) {
+        com.zifang.z.wf.core.model.WfJob job = persistence.findJob(jobId);
+        if (job == null) {
+            throw new WfEngineException("外部任务不存在: " + jobId);
+        }
+        WfProcessInstance instance = requireInstance(job.getProcessInstanceId());
+        WfDefinition definition = definitionOf(instance);
+        WfExecution token = job.getExecutionId() == null
+                ? null : persistence.findExecution(job.getExecutionId());
+        if (token == null || token.isEnded()
+                || !job.getElementId().equals(token.getActivityId())) {
+            // token 必须仍停在这一步。token 早就走了还推进，等于把流程从别处拽下来 ——
+            // 与 fireEventBoundary 里那道同构的闸门是同一个道理。
+            //
+            // 走不到这里的最常见情形是 worker 超时重发：那时 job 已被上一个 complete
+            // 删掉，requireLockHolder 会先报"外部任务不存在"。能落到这里的要么是
+            // 清理逻辑漏了一步，要么是并发下有人绕过了锁校验。
+            //
+            // 返回当前实例而不是抛异常：worker 需要知道"不用再做了"，
+            // 抛异常会让它无限重试
+            log.info("外部任务 {} 提交时 token 已不在节点 {} 上（当前 {}），按重复提交处理",
+                    jobId, job.getElementId(),
+                    token == null ? "不存在" : token.getActivityId());
+            return instance;
+        }
+        if (variables != null && !variables.isEmpty()) {
+            instance.getVariables().putAll(variables);
+        }
+        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                instance.getId(), workerId, "external",
+                "外部任务 [" + job.getTopic() + "] 完成"
+                        + (variables == null || variables.isEmpty() ? "" : "，结果 " + variables)));
+
+        // 显式删掉，顺序与 WfJobService#fire 一致（先删再推进）。
+        //
+        // 实测：startFrom 里的 leave 会 clearJobsOf(token)，落库时顺带把本 token 上的
+        // job 全撤掉，所以这一步在当前路径上并非必需。仍然显式删是为了不把
+        // 「这件事办完了」寄托在一个间接机制上 —— 那个机制服务于定时器边界
+        // （token 离开节点时撤掉它起过的表），语义是"清本节点的旧表"，
+        // 与"这件外部任务完结了"不是一回事。
+        persistence.deleteJob(jobId);
+
+        WfContext context = contextForError(instance, definition, token, null);
+        context.setAuthenticatedUserId(workerId);
+        engine.startFrom(context, token);
+        persistAll(context);
+        resolveCompletion(context);
+        return instance;
+    }
+
     private WfContext contextForError(WfProcessInstance instance, WfDefinition definition,
                                       WfExecution execution, Map<String, Object> variables) {
         WfContext context = engine.newContext(definition, instance, execution);

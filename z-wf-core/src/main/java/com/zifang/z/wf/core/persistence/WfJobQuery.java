@@ -30,6 +30,15 @@ public class WfJobQuery {
     /** 只要还没把重试次数耗尽的。 */
     private Boolean retriesExhausted;
 
+    /**
+     * 只要这个 topic 的外部任务。
+     *
+     * <p>管理端"某主题的活积压了多少"就靠它。与 {@link #type} 分开是必要的：
+     * {@code type=EXTERNAL} 会把所有主题的活混在一起，而一个系统通常有好几个 topic，
+     * 混在一起的队列会让 worker 领到不属于它的活。
+     */
+    private String topic;
+
     private int pageNum = 1;
 
     private int pageSize = 50;
@@ -76,6 +85,15 @@ public class WfJobQuery {
 
     public WfJobQuery setRetriesExhausted(Boolean retriesExhausted) {
         this.retriesExhausted = retriesExhausted;
+        return this;
+    }
+
+    public String getTopic() {
+        return topic;
+    }
+
+    public WfJobQuery setTopic(String topic) {
+        this.topic = topic;
         return this;
     }
 

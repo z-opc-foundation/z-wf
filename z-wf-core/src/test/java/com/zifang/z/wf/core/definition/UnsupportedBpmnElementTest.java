@@ -194,6 +194,12 @@ class UnsupportedBpmnElementTest {
         }
 
         @Override
+        public java.util.List<com.zifang.z.wf.core.model.WfJob> lockExternalTasks(
+                String topic, String workerId, int maxTasks, java.util.Date staleBefore) {
+            return null;
+        }
+
+        @Override
         public boolean deleteDefinition(String key, int version) {
             return false;
         }
