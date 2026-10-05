@@ -56,6 +56,15 @@ public class WfEngine {
     /** 单次推进的最大递归深度（防流程图成环导致栈溢出）。 */
     public static final int MAX_DEPTH = 512;
 
+    /**
+     * 多实例展开上限。
+     *
+     * <p>{@code loopCardinality} 可以是表达式，理论上能求值出很大的数。
+     * 不设上限的话 {@code ${99999999}} 会一次性造出上亿个 token 与任务，
+     * 把内存和数据库同时打满——而这只是设计器里的一次手滑。
+     */
+    public static final int MAX_LOOP_INSTANCES = 200;
+
     private final WfBehaviorRegistry behaviorRegistry;
 
     private final WfExpressionEvaluator expressionEvaluator;
@@ -102,6 +111,10 @@ public class WfEngine {
 
     public WfIdGenerator getIdGenerator() {
         return idGenerator;
+    }
+
+    public WfExpressionEvaluator getExpressionEvaluator() {
+        return expressionEvaluator;
     }
 
     public WfBehaviorRegistry getBehaviorRegistry() {
@@ -182,6 +195,10 @@ public class WfEngine {
 
         // ---- 任务类节点：执行行为创建任务，然后挂起 ----
         if (node.getType().createsTask()) {
+            if (node.isMultiInstance()) {
+                enterMultiInstance(context, node, token);
+                return;
+            }
             try {
                 WfTask task = behaviorRegistry.getBehavior(node.getType())
                         .execute(context, node, token);
@@ -216,6 +233,115 @@ public class WfEngine {
             return;
         }
         leave(context, depth + 1);
+    }
+
+    /**
+     * 进入多实例节点：按 {@code loopCardinality} 展开 N 个实例。
+     *
+     * <p>每个实例是一个<b>独立的 token</b>，各自停在同一节点上、各自建一条任务。
+     * 之所以用独立 token 而不是一条 token 记计数：实例之间会真的并行存在
+     * （三个人同时在办），用一条 token 就没法表达"谁办完了谁没办"。
+     *
+     * <p>每个 token 带两个<b>局部</b>变量：{@code loopCounter}（0 起的序号）
+     * 与 {@code loopAssignee}（该实例的办理人）。
+     * 用局部而非流程级，是因为它们属于单个实例——
+     * 放进流程变量会互相覆盖，最后一个实例的值会把前面的盖掉。
+     *
+     * <p>办理人列表在<b>分叉时用 Java 取</b>，而不是在表达式里写
+     * {@code ${approvers[loopCounter]}}：实测 z-util 的 EL 不支持变量下标
+     * （{@code approvers[1]} 可以，{@code approvers[loopCounter]} 抛 ElException）。
+     */
+    private void enterMultiInstance(WfContext context, WfNode node, WfExecution token) {
+        int count = resolveLoopCardinality(context, node);
+        if (count <= 0) {
+            // 展开 0 个实例：BPMN 语义是直接完成该节点，往下走
+            leave(context, 0);
+            return;
+        }
+        if (count > MAX_LOOP_INSTANCES) {
+            fail(context, "多实例节点 " + node.getId() + " 的 loopCardinality=" + count
+                    + " 超过上限 " + MAX_LOOP_INSTANCES + "，拒绝展开");
+            return;
+        }
+
+        List<?> assignees = resolveLoopAssignees(context, node);
+        for (int i = 0; i < count; i++) {
+            WfExecution branch = i == 0 ? token : new WfExecution(
+                    idGenerator.nextExecutionId(), context.getProcessInstanceId(), node.getId());
+            branch.setActivityId(node.getId());
+            branch.setEnteredTime(new Date());
+            branch.setState(WfExecution.State.ACTIVE);
+            branch.getVariables().put(WfMultiInstance.LOOP_COUNTER, i);
+            if (assignees != null && i < assignees.size()) {
+                branch.getVariables().put(WfMultiInstance.LOOP_ASSIGNEE,
+                        String.valueOf(assignees.get(i)));
+            }
+            if (i > 0) {
+                branch.setParentId(token.getId());
+                branch.setChild(true);
+                token.getChildren().add(branch.getId());
+                context.addNewExecution(branch);
+            }
+
+            WfExecution saved = context.getCurrentExecution();
+            context.setCurrentExecution(branch);
+            try {
+                WfTask task = behaviorRegistry.getBehavior(node.getType())
+                        .execute(context, node, branch);
+                if (task != null) {
+                    context.addCreatedTask(task);
+                    branch.setState(WfExecution.State.WAITING);
+                }
+            } catch (Exception e) {
+                fail(context, "多实例第 " + i + " 个实例创建任务失败: " + e.getMessage());
+            }
+            context.setCurrentExecution(saved);
+        }
+    }
+
+    /** loopCardinality：纯数字直接取；{@code ${}} 表达式求值后转 int。 */
+    private int resolveLoopCardinality(WfContext context, WfNode node) {
+        String raw = node.getLoopCardinality();
+        if (raw == null || raw.trim().isEmpty()) {
+            return 0;
+        }
+        try {
+            Object value = raw.trim().matches("\\d+")
+                    ? Integer.valueOf(raw.trim())
+                    : expressionEvaluator.evalRaw(raw, context.mergedVariables());
+            if (value == null) {
+                fail(context, "多实例节点 " + node.getId()
+                        + " 的 loopCardinality 求值为空: " + raw);
+                return 0;
+            }
+            return Integer.parseInt(String.valueOf(value).trim());
+        } catch (NumberFormatException e) {
+            fail(context, "多实例节点 " + node.getId()
+                    + " 的 loopCardinality 不是整数: " + raw);
+            return 0;
+        }
+    }
+
+    /** 每个实例的办理人列表；未配置返回 null。 */
+    private List<?> resolveLoopAssignees(WfContext context, WfNode node) {
+        String expression = node.getLoopAssignees();
+        if (expression == null || expression.trim().isEmpty()) {
+            return null;
+        }
+        Object value = expressionEvaluator.evalRaw(expression, context.mergedVariables());
+        if (value == null) {
+            fail(context, "多实例节点 " + node.getId()
+                    + " 的 loopAssignees 变量为空或未定义: " + expression
+                    + "。变量不存在时按 fail-closed 处理为无办理人，"
+                    + "会导致这批待办没人认领");
+            return null;
+        }
+        if (value instanceof List) {
+            return (List<?>) value;
+        }
+        fail(context, "多实例节点 " + node.getId()
+                + " 的 loopAssignees 必须是集合，实际类型: " + value.getClass().getName());
+        return null;
     }
 
     /**

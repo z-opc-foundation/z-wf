@@ -128,6 +128,11 @@ public final class WfDefinitionCodec {
         private String script;
         private String messageName;
         private String resultVariable;
+        private boolean multiInstance;
+        private String loopCardinality;
+        private String completionCondition;
+        private boolean sequential;
+        private String loopAssignees;
         private String calledElementKey;
         private String resultExpression;
         private Map<String, Object> properties = new HashMap<>();
@@ -251,6 +256,46 @@ public final class WfDefinitionCodec {
 
         public String getResultVariable() {
             return resultVariable;
+        }
+
+        public boolean isMultiInstance() {
+            return multiInstance;
+        }
+
+        public void setMultiInstance(boolean multiInstance) {
+            this.multiInstance = multiInstance;
+        }
+
+        public String getLoopCardinality() {
+            return loopCardinality;
+        }
+
+        public void setLoopCardinality(String loopCardinality) {
+            this.loopCardinality = loopCardinality;
+        }
+
+        public String getCompletionCondition() {
+            return completionCondition;
+        }
+
+        public void setCompletionCondition(String completionCondition) {
+            this.completionCondition = completionCondition;
+        }
+
+        public boolean isSequential() {
+            return sequential;
+        }
+
+        public void setSequential(boolean sequential) {
+            this.sequential = sequential;
+        }
+
+        public String getLoopAssignees() {
+            return loopAssignees;
+        }
+
+        public void setLoopAssignees(String loopAssignees) {
+            this.loopAssignees = loopAssignees;
         }
 
         public void setResultVariable(String resultVariable) {
@@ -394,6 +439,11 @@ public final class WfDefinitionCodec {
             gn.setScript(node.getScript());
             gn.setMessageName(node.getMessageName());
             gn.setResultVariable(node.getResultVariable());
+            gn.setMultiInstance(node.isMultiInstance());
+            gn.setLoopCardinality(node.getLoopCardinality());
+            gn.setCompletionCondition(node.getCompletionCondition());
+            gn.setSequential(node.isSequential());
+            gn.setLoopAssignees(node.getLoopAssignees());
             gn.setCalledElementKey(node.getCalledElementKey());
             gn.setResultExpression(node.getResultExpression());
             gn.setProperties(new HashMap<>(node.getProperties()));
@@ -469,6 +519,11 @@ public final class WfDefinitionCodec {
             node.setScript(gn.getScript());
             node.setMessageName(gn.getMessageName());
             node.setResultVariable(gn.getResultVariable());
+            node.setMultiInstance(gn.isMultiInstance());
+            node.setLoopCardinality(gn.getLoopCardinality());
+            node.setCompletionCondition(gn.getCompletionCondition());
+            node.setSequential(gn.isSequential());
+            node.setLoopAssignees(gn.getLoopAssignees());
             node.setCalledElementKey(gn.getCalledElementKey());
             node.setResultExpression(gn.getResultExpression());
             node.setProperties(new HashMap<>(gn.getProperties()));

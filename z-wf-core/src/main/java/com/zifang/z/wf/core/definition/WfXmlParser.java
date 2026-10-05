@@ -44,6 +44,10 @@ import org.w3c.dom.NodeList;
  */
 public class WfXmlParser {
 
+    /** {@link WfNode#getProperties()} 里记录 collection 元素文本的键。
+     *  只用于识别"作者写了集合迭代"，以便校验器给出可操作的拒绝理由。 */
+    public static final String PROPERTY_LOOP_COLLECTION = "zifang:loopCollection";
+
     /** BPMN 2.0 模型命名空间。 */
     private static final String BPMN_NS = "http://www.omg.org/spec/BPMN/20100524/MODEL";
 
@@ -240,6 +244,20 @@ public class WfXmlParser {
                 firstNonBlank(extension(element, "calledElement"), null)));
         node.setResultExpression(extension(element, "resultExpression"));
         node.setResultVariable(extension(element, "resultVariable"));
+
+        // ---- 多实例（BPMN 的 multiInstanceLoopCharacteristics 是子元素，不是属性）----
+        Element loop = childElement(element, "multiInstanceLoopCharacteristics");
+        if (loop != null) {
+            node.setMultiInstance(true);
+            node.setSequential("true".equalsIgnoreCase(loop.getAttribute("isSequential")));
+            node.setLoopCardinality(childText(loop, "loopCardinality"));
+            node.setCompletionCondition(childText(loop, "completionCondition"));
+            // collection / elementVariable 暂不支持，识别出来是为了给出可操作的报错
+            node.getProperties().put(PROPERTY_LOOP_COLLECTION, childText(loop, "collection"));
+            // 办理人列表是 zifang 扩展（标准 BPMN 没有对应位置）：
+            // 值是流程变量里的一个集合，逐实例派人时用 ${loopAssignee} 引用
+            node.setLoopAssignees(extension(element, "loopAssignees"));
+        }
         node.setDueDateDuration(extension(element, "dueDate"));
 
         String priority = extension(element, "priority");
@@ -301,6 +319,32 @@ public class WfXmlParser {
      *
      * <p>中间事件（intermediateThrow/Catch）本引擎没有独立行为，归到 {@link WfNodeType#TASK}。
      */
+    /** 取直接子元素；不存在返回 null。 */
+    private Element childElement(Element parent, String tagName) {
+        if (parent == null) {
+            return null;
+        }
+        org.w3c.dom.NodeList children = parent.getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            org.w3c.dom.Node child = children.item(i);
+            if (child.getNodeType() == org.w3c.dom.Node.ELEMENT_NODE
+                    && tagName.equals(child.getNodeName())) {
+                return (Element) child;
+            }
+        }
+        return null;
+    }
+
+    /** 取子元素文本；不存在或为空返回 null。 */
+    private String childText(Element parent, String tagName) {
+        Element child = childElement(parent, tagName);
+        if (child == null) {
+            return null;
+        }
+        String text = child.getTextContent();
+        return text == null || text.trim().isEmpty() ? null : text.trim();
+    }
+
     private WfNodeType resolveType(String elementTag, String override) {
         if (override != null && !override.trim().isEmpty()) {
             WfNodeType explicit = WfNodeType.parse(override);

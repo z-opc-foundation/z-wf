@@ -184,6 +184,39 @@ public class WfExpressionEvaluator {
      *
      * <p>给"条件写错了必须立刻发现"的场景（如单元测试、流程定义 CI 校验）用。
      */
+    /**
+     * 多实例完成条件求值。
+     *
+     * <p>与 {@link #evaluate} 的差别只有一处：<b>未定义变量时打 ERROR 而不是 WARN</b>。
+     *
+     * <p>为什么这条路径要区别对待：会签的完成条件如果引用了一个不存在的变量，
+     * 按 fail-closed 会判为"条件不成立"，而"不成立"在会签里的含义是
+     * "还要继续等" —— 于是流程<b>永远</b>停在会签上，没人办、也不报错。
+     * 普通分支条件判 false 有 defaultFlow 兜底，会签没有这种兜底。
+     * 所以在这里把它升级成 ERROR：不是改变判定结果，而是让"卡死"这个事实
+     * 在日志里立刻可见。
+     */
+    public boolean evaluateForLoop(Map<String, Object> variables, String expression) {
+        if (expression == null || expression.trim().isEmpty()) {
+            return false;
+        }
+        List<String> undefined = undefinedIdentifiers(expression, variables);
+        if (!undefined.isEmpty()) {
+            log.error("多实例完成条件引用了未定义变量，按条件不成立处理。"
+                            + "后果是该会签永远不会完成，流程将一直停在多实例节点上："
+                            + "expression={}, undefined={}, 可用变量={}",
+                    expression, undefined, variables == null ? null : variables.keySet());
+            return false;
+        }
+        try {
+            return toBoolean(evalRaw(expression, variables));
+        } catch (Exception e) {
+            log.error("多实例完成条件求值失败，按 failOpen={} 处理: expression={}, variables={}",
+                    failOpen, expression, variables, e);
+            return failOpen;
+        }
+    }
+
     public boolean evaluateStrict(String expression, Map<String, Object> variables) {
         if (expression == null || expression.trim().isEmpty()) {
             return true;

@@ -11,9 +11,11 @@ import org.slf4j.LoggerFactory;
 
 import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.WfDefinitionException;
+import com.zifang.z.wf.core.definition.WfNode;
 import com.zifang.z.wf.core.engine.WfContext;
 import com.zifang.z.wf.core.engine.WfEngine;
 import com.zifang.z.wf.core.engine.WfIdGenerator;
+import com.zifang.z.wf.core.engine.WfMultiInstance;
 import com.zifang.z.wf.core.engine.WfSubProcessLauncher;
 import com.zifang.z.wf.core.hook.WfHookDispatcher;
 import com.zifang.z.wf.core.model.WfActivityInstance;
@@ -277,6 +279,21 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         // 汇合判定需要看到本实例的全部 token
         context.setProcessExecutions(persistence.findExecutionsByProcessInstance(instance.getId()));
 
+        // ---- 多实例会签：办结其中一个实例，不等于这个节点办完了 ----
+        // 会签节点上每个实例一个 token、一条任务。办结其中一条时若直接往下走，
+        // 流程会在"还差 2 个人没批"的时候就跑到了下一节点 —— 那不是会签，那是抢占。
+        if (execution != null && isMultiInstance(definition, task.getDefinitionId())) {
+            if (!closeMultiInstanceIfDone(context, instance, definition,
+                    task.getDefinitionId(), task.getExecutionId())) {
+                // 会签未收口：把本 token 停在本节点，流程不往下走
+                execution.setState(WfExecution.State.WAITING);
+                persistAll(context);
+                resolveCompletion(context);
+                recordActivityComplete(instance, definition, task, execution, userId, comment);
+                return instance;
+            }
+        }
+
         if (execution != null) {
             engine.advance(context);
             persistAll(context);
@@ -291,23 +308,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         }
 
         // ---- 3. 活动历史 ----
-        if (execution != null && definition.node(task.getDefinitionId()) != null) {
-            WfActivityInstance history = new WfActivityInstance();
-            history.setId(idGenerator.nextActivityId());
-            history.setProcessInstanceId(instance.getId());
-            history.setProcessDefinitionKey(instance.getDefinitionKey());
-            history.setActivityId(task.getDefinitionId());
-            history.setActivityName(task.getName());
-            history.setActivityType(task.getType());
-            history.setExecutionId(execution.getId());
-            history.setAssignee(userId);
-            history.setStartTime(task.getCreateTime());
-            history.setEndTime(new Date());
-            history.setDurationMillis(task.getCreateTime() == null ? 0L
-                    : System.currentTimeMillis() - task.getCreateTime().getTime());
-            history.setOutcome(comment != null && !comment.isEmpty() ? comment : "completed");
-            persistence.saveActivityInstance(history);
-        }
+        recordActivityComplete(instance, definition, task, execution, userId, comment);
 
         // ---- 4. 钩子 ----
         hookDispatcher.fireAfterComplete(taskId, userId, "completed");
@@ -552,8 +553,107 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         return matched;
     }
 
-    // ==================== 子流程 ====================
+    /**
+     * 记一条"该活动完成"的历史。
+     *
+     * <p>抽出来是因为会签路径要在"未收口"时也记一条 ——
+     * 每个会签实例的办结都该在审批轨迹上留下痕迹，
+     * 否则轨迹上只有一条"审批完成"，看不出这是一个 3 人会签。
+     */
+    private void recordActivityComplete(WfProcessInstance instance, WfDefinition definition,
+                                        WfTask task, WfExecution execution, String userId,
+                                        String comment) {
+        if (execution == null || definition.node(task.getDefinitionId()) == null) {
+            return;
+        }
+        WfActivityInstance history = new WfActivityInstance();
+        history.setId(idGenerator.nextActivityId());
+        history.setProcessInstanceId(instance.getId());
+        history.setProcessDefinitionKey(instance.getDefinitionKey());
+        history.setActivityId(task.getDefinitionId());
+        history.setActivityName(task.getName());
+        history.setActivityType(task.getType());
+        history.setExecutionId(execution.getId());
+        history.setAssignee(userId);
+        history.setStartTime(task.getCreateTime());
+        history.setEndTime(new Date());
+        history.setDurationMillis(task.getCreateTime() == null ? 0L
+                : System.currentTimeMillis() - task.getCreateTime().getTime());
+        history.setOutcome(comment != null && !comment.isEmpty() ? comment : "completed");
+        persistence.saveActivityInstance(history);
+    }
 
+    // ==================== 多实例（会签 / 或签） ====================
+
+    private boolean isMultiInstance(WfDefinition definition, String nodeId) {
+        WfNode node = nodeId == null ? null : definition.node(nodeId);
+        return node != null && node.isMultiInstance();
+    }
+
+    /**
+     * 会签是否收口；收口时作废剩余实例、结束兄弟 token。
+     *
+     * <p>收口后<b>只让当前这条 token 往下走</b>，其余 token 直接结束 ——
+     * 它们停在同一个节点上，而流程只能有一个 token 离开该节点，
+     * 否则每收口一次就多出一条并行的后续路径。
+     *
+     * <p>剩余实例的任务被置为 {@code CANCELLED} 而不是删掉：
+     * 已下发出去的待办要从办理人的列表里消失，但"曾经有过这个会签实例"
+     * 是审计要问的事，删了就答不上来了。
+     *
+     * @return true = 已收口，流程可以继续往下；false = 还要继续等
+     */
+    private boolean closeMultiInstanceIfDone(WfContext context, WfProcessInstance instance,
+                                             WfDefinition definition, String nodeId,
+                                             String currentExecutionId) {
+        WfNode node = definition.node(nodeId);
+        List<WfTask> nodeTasks = persistence.queryTasks(new WfTaskQuery()
+                .setProcessInstanceId(instance.getId())
+                .setDefinitionId(nodeId)
+                .setPageNum(1).setPageSize(Integer.MAX_VALUE));
+        WfMultiInstance.Stats stats = WfMultiInstance.stats(nodeTasks);
+
+        int loopCounter = 0;
+        WfExecution current = currentExecutionId == null
+                ? null : persistence.findExecution(currentExecutionId);
+        if (current != null && current.getVariables().get(WfMultiInstance.LOOP_COUNTER) != null) {
+            loopCounter = ((Number) current.getVariables()
+                    .get(WfMultiInstance.LOOP_COUNTER)).intValue();
+        }
+        Map<String, Object> loopVars = WfMultiInstance.loopVariables(
+                instance.getVariables(), stats, loopCounter);
+        boolean done = WfMultiInstance.isComplete(node.getCompletionCondition(),
+                engine.getExpressionEvaluator(), stats, loopVars);
+
+        WfMultiInstance.publishStats(context, stats);
+        log.info("会签进度 {} -> {}", WfMultiInstance.describe(node, stats), done ? "收口" : "继续等待");
+
+        if (!done) {
+            return false;
+        }
+
+        // ---- 收口：作废剩余实例的待办 ----
+        for (WfTask pending : WfMultiInstance.cancellable(nodeTasks)) {
+            pending.setStatus(WfTask.Status.CANCELLED);
+            pending.setEndTime(new Date());
+            pending.nextRevision();
+            persistence.saveTask(pending);
+        }
+
+        // ---- 收口：结束仍停在本节点的其他 token ----
+        for (WfExecution token : persistence.findExecutionsByProcessInstance(instance.getId())) {
+            if (token.isEnded()
+                    || !nodeId.equals(token.getActivityId())
+                    || (currentExecutionId != null && currentExecutionId.equals(token.getId()))) {
+                continue;
+            }
+            token.setState(WfExecution.State.ENDED);
+            persistence.saveExecution(token);
+        }
+        return true;
+    }
+
+    // ==================== 子流程 ====================
     @Override
     public String launch(WfContext context, com.zifang.z.wf.core.definition.WfNode node,
                          WfExecution execution) {

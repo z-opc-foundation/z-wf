@@ -1,5 +1,7 @@
 package com.zifang.z.wf.core.definition;
 
+import com.zifang.z.wf.core.engine.WfEngine;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -112,6 +114,8 @@ public class WfDefinitionValidator {
                             "receiveTask 没有 messageName，该任务将只能被 force-complete 推进");
                 }
             }
+            // ---- 多实例（会签 / 或签）----
+            validateMultiInstance(node);
             // ---- 退化出来的节点：语义已被换掉，必须挡住部署 ----
             // 这里报 ERROR 而不是 WARN：WARN 只进日志，部署照过，
             // 于是作者拿到的运行行为（人工任务）与他写的流程（自动分支）永久不一致。
@@ -273,6 +277,80 @@ public class WfDefinitionValidator {
 
     private List<WfValidationIssue> result() {
         return new ArrayList<>(issues);
+    }
+
+    /**
+     * 多实例节点校验。
+     *
+     * <p>三条规则都报 ERROR，因为它们各自的失败模式都是"部署成功、运行时出错"：
+     * <ul>
+     *   <li>没有 loopCardinality ⇒ 不知道要造几个实例，运行时才发现</li>
+     *   <li>写了 collection 迭代 ⇒ 本版不支持，运行时才发现</li>
+     *   <li>isSequential=true ⇒ 串行与并行的完成判定不同，运行时才发现</li>
+     *   <li>完成条件里没有标准循环变量 ⇒ 变量名多半写错了 ⇒ fail-closed 判 false
+     *       ⇒ 流程<b>永远</b>等不到"完成"而卡死，且没有任何报错</li>
+     * </ul>
+     * 最后一条是这组规则里最要紧的：它不会立刻失败，它让整个流程静默停住。
+     */
+    private void validateMultiInstance(WfNode node) {
+        if (!node.isMultiInstance()) {
+            return;
+        }
+        if (!node.getType().createsTask()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "多实例目前只支持任务类节点（userTask / manualTask / task / receiveTask），"
+                            + "当前节点类型是 " + node.getType().bpmnName());
+            return;
+        }
+        Object collection = node.property(WfXmlParser.PROPERTY_LOOP_COLLECTION);
+        if (collection != null && !String.valueOf(collection).trim().isEmpty()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "多实例的 collection 集合迭代本版不支持（collection="
+                            + collection + "）。本版按 loopCardinality 展开固定个数，"
+                            + "请改用 loopCardinality");
+        }
+        if (isBlank(node.getLoopCardinality())) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "多实例节点缺少 loopCardinality，无法确定要展开几个实例");
+        } else if (node.getLoopCardinality().trim().matches("\\d+")) {
+            // 字面量个数在部署期就是已知的：超上限要在部署时挡，
+            // 而不是等到运行时一次性造出上亿个 token 把库打满
+            long literal = Long.parseLong(node.getLoopCardinality().trim());
+            if (literal > WfEngine.MAX_LOOP_INSTANCES) {
+                add(WfValidationIssue.Severity.ERROR, node.getId(),
+                        "多实例 loopCardinality=" + literal + " 超过上限 "
+                                + WfEngine.MAX_LOOP_INSTANCES
+                                + "，拒绝展开（一个手滑的表达式不该把内存和数据库同时打满）");
+            }
+        }
+        if (node.isSequential()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "多实例的 isSequential=true（逐个串行）本版不支持。"
+                            + "串行与并行的完成判定不同，半套实现比不做更危险，"
+                            + "请改成并行（去掉 isSequential）");
+        }
+        String condition = node.getCompletionCondition();
+        if (condition != null && !condition.trim().isEmpty()
+                && !referencesLoopVariable(condition)) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "完成条件 " + condition + " 里没有引用任何标准循环变量"
+                            + "（loopCounter / nrOfInstances / nrOfActiveInstances / "
+                            + "nrOfCompletedInstances），多半是变量名拼错了。"
+                            + "变量不存在会因 fail-closed 判为条件不成立，"
+                            + "结果是这个会签<b>永远</b>等不到完成而卡死，且不会有任何报错");
+        }
+    }
+
+    /** 完成条件里是否出现了任一标准循环变量。 */
+    private static boolean referencesLoopVariable(String condition) {
+        String[] names = {"loopCounter", "nrOfInstances", "nrOfActiveInstances",
+                "nrOfCompletedInstances"};
+        for (String name : names) {
+            if (condition.contains(name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

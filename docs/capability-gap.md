@@ -133,7 +133,7 @@
 | `exclusiveGateway` / `parallelGateway` / `inclusiveGateway` | ✅ | |
 | `callActivity` | ✅ | 本轮修好 `resultExpression` 死字段（解析了但从不求值），并拆出 `resultVariable`；被调流程启动失败不再被吞掉 |
 | **嵌入式 `subProcess`** | ❌ | **内联内容永远不执行。** 解析器把内联节点收进扁平表，引擎却直接穿透。现在部署期报 ERROR 挡住，可用 callActivity 代替 |
-| **`multiInstance`**（会签/或签） | ❌ | **P0 缺口。** 审批系统最核心的需求之一——"3 个人都批才算通过"目前只能拆成 3 个节点手写 |
+| **`multiInstance`**（会签/或签/计数） | 🟡 | **本轮补上**：`loopCardinality` + `completionCondition`，任务类节点并行展开。缺 `collection` 集合迭代与 `isSequential` 串行（部署期报 ERROR 挡住，不做半套） |
 | **`boundaryEvent`** | ❌ | 边界事件。错误/超时/消息边界都挂不了 |
 | **`intermediateCatchEvent` / `intermediateThrowEvent`** | ❌ | 中间事件 |
 | `eventBasedGateway` | ❌ | 现在会被校验器**报错挡住**（见 §4），不会静默退化 |
@@ -145,9 +145,13 @@
 | `dataObject` / `dataStore` / 数据关联 | ❌ | |
 | `linkEvent` | ❌ | |
 
-**关于 `multiInstance` 为什么排 P0**：会签是审批场景的默认需求，不是高级特性。
-目前只能把"3 人会签"画成 3 个串行 userTask，一旦有人驳回就无法区分
-"这一个人驳回了"还是"会签整体驳回"，审计也说不清。
+**关于 `multiInstance`**：会签是审批场景的默认需求。本轮已实现并行会签，
+但仍有两处已知限制：
+
+- 不支持 `collection` 集合迭代与 `isSequential` 串行，配置了会在部署期报 ERROR
+- **EL 不支持变量下标**：实测 `${approvers[loopCounter]}` 抛 ElException
+  （`${approvers[1]}` 可以）。所以逐实例派不同人靠 `zifang:loopAssignees="${approvers}"`
+  + `zifang:assignee="${loopAssignee}"`，索引在分叉时用 Java 取，不在表达式里做
 
 **关于定时器与异步为什么是"重大缺口"**：没有 Job 就没有
 "超时自动提醒""超时自动升级""这一步异步调用外部系统"。
@@ -236,7 +240,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 | # | 项目 | 理由 |
 |---|---|---|
-| 1 | **多实例（会签/或签/计数）** | 审批系统默认需求 |
+| 1 | ~~**多实例（会签/或签/计数）**~~ | ✅ 本轮已实现（并行）。剩余：`collection` 迭代、串行、变量下标 EL |
 | 2 | ~~**变量服务**~~ | ✅ 本轮已补（`WfVariableService` + REST `GET/POST /api/wf/process/variables`）。剩余缺口：变量实例查询、类型化变量、变量作用域链（execution 级） |
 | 3 | **BPMN 错误事件 + `handleBpmnError`** | `serviceTask` 失败目前只能整体崩，无法走补偿分支 |
 | 4 | **边界事件 + 定时器 + Job 执行器** | 缺一整条机制：超时提醒/超时升级/异步调用都做不了 |

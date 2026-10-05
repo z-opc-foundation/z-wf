@@ -91,6 +91,98 @@ public class WfNode implements Serializable {
     /** 扩展属性。 */
     private Map<String, Object> properties = new HashMap<>();
 
+    // ==================== 多实例（会签 / 或签 / 计数） ====================
+
+    /** 是否多实例节点。 */
+    private boolean multiInstance;
+
+    /**
+     * 实例个数：字面量数字或 {@code ${}} 表达式。
+     *
+     * <p>不与集合迭代（{@code collection}）二选一：本版只支持按个数展开。
+     * 两者都配时报 ERROR，而不是猜一个用 —— 会签"3 个人"与"3 个候选人"
+     * 在实现上是同一件事，但写错成另一个的作者会拿到一个他没预期的流程。
+     */
+    private String loopCardinality;
+
+    /**
+     * 完成条件（会签的判定式）。
+     *
+     * <p>为空 = <b>全部实例都办完才算完成</b>（会签）。
+     * 写 {@code ${nrOfCompletedInstances >= 1}} = 或签；
+     * {@code ${nrOfCompletedInstances >= 2}} = 计数会签。
+     *
+     * <p>可用变量：{@code loopCounter} / {@code nrOfInstances} /
+     * {@code nrOfActiveInstances} / {@code nrOfCompletedInstances}。
+     * 校验器会检查表达式里至少出现一个，否则报 ERROR ——
+     * 写错变量名（比如 {@code nrOfCompleted}）会因 fail-closed 判为 false，
+     * 于是流程永远等不到"完成"而卡死，且没有任何报错。
+     */
+    private String completionCondition;
+
+    /**
+     * 逐个串行执行。
+     *
+     * <p>本版<b>不支持</b>，配了会在部署期报 ERROR。
+     * 原因不是"难做"，而是串行会签与并行会签的完成判定不同
+     * （串行每次只激活一个实例），做成半套会比不做更危险。
+     */
+    private boolean sequential;
+
+    /**
+     * 每个实例的办理人列表变量。
+     *
+     * <p>值为流程变量里的一个集合。分叉第 i 个实例时，
+     * 会把 {@code list.get(i)} 写进该 token 的局部变量 {@code loopAssignee}，
+     * 于是流程定义里写 {@code zifang:assignee="${loopAssignee}"} 即可逐实例派不同人。
+     *
+     * <p>为什么不给 {@code ${approvers[loopCounter]}} 这种写法：
+     * 实测 z-util 的 EL <b>不支持变量下标</b>（{@code approvers[1]} 可以，
+     * {@code approvers[loopCounter]} 抛 ElException）。把索引求值挪到分叉时用
+     * Java 做掉，比在表达式引擎里补一个索引解析更可控。
+     */
+    private String loopAssignees;
+
+    public boolean isMultiInstance() {
+        return multiInstance;
+    }
+
+    public void setMultiInstance(boolean multiInstance) {
+        this.multiInstance = multiInstance;
+    }
+
+    public String getLoopCardinality() {
+        return loopCardinality;
+    }
+
+    public void setLoopCardinality(String loopCardinality) {
+        this.loopCardinality = loopCardinality;
+    }
+
+    public String getCompletionCondition() {
+        return completionCondition;
+    }
+
+    public void setCompletionCondition(String completionCondition) {
+        this.completionCondition = completionCondition;
+    }
+
+    public boolean isSequential() {
+        return sequential;
+    }
+
+    public void setSequential(boolean sequential) {
+        this.sequential = sequential;
+    }
+
+    public String getLoopAssignees() {
+        return loopAssignees;
+    }
+
+    public void setLoopAssignees(String loopAssignees) {
+        this.loopAssignees = loopAssignees;
+    }
+
     /** 默认优先级。 */
     public static final int DEFAULT_PRIORITY = 50;
 
