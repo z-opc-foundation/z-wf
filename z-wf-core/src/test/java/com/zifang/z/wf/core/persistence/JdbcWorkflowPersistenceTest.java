@@ -432,4 +432,125 @@ class JdbcWorkflowPersistenceTest {
             return node;
         }
     }
+
+    // ==================== 委派链持久化 ====================
+
+    @Test
+    @DisplayName("委派链能落库并在重读后还原（审计能力必须真的存得住）")
+    void delegateChainSurvivesReload() {
+        WfTask task = new WfTask();
+        task.setId("t-chain-1");
+        task.setProcessInstanceId("p1");
+        task.setName("经理审批");
+        task.setAssignee("manager");
+        task.setStatus(WfTask.Status.ASSIGNED);
+        task.setCreateTime(new Date());
+        task.getDelegateChain().add(new WfTask.DelegateHop("manager", "staff1", new Date(1700000000000L)));
+        task.getDelegateChain().add(new WfTask.DelegateHop("staff1", "staff2", new Date(1700000001000L)));
+        task.nextRevision();
+        persistence.saveTask(task);
+
+        // 关键：重新从库里读，而不是复用内存里那个对象
+        WfTask reloaded = persistence.findTask("t-chain-1");
+        assertNotNull(reloaded, "任务应能读回");
+        assertEquals(2, reloaded.getDelegateChain().size(),
+                "委派链必须跨重读存活 —— 以前这一列没建，读回来是空的，"
+                        + "症状是 delegate() 看着记了审计、实际一重读就没");
+        assertEquals("manager", reloaded.getDelegateChain().get(0).getFrom());
+        assertEquals("staff1", reloaded.getDelegateChain().get(0).getTo());
+        assertEquals("staff2", reloaded.getDelegateChain().get(1).getTo());
+        assertNotNull(reloaded.getDelegateChain().get(0).getTime(), "时间也要存住");
+    }
+
+    @Test
+    @DisplayName("委派链在 UPDATE 路径上也能续写（delegate 走的是已存在任务的更新）")
+    void delegateChainAppendedOnUpdate() {
+        WfTask task = new WfTask();
+        task.setId("t-chain-2");
+        task.setProcessInstanceId("p1");
+        task.setName("经理审批");
+        task.setAssignee("manager");
+        task.setStatus(WfTask.Status.ASSIGNED);
+        task.setCreateTime(new Date());
+        task.nextRevision();
+        persistence.saveTask(task);
+        assertEquals(0, persistence.findTask("t-chain-2").getDelegateChain().size());
+
+        // 再委派一次：走 UPDATE 分支
+        WfTask again = persistence.findTask("t-chain-2");
+        again.setOwner("staff1");
+        again.setStatus(WfTask.Status.DELEGATED);
+        again.getDelegateChain().add(new WfTask.DelegateHop("manager", "staff1", new Date()));
+        again.nextRevision();
+        persistence.saveTask(again);
+
+        WfTask after = persistence.findTask("t-chain-2");
+        assertEquals("staff1", after.getOwner());
+        assertEquals(1, after.getDelegateChain().size(),
+                "UPDATE 分支若漏了这一列，委派链会在第二次委派后丢失");
+    }
+
+    @Test
+    @DisplayName("没委派过时链为空（不会因空值解析出脏数据）")
+    void emptyDelegateChainIsClean() {
+        WfTask task = new WfTask();
+        task.setId("t-chain-3");
+        task.setProcessInstanceId("p1");
+        task.setName("审批");
+        task.setStatus(WfTask.Status.CREATED);
+        task.setCreateTime(new Date());
+        task.nextRevision();
+        persistence.saveTask(task);
+
+        WfTask reloaded = persistence.findTask("t-chain-3");
+        assertNotNull(reloaded.getDelegateChain());
+        assertEquals(0, reloaded.getDelegateChain().size());
+    }
+
+    @Test
+    @DisplayName("既有表（2.0.0 之前建的、没有 DELEGATE_CHAIN 列）能被补列后正常读写")
+    void legacyTableGetsColumnOnInitialize() {
+        // 模拟老库：setUp() 已经建过带 DELEGATE_CHAIN 的表，
+        // 这里先 DROP 再按 2.0.0 之前的结构建一张缺列的（CREATE TABLE IF NOT EXISTS
+        // 不会触发，正好复现真实升级场景）
+        try {
+            java.sql.Connection c = dataSource.getConnection();
+            java.sql.Statement st = c.createStatement();
+            try {
+                st.execute("DROP TABLE ZWF_TASK");
+                st.execute("CREATE TABLE ZWF_TASK ("
+                        + "TASK_ID VARCHAR(128) NOT NULL PRIMARY KEY,"
+                        + "PROC_ID VARCHAR(128), EXEC_ID VARCHAR(128), DEF_ID VARCHAR(128),"
+                        + "TASK_NAME VARCHAR(512), TASK_TYPE VARCHAR(64), FORM_KEY VARCHAR(128),"
+                        + "CATEGORY VARCHAR(128), ASSIGNEE VARCHAR(128), OWNER VARCHAR(128),"
+                        + "CANDIDATE_USERS TEXT, CANDIDATE_GROUPS TEXT, STATUS VARCHAR(16),"
+                        + "PRIORITY INTEGER, CREATE_TIME TIMESTAMP, DUE_DATE TIMESTAMP,"
+                        + "END_TIME TIMESTAMP, COMPLETER_ID VARCHAR(128),"
+                        + "COMMENT_TEXT VARCHAR(2048), VARIABLES TEXT,"
+                        + "PARENT_TASK_ID VARCHAR(128), REVISION INTEGER NOT NULL)");
+            } finally {
+                st.close();
+                c.close();
+            }
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException("构造老库失败", e);
+        }
+
+        // 再跑一次 initialize：CREATE TABLE IF NOT EXISTS 不会补列，必须靠 ALTER 兜底
+        persistence.initialize();
+
+        WfTask task = new WfTask();
+        task.setId("t-legacy-1");
+        task.setProcessInstanceId("p1");
+        task.setName("审批");
+        task.setAssignee("manager");
+        task.setStatus(WfTask.Status.DELEGATED);
+        task.setCreateTime(new Date());
+        task.getDelegateChain().add(new WfTask.DelegateHop("manager", "staff", new Date()));
+        task.nextRevision();
+        persistence.saveTask(task);
+
+        assertEquals(1, persistence.findTask("t-legacy-1").getDelegateChain().size(),
+                "老库补列后应能正常存读委派链，否则升级后引擎直接报 column not found");
+    }
 }

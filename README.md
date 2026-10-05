@@ -348,13 +348,13 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 
 ## 9. 测试
 
-94 个测试，全绿。
+98 个测试，全绿。
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
 | `WfDefinitionParserTest` | 17 | XML/JSON 解析、校验器、类型归一、与 z-util-wf 的解析 parity |
 | `ZUtilWfBridgeTest` | 14 | 协议往返、fail-closed、已知限制、桥接定义真的能跑完审批 |
-| `JdbcWorkflowPersistenceTest` | 13 | H2 上的建表 / CRUD / 乐观锁 / 查询 |
+| `JdbcWorkflowPersistenceTest` | 17 | H2 上的建表 / CRUD / 乐观锁 / 查询 |
 | `InMemoryWorkflowPersistenceTest` | 11 | 内存存储语义、深拷贝隔离 |
 | `WfEngineEndToEndTest` | 18 | 线性 / 排他 / 并行 / 走默认流 四种审批链 |
 | `WfAdminEndToEndTest` | 6 | Spring 全栈 + JDBC 落库 + 示例流程端到端 |
@@ -396,6 +396,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 | admin 启动就 `NoClassDefFoundError: DataAccessException` | `optional` 依赖不传递，admin 缺显式 jdbc starter |
 | 条件丢失 ⇒ 该审批的单被静默放行 | 桥接丢弃了无法归属的条件（已改为 fail-closed） |
 | `WfTaskHook.onBeforeCreate` 实现了但**从没被触发** | `fireBeforeCreate` 无人调用。业务方按接口 javadoc 实现"建任务前置校验"会**静默永不生效且无任何报错** —— 比死代码严重：API 看起来是活的 |
+| 委派链（`delegateChain`）**从不落库** | `ZWF_TASK` 表没有这一列，`mapTask` 也不读。`delegate()` 在内存里链是全的，但**每次操作都会从库里重读** ⇒ 链立刻变空。README 却声称它是审计手段。已补列 + 补编解码 + 老库 ALTER 补列 |
 | `/processes/search` 的 `total` 恒等于当前页条数 | 拿**已分页**的 `queryProcessInstances().size()` 当总数。已加 `countProcessInstances` SPI，列表与计数共用同一段 WHERE |
 | `/process/executions` 把 `arrivedActivities` / `variables` 抖给前端 | 直接返回了 `WfExecution` 持久化实体，违反本仓"VO 边界"约定。已补 `WfViews.ExecutionView` |
 | `POST /comment` 与 `GET /comments` 返回字段不一致 | 新建返回 `WfComment` 实体、列表返回 Map，前端会先按一个渲染再被另一个打脸。已统一 |

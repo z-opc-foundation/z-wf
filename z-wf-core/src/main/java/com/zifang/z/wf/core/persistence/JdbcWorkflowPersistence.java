@@ -9,6 +9,7 @@ import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 import javax.sql.DataSource;
 
@@ -17,6 +18,7 @@ import org.slf4j.LoggerFactory;
 
 import com.zifang.util.json.JsonUtil;
 import com.zifang.util.json.model.JsonArray;
+import com.zifang.util.json.model.JsonObject;
 import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.WfFlow;
 import com.zifang.z.wf.core.definition.WfNode;
@@ -141,6 +143,12 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 + "COMPLETER_ID VARCHAR(128),"
                 + "COMMENT_TEXT VARCHAR(2048),"
                 + "VARIABLES TEXT,"
+                // 委派链（JSON 数组）。必须单独一列而不是塞进 VARIABLES：
+                // VARIABLES 是业务变量命名空间，会原样透出给前端（/processes/get 返回它），
+                // 把审计数据混进去会污染业务方看到的变量集合。
+                // 漏了这一列的症状：delegate() 在内存里链是全的，但任务一旦从库里重读
+                // （而每次操作都会重读）链就空了 —— 审计能力看着在、实际不存。
+                + "DELEGATE_CHAIN TEXT,"
                 + "PARENT_TASK_ID VARCHAR(128),"
                 + "REVISION INTEGER NOT NULL,"
                 + "PRIMARY KEY (TASK_ID))");
@@ -196,10 +204,37 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 statement.close();
             }
             log.info("JDBC 持久化初始化完成（{} 张表）", ddl.size() - 5);
+            addDelegateChainColumnIfMissing(connection);
         } catch (SQLException e) {
             throw new WfPersistenceException("建表失败", e);
         } finally {
             close(connection);
+        }
+    }
+
+    /**
+     * 给已存在的 ZWF_TASK 补 DELEGATE_CHAIN 列。
+     *
+     * <p>{@code CREATE TABLE IF NOT EXISTS} <b>不会</b>给已存在的表补列。
+     * 2.0.0 之前建过 dev 库（ZWF_TASK 里没有这一列）的实例，升级后
+     * 每一句 INSERT/UPDATE/SELECT 都会报 column not found —— 表现为"引擎启动即炸"，
+     * 而不是某个功能悄悄坏掉。
+     *
+     * <p>用 try-catch 而不是 {@code ADD COLUMN IF NOT EXISTS}：H2 / PostgreSQL 支持该语法，
+     * MySQL 8 不支持。跨库兼容下只能"试一下，失败说明已存在或方言不支持"。
+     * 这里失败是安全的：列已存在时报的是重复列错误，忽略即可；
+     * 真正缺列的话后续 SQL 会显式报错，不会静默丢数据。
+     */
+    private void addDelegateChainColumnIfMissing(Connection connection) {        Statement statement = null;
+        try {
+            statement = connection.createStatement();
+            statement.execute("ALTER TABLE ZWF_TASK ADD COLUMN DELEGATE_CHAIN TEXT");
+            log.info("已为既有 ZWF_TASK 补建 DELEGATE_CHAIN 列");
+        } catch (SQLException e) {
+            // 列已存在（或方言不支持该写法）——正常路径
+            log.debug("DELEGATE_CHAIN 列已存在或无需补建: {}", e.getMessage());
+        } finally {
+            closeQuietly(statement);
         }
     }
 
@@ -574,12 +609,15 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         if (exists) {
             // 乐观锁
             int affected = update("UPDATE ZWF_TASK SET STATUS=?, ASSIGNEE=?, OWNER=?, PRIORITY=?, "
-                            + "END_TIME=?, COMPLETER_ID=?, COMMENT_TEXT=?, VARIABLES=?, REVISION=? "
+                            + "END_TIME=?, COMPLETER_ID=?, COMMENT_TEXT=?, VARIABLES=?, "
+                            + "DELEGATE_CHAIN=?, REVISION=? "
                             + "WHERE TASK_ID=? AND REVISION=?",
                     task.getStatus() == null ? null : task.getStatus().name(),
                     task.getAssignee(), task.getOwner(), task.getPriority(),
                     timestamp(task.getEndTime()), task.getCompleterId(), task.getComment(),
-                    JsonUtil.toJson(task.getVariables()), task.getRevision(),
+                    JsonUtil.toJson(task.getVariables()),
+                    delegateChainJson(task),
+                    task.getRevision(),
                     task.getId(), task.getRevision() - 1);
             if (affected == 0) {
                 throw new WfOptimisticLockException("task", task.getId(), task.getRevision() - 1);
@@ -593,8 +631,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                     "INSERT INTO ZWF_TASK (TASK_ID, PROC_ID, EXEC_ID, DEF_ID, TASK_NAME, TASK_TYPE, "
                             + "FORM_KEY, CATEGORY, ASSIGNEE, OWNER, CANDIDATE_USERS, CANDIDATE_GROUPS, "
                             + "STATUS, PRIORITY, CREATE_TIME, DUE_DATE, END_TIME, COMPLETER_ID, "
-                            + "COMMENT_TEXT, VARIABLES, PARENT_TASK_ID, REVISION) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                            + "COMMENT_TEXT, VARIABLES, DELEGATE_CHAIN, PARENT_TASK_ID, REVISION) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
             try {
                 int i = 1;
                 ps.setString(i++, task.getId());
@@ -617,6 +655,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 ps.setString(i++, task.getCompleterId());
                 ps.setString(i++, task.getComment());
                 ps.setString(i++, JsonUtil.toJson(task.getVariables()));
+                ps.setString(i++, delegateChainJson(task));
                 ps.setString(i++, task.getParentTaskId());
                 ps.setInt(i, task.getRevision());
                 ps.executeUpdate();
@@ -735,8 +774,74 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 : new ArrayList<>(all.subList(from, Math.min(all.size(), from + size)));
     }
 
-    private WfTask mapTask(ResultSet rs) throws SQLException {
-        WfTask task = new WfTask();
+    /**
+     * 委派链 → JSON 数组文本。空链写 {@code []} 而不是 null：
+     * 写 null 会让"没委派过"和"表结构老版本没有这一列"两种情况在读回时无法区分。
+     */
+    private String delegateChainJson(WfTask task) {
+        List<WfTask.DelegateHop> chain = task.getDelegateChain();
+        return chain == null || chain.isEmpty() ? "[]" : JsonUtil.toJson(chain);
+    }
+
+    /**
+     * JSON 数组文本 → 委派链。
+     *
+     * <p>逐个字段手工读，而不是 {@code JsonUtil.fromJson(json, List.class)}：
+     * 后者对无值类型信息的 {@code List.class} 取不到任何元素且不报错（实测返回空），
+     * 症状是"委派过但链读回来是空的" —— 审计能力看着在、实际静默失效。
+     */
+    private List<WfTask.DelegateHop> parseDelegateChain(String json) {
+        List<WfTask.DelegateHop> result = new ArrayList<>();
+        if (json == null || json.trim().isEmpty()) {
+            return result;
+        }
+        try {
+            JsonArray array = JsonUtil.parseArray(json);
+            if (array == null) {
+                return result;
+            }
+            for (int i = 0; i < array.size(); i++) {
+                Object item = array.get(i);
+                String from = null;
+                String to = null;
+                Date time = null;
+                if (item instanceof JsonObject) {
+                    // JsonObject 是 z-util-json 的自定义类型，**不是 java.util.Map**
+                    // （它 implements Iterable 之外的独立类，字段是私有 Map）。
+                    // 用 `instanceof Map` 判会全部落空 —— 症状是"委派过但链读回来是空的"，
+                    // 不报错、不抛异常。必须走 getJsonObject / getString 这套 API。
+                    JsonObject object = (JsonObject) item;
+                    from = object.getString("from");
+                    to = object.getString("to");
+                    Object raw = object.get("time");
+                    if (raw instanceof Number) {
+                        time = new Date(((Number) raw).longValue());
+                    }
+                } else if (item instanceof Map) {
+                    Map<?, ?> row = (Map<?, ?>) item;
+                    from = row.get("from") == null ? null : String.valueOf(row.get("from"));
+                    to = row.get("to") == null ? null : String.valueOf(row.get("to"));
+                    Object raw = row.get("time");
+                    if (raw instanceof Number) {
+                        time = new Date(((Number) raw).longValue());
+                    }
+                } else {
+                    log.warn("委派链第 {} 项不是对象，跳过: {}", i, item);
+                    continue;
+                }
+                WfTask.DelegateHop hop = new WfTask.DelegateHop();
+                hop.setFrom(from);
+                hop.setTo(to);
+                hop.setTime(time);
+                result.add(hop);
+            }
+        } catch (Exception e) {
+            log.warn("委派链 JSON 解析失败，按空处理: {}", json, e);
+        }
+        return result;
+    }
+
+    private WfTask mapTask(ResultSet rs) throws SQLException {        WfTask task = new WfTask();
         task.setId(rs.getString("TASK_ID"));
         task.setProcessInstanceId(rs.getString("PROC_ID"));
         task.setExecutionId(rs.getString("EXEC_ID"));
@@ -758,6 +863,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         task.setCompleterId(rs.getString("COMPLETER_ID"));
         task.setComment(rs.getString("COMMENT_TEXT"));
         task.setVariables(fromJsonMap(rs.getString("VARIABLES")));
+        task.setDelegateChain(parseDelegateChain(rs.getString("DELEGATE_CHAIN")));
         task.setParentTaskId(rs.getString("PARENT_TASK_ID"));
         task.setRevision(rs.getInt("REVISION"));
         return task;
@@ -1048,6 +1154,23 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 connection.close();
             } catch (SQLException e) {
                 log.warn("关闭连接失败", e);
+            }
+        }
+    }
+
+    /**
+     * 关闭 {@link Statement}，失败只记 debug。
+     *
+     * <p>与 {@link #close(Connection)} 分开是因为语义不同：连接关不掉是资源泄漏要 warn，
+     * 而 Statement 通常在异常路径上关闭，它关不掉说明主异常已经报过了，
+     * 再 warn 一次只会把真正的堆栈淹掉。
+     */
+    private void closeQuietly(Statement statement) {
+        if (statement != null) {
+            try {
+                statement.close();
+            } catch (SQLException e) {
+                log.debug("关闭 Statement 失败: {}", e.getMessage());
             }
         }
     }
