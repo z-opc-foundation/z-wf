@@ -21,6 +21,7 @@ import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
+import com.zifang.z.wf.core.model.WfFilter;
 import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfJobType;
 import com.zifang.z.wf.core.model.WfProcessInstance;
@@ -62,6 +63,8 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
     private final Map<String, List<WfComment>> comments = new ConcurrentHashMap<>();
 
     private final Map<String, WfJob> jobs = new ConcurrentHashMap<>();
+
+    private final Map<String, WfFilter> filters = new ConcurrentHashMap<>();
 
     @Override
     public void initialize() {
@@ -1003,6 +1006,91 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         activities.clear();
         comments.clear();
         jobs.clear();
+        filters.clear();
+    }
+
+    // ==================== 保存筛选器 ====================
+
+    @Override
+    public void saveFilter(WfFilter filter) {
+        if (filter == null || filter.getId() == null) {
+            return;
+        }
+        WfFilter existing = filters.get(filter.getId());
+        // 与 saveTask / saveJob 同一套乐观锁契约，见 WfPersistence#saveFilter
+        if (existing != null && filter.getRevision() != existing.getRevision() + 1) {
+            throw new WfOptimisticLockException("filter", filter.getId(), existing.getRevision() + 1);
+        }
+        filters.put(filter.getId(), copy(filter));
+    }
+
+    @Override
+    public WfFilter findFilter(String id) {
+        return copy(filters.get(id));
+    }
+
+    @Override
+    public boolean deleteFilter(String id) {
+        return id != null && filters.remove(id) != null;
+    }
+
+    @Override
+    public List<WfFilter> queryFilters(WfFilterQuery query) {
+        List<WfFilter> matched = new ArrayList<>();
+        for (WfFilter raw : filters.values()) {
+            if (matchesFilter(raw, query)) {
+                matched.add(copy(raw));
+            }
+        }
+        // 排序：创建时间新的在前，同一毫秒内按 id 排。
+        // **必须有确定的次序**——同一批筛选器两次列出来顺序不同的话，
+        // 翻页会漏条目、diff 两次结果也读不出区别
+        matched.sort((a, b) -> {
+            Date ta = a.getCreateTime();
+            Date tb = b.getCreateTime();
+            if (ta != null && tb != null && !ta.equals(tb)) {
+                return tb.compareTo(ta);
+            }
+            return a.getId().compareTo(b.getId());
+        });
+        if (query == null) {
+            return matched;
+        }
+        return paginate(matched, (query.normalizedPageNum() - 1) * query.normalizedPageSize(),
+                query.normalizedPageSize());
+    }
+
+    @Override
+    public int countFilters(WfFilterQuery query) {
+        int count = 0;
+        for (WfFilter raw : filters.values()) {
+            if (matchesFilter(raw, query)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private boolean matchesFilter(WfFilter filter, WfFilterQuery query) {
+        if (query == null) {
+            return true;
+        }
+        if (isNotBlank(query.getId()) && !query.getId().equals(filter.getId())) {
+            return false;
+        }
+        if (isNotBlank(query.getName()) && !query.getName().equals(filter.getName())) {
+            return false;
+        }
+        if (isNotBlank(query.getNameLike())) {
+            if (filter.getName() == null || !filter.getName().toLowerCase()
+                    .contains(query.getNameLike().toLowerCase())) {
+                return false;
+            }
+        }
+        if (query.getResourceType() != null && query.getResourceType() != filter.getResourceType()) {
+            return false;
+        }
+        return !(isNotBlank(query.getOwner()) && !query.getOwner().equals(filter.getOwner()));
     }
 
     // ==================== 拷贝 ====================

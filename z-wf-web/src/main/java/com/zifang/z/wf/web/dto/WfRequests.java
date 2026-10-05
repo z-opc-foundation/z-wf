@@ -3,6 +3,7 @@ package com.zifang.z.wf.web.dto;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -647,6 +648,65 @@ public final class WfRequests {
 
         public void setComment(String comment) {
             this.comment = comment;
+        }
+    }
+
+    /**
+     * 保存筛选器的新建 / 修改。
+     *
+     * <p>新建与修改共用一个 DTO，靠"有没有 filterId"区分 ——
+     * 两者字段完全一样（除了 id 在 URL 上），拆成两个类只会让调用方
+     * 在"我这次该用哪个"上多花一次心思。
+     *
+     * <p>{@code properties} 是 {@code Map<String, Object>} 而不是
+     * {@code Map<String, String>}：JSON 里 {@code true} 与 {@code 500}
+     * 天生就是布尔与数字，写成 String 的话 Jackson 会照收，
+     * 错误就推迟到服务层解析时才炸。声明成 Object 让**类型错误在反序列化时
+     * 就暴露**，比推迟到"某天有人跑这张筛选器"要好。
+     */
+    public static class FilterOperation implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private String name;
+
+        /** {@code task} / {@code processInstance} / {@code incident}。 */
+        private String resourceType;
+
+        private String owner;
+
+        private Map<String, Object> properties = new LinkedHashMap<>();
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public String getResourceType() {
+            return resourceType;
+        }
+
+        public void setResourceType(String resourceType) {
+            this.resourceType = resourceType;
+        }
+
+        public String getOwner() {
+            return owner;
+        }
+
+        public void setOwner(String owner) {
+            this.owner = owner;
+        }
+
+        public Map<String, Object> getProperties() {
+            return properties;
+        }
+
+        public void setProperties(Map<String, Object> properties) {
+            this.properties = properties == null ? new LinkedHashMap<>() : properties;
         }
     }
 }

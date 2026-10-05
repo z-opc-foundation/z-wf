@@ -40,6 +40,7 @@ import com.zifang.z.wf.core.service.WfIncidentService;
 import com.zifang.z.wf.core.service.WfSubscriptionService;
 import com.zifang.z.wf.core.service.WfVariableService;
 import com.zifang.z.wf.core.service.WfVariableQueryService;
+import com.zifang.z.wf.core.service.WfFilterService;
 
 /**
  * z-wf 引擎自动装配。
@@ -271,6 +272,21 @@ public class WfAutoConfiguration {
     public WfVariableQueryService wfVariableQueryService(WfPersistence persistence,
                                                         WfRepositoryService repositoryService) {
         return new WfVariableQueryService(persistence, repositoryService);
+    }
+
+    /**
+     * 保存筛选器。纯配置面，不启动任何线程。
+     *
+     * <p>依赖 {@link WfIncidentService} 而不是自己再实现一遍故障查询：
+     * 筛选器"跑起来"时要用到故障的判定逻辑（失败过、订阅名、类型），
+     * 那套判定住在 {@code WfIncidentService} 里。两处各写一份的话，
+     * 改了一处另一处就悄悄给出不同结果 —— 而那是同一批数据的两种答案。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WfFilterService wfFilterService(WfPersistence persistence,
+                                           WfIncidentService incidentService) {
+        return new WfFilterService(persistence, incidentService);
     }
 
     // ==================== 启动部署 ====================

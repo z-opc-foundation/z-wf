@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 import javax.sql.DataSource;
 
@@ -26,6 +27,8 @@ import com.zifang.z.wf.core.definition.WfNodeType;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
+import com.zifang.z.wf.core.model.WfFilter;
+import com.zifang.z.wf.core.model.WfFilterType;
 import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfJobType;
 import com.zifang.z.wf.core.model.WfProcessInstance;
@@ -227,6 +230,27 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_JOB_PROC ON ZWF_JOB (PROC_ID)");
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_JOB_EXEC ON ZWF_JOB (EXEC_ID)");
 
+        // 筛选器。整张表都是新增的，不需要补列 ——
+        // CREATE TABLE IF NOT EXISTS 对"从来没有这张表"的库直接建，
+        // 对"已经有"的库原样跳过，两条路径都安全
+        ddl.add("CREATE TABLE IF NOT EXISTS ZWF_FILTER ("
+                + "FILTER_ID VARCHAR(128) NOT NULL,"
+                + "NAME VARCHAR(256) NOT NULL,"
+                // 类型存短名（task / processInstance / incident）而不是枚举全名：
+                // 存储列宽只有 VARCHAR(16)，而且短名是 REST 层对外的那一套，
+                // 两处用同一个词才不会出现"库里写的和接口里填的对不上"
+                + "RESOURCE_TYPE VARCHAR(16) NOT NULL,"
+                + "OWNER_ID VARCHAR(128),"
+                // 条件整体存一列 JSON。逐列存要跟着每个查询类加字段，
+                // 而筛选器的本质就是"一组会变的条件"，它的形状还没稳定下来
+                + "PROPERTIES TEXT,"
+                + "CREATE_TIME TIMESTAMP,"
+                + "UPDATE_TIME TIMESTAMP,"
+                + "REV INT,"
+                + "PRIMARY KEY (FILTER_ID))");
+        ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_FILTER_OWNER ON ZWF_FILTER (OWNER_ID)");
+        ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_FILTER_TYPE ON ZWF_FILTER (RESOURCE_TYPE)");
+
         Connection connection = null;
         try {
             connection = dataSource.getConnection();
@@ -238,7 +262,16 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             } finally {
                 statement.close();
             }
-            log.info("JDBC 持久化初始化完成（{} 张表）", ddl.size() - 5);
+            // 表数自己数，而不是 ddl.size() 减一个写死的偏移：
+            // 那个偏移是当初按"只有索引没有表"倒推出来的，
+            // 每加一张表就得记得改一次，忘了就只是日志里少一个数字 —— 不报错
+            int tableCount = 0;
+            for (String sql : ddl) {
+                if (sql.startsWith("CREATE TABLE")) {
+                    tableCount++;
+                }
+            }
+            log.info("JDBC 持久化初始化完成（{} 张表，{} 条索引）", tableCount, ddl.size() - tableCount);
             addDelegateChainColumnIfMissing(connection);
             addTaskSuspendedColumnIfMissing(connection);
             addJobTypeColumnIfMissing(connection);
@@ -417,8 +450,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
 
     @Override
     public void clear() {
-        String[] tables = {"ZWF_JOB", "ZWF_COMMENT", "ZWF_ACTIVITY", "ZWF_TASK", "ZWF_EXECUTION",
-                "ZWF_PROCESS", "ZWF_DEFINITION"};
+        String[] tables = {"ZWF_FILTER", "ZWF_JOB", "ZWF_COMMENT", "ZWF_ACTIVITY", "ZWF_TASK",
+                "ZWF_EXECUTION", "ZWF_PROCESS", "ZWF_DEFINITION"};
         Connection connection = null;
         try {
             connection = dataSource.getConnection();
@@ -435,6 +468,148 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         } finally {
             close(connection);
         }
+    }
+
+    // ==================== 保存筛选器 ====================
+
+    @Override
+    public void saveFilter(WfFilter filter) {
+        boolean exists = exists("SELECT 1 FROM ZWF_FILTER WHERE FILTER_ID=?", filter.getId());
+        if (exists) {
+            int affected = update("UPDATE ZWF_FILTER SET NAME=?, RESOURCE_TYPE=?, OWNER_ID=?, "
+                            + "PROPERTIES=?, UPDATE_TIME=?, REV=? WHERE FILTER_ID=? AND REV=?",
+                    filter.getName(), filter.getResourceType().getCode(), filter.getOwner(),
+                    JsonUtil.toJson(filter.getProperties()),
+                    timestamp(filter.getUpdateTime()),
+                    filter.getRevision(), filter.getId(), filter.getRevision() - 1);
+            if (affected == 0) {
+                throw new WfOptimisticLockException("filter", filter.getId(), filter.getRevision() - 1);
+            }
+            return;
+        }
+        Connection connection = null;
+        try {
+            connection = dataSource.getConnection();
+            PreparedStatement ps = connection.prepareStatement(
+                    "INSERT INTO ZWF_FILTER (FILTER_ID, NAME, RESOURCE_TYPE, OWNER_ID, PROPERTIES, "
+                            + "CREATE_TIME, UPDATE_TIME, REV) VALUES (?,?,?,?,?,?,?,?)");
+            try {
+                int i = 1;
+                ps.setString(i++, filter.getId());
+                ps.setString(i++, filter.getName());
+                ps.setString(i++, filter.getResourceType().getCode());
+                ps.setString(i++, filter.getOwner());
+                ps.setString(i++, JsonUtil.toJson(filter.getProperties()));
+                ps.setTimestamp(i++, timestamp(filter.getCreateTime()));
+                ps.setTimestamp(i++, timestamp(filter.getUpdateTime()));
+                ps.setInt(i++, filter.getRevision());
+                ps.executeUpdate();
+            } finally {
+                ps.close();
+            }
+        } catch (SQLException e) {
+            throw new WfPersistenceException("保存筛选器失败: " + filter.getId(), e);
+        } finally {
+            close(connection);
+        }
+    }
+
+    @Override
+    public WfFilter findFilter(String id) {
+        if (id == null || id.trim().isEmpty()) {
+            return null;
+        }
+        return queryOne("SELECT * FROM ZWF_FILTER WHERE FILTER_ID=?", id, filterMapper());
+    }
+
+    @Override
+    public boolean deleteFilter(String id) {
+        if (id == null || id.trim().isEmpty()) {
+            return false;
+        }
+        return update("DELETE FROM ZWF_FILTER WHERE FILTER_ID=?", id) > 0;
+    }
+
+    @Override
+    public List<WfFilter> queryFilters(WfFilterQuery query) {
+        StringBuilder sql = new StringBuilder("SELECT * FROM ZWF_FILTER");
+        List<Object> args = new ArrayList<>();
+        appendFilterFilters(sql, args, query);
+        // 创建时间倒序 + id 兜底，与内存实现同一套次序：
+        // 两套实现返回顺序不同的话，同一份数据在开发期和生产期翻页的结果就不一样
+        sql.append(" ORDER BY CREATE_TIME DESC, FILTER_ID ASC LIMIT ? OFFSET ?");
+        args.add(query == null || query.getPageSize() <= 0 ? 50 : query.getPageSize());
+        args.add(query == null ? 0
+                : (query.normalizedPageNum() - 1) * query.normalizedPageSize());
+        return queryList(sql.toString(), args.toArray(), filterMapper());
+    }
+
+    @Override
+    public int countFilters(WfFilterQuery query) {
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM ZWF_FILTER");
+        List<Object> args = new ArrayList<>();
+        appendFilterFilters(sql, args, query);
+        Long count = queryOne(sql.toString(), args.toArray(), COUNT_MAPPER);
+        return count == null ? 0 : count.intValue();
+    }
+
+    private void appendFilterFilters(StringBuilder sql, List<Object> args, WfFilterQuery query) {
+        if (query == null) {
+            return;
+        }
+        List<String> parts = new ArrayList<>();
+        if (query.getId() != null && !query.getId().trim().isEmpty()) {
+            parts.add("FILTER_ID=?");
+            args.add(query.getId());
+        }
+        if (query.getName() != null && !query.getName().trim().isEmpty()) {
+            parts.add("NAME=?");
+            args.add(query.getName());
+        }
+        if (query.getNameLike() != null && !query.getNameLike().trim().isEmpty()) {
+            parts.add("LOWER(NAME) LIKE ?");
+            args.add("%" + query.getNameLike().toLowerCase() + "%");
+        }
+        if (query.getResourceType() != null) {
+            parts.add("RESOURCE_TYPE=?");
+            args.add(query.getResourceType().getCode());
+        }
+        if (query.getOwner() != null && !query.getOwner().trim().isEmpty()) {
+            parts.add("OWNER_ID=?");
+            args.add(query.getOwner());
+        }
+        if (!parts.isEmpty()) {
+            sql.append(" WHERE ").append(join(parts, " AND "));
+        }
+    }
+
+    private RowMapper<WfFilter> filterMapper() {
+        return new RowMapper<WfFilter>() {
+            @Override
+            public WfFilter map(ResultSet rs) throws SQLException {
+                WfFilter filter = new WfFilter();
+                filter.setId(rs.getString("FILTER_ID"));
+                filter.setName(rs.getString("NAME"));
+                filter.setResourceType(WfFilterType.parse(rs.getString("RESOURCE_TYPE")));
+                filter.setOwner(rs.getString("OWNER_ID"));
+                Map<String, Object> raw = fromJsonMap(rs.getString("PROPERTIES"));
+                // 条件读回来仍然是**字符串**：存的时候就是字符串，JSON 往返
+                // 不会把它变成别的类型，这里只做一次显式收敛，
+                // 免得 JSON 里出现数字时 Map 的 value 变成 Integer，
+                // 而后面 toString 比较出来还是一样的 —— 那样"存的是不是字符串"
+                // 就再也没法验了
+                Map<String, String> properties = new TreeMap<String, String>();
+                for (Map.Entry<String, Object> entry : raw.entrySet()) {
+                    properties.put(entry.getKey(),
+                            entry.getValue() == null ? null : String.valueOf(entry.getValue()));
+                }
+                filter.setProperties(properties);
+                filter.setCreateTime(date(rs.getTimestamp("CREATE_TIME")));
+                filter.setUpdateTime(date(rs.getTimestamp("UPDATE_TIME")));
+                filter.setRevision(rs.getInt("REV"));
+                return filter;
+            }
+        };
     }
 
     // ==================== 定义 ====================

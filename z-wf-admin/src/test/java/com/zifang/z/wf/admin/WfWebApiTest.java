@@ -430,6 +430,169 @@ class WfWebApiTest {
                 .get("data")).get("count")).intValue());
     }
 
+    // ==================== 保存筛选器 ====================
+
+    @Test
+    @DisplayName("筛选器端点：建 → 列 → 跑 → 改 → 删，results 按筛选器自己的类型返回")
+    void filterEndpointsRoundTrip() throws Exception {
+        // **所有筛选器名字都带本轮唯一前缀**：这个测试类共享同一个 H2 库，
+        // 用例之间、以及同一用例多次运行之间都会互相看见对方的筛选器。
+        // 不带前缀时「按名字模糊筛该有 2 条」会因为别人的数据而变成 3 ——
+        // 那类失败与被测代码无关，却会把真失败淹掉
+        String tag = String.valueOf(System.nanoTime());
+        String firstName = "flt" + tag + "-在途的单";
+        String secondName = "flt" + tag + "-另一个";
+        String user = "flt-alice-" + tag;
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "leaveProcess", "businessKey", "WEB-FLT-" + tag,
+                        "userId", user)).get("data");
+        assertNotNull(processId);
+
+        Map<String, Object> created = asMap(postOk("/api/wf/filters",
+                body("name", firstName, "resourceType", "processInstance", "owner", "ops",
+                        "properties", body("unfinishedOnly", "true", "startUserId", user)))
+                .get("data"));
+        String filterId = (String) created.get("id");
+        assertNotNull(filterId, "新建的筛选器必须给回 id —— 拿不到它就没法改、没法跑、没法删");
+        assertEquals("processInstance", created.get("resourceType"),
+                "resourceType 统一用短名 —— 它在 /results 里也是短名，"
+                        + "同一字段两套拼法的话，拼错那一种不会报错，只是比不上");
+
+        // 第二张：**每个过滤条件都要有一个本该被它剔掉的对象**，
+        // 否则「owner=ops 只返回 1 条」这种断言在过滤失效时照样成立
+        postOk("/api/wf/filters", body("name", secondName,
+                "resourceType", "processInstance", "owner", "someone-else",
+                "properties", body("unfinishedOnly", "true")));
+
+        assertEquals(2, countOf("/api/wf/filters/count?nameLike=flt" + tag), "按名字模糊筛");
+        assertEquals(1, countOf("/api/wf/filters/count?nameLike=flt" + tag + "&owner=ops"),
+                "按创建人筛");
+        assertEquals(2, countOf("/api/wf/filters/count?nameLike=flt" + tag
+                + "&resourceType=processInstance"), "按类型筛");
+        assertEquals(0, countOf("/api/wf/filters/count?name=" + firstName + "2"),
+                "精确名字不该命中「" + firstName + "」以外的那张");
+
+        // 跑起来：类型由筛选器自己决定，调用方不再传一遍 ——
+        // 传了就会出现「筛选器是 task 的、却按 incident 去解释结果」这种错配
+        Map<String, Object> results = asMap(getOk(
+                "/api/wf/filters/" + filterId + "/results").get("data"));
+        assertEquals("processInstance", results.get("resourceType"));
+        assertEquals(1, ((Number) results.get("total")).intValue(),
+                "只有本轮起的那一张该命中。实际: " + results.get("records"));
+
+        // 改：名字能改
+        String renamed = firstName + "（改）";
+        Map<String, Object> updated = readOk(exchange(HttpMethod.PUT,
+                "/api/wf/filters/" + filterId,
+                body("name", renamed, "owner", "ops",
+                        "properties", body("unfinishedOnly", "true", "startUserId", user))));
+        assertEquals(renamed, updated.get("name"));
+        // 模糊串只能是「（改）」这一段：新名字是 flt<tag>-在途的单（改），
+        // tag 与（改）之间还隔着别的字，拼成 tag+（改）那个子串并不存在 ——
+        // 一条不存在的子串永远匹配 0 条，而 0 条看起来也很像"改了没生效"
+        assertEquals(1, countOf("/api/wf/filters/count?nameLike=（改）"),
+                "改完之后按新名字要搜得到 —— 否则读成「改了没生效」");
+
+        assertEquals(HttpStatus.OK,
+                exchange(HttpMethod.DELETE, "/api/wf/filters/" + filterId, null).getStatusCode());
+        assertEquals(HttpStatus.BAD_REQUEST,
+                exchange(HttpMethod.DELETE, "/api/wf/filters/" + filterId, null).getStatusCode(),
+                "删过了要报错 —— 静默成功会让调用方以为「已经删掉了」，"
+                        + "而实际上它可能压根没删到东西");
+    }
+
+    @Test
+    @DisplayName("筛选器端点：改类型要报错 —— 改了等于让所有引用它的地方悄悄换掉查什么")
+    void filterTypeIsImmutableOverHttp() throws Exception {
+        String filterId = (String) asMap(postOk("/api/wf/filters",
+                body("name", "flt-类型不可改-" + System.nanoTime(), "resourceType", "task",
+                        "properties", body("openOnly", "true"))).get("data")).get("id");
+
+        // 端点**忽略**请求里的 resourceType、保持库里那份 ——
+        // 改了类型就是让所有引用它的地方在下次运行时悄悄换掉查什么
+        Map<String, Object> kept = readOk(exchange(HttpMethod.PUT,
+                "/api/wf/filters/" + filterId,
+                body("name", "flt-类型不可改", "resourceType", "incident",
+                        "properties", body("openOnly", "false"))));  // name 无关紧要
+        assertEquals("task", kept.get("resourceType"), "类型不能被请求改掉");
+
+        // 顺带钉住一个由此产生的行为：拿 incident 的条件来改一张 task 筛选器会被拒。
+        // 这条不是"顺带"—— 它正是「类型保持不变」在调用方看得见的那一面，
+        // 而它报出来的那句「task 没有条件 retriesExhausted」就是最有用的一句
+        ResponseEntity<String> wrongCondition = exchange(HttpMethod.PUT,
+                "/api/wf/filters/" + filterId,
+                body("name", "flt-类型不可改", "resourceType", "incident",
+                        "properties", body("retriesExhausted", "true")));
+        assertEquals(HttpStatus.BAD_REQUEST, wrongCondition.getStatusCode(),
+                wrongCondition.getBody());
+        assertTrue(wrongCondition.getBody().contains("retriesExhausted")
+                        && wrongCondition.getBody().contains("assignee"),
+                "报错要点名是哪个条件、以及 task 到底支持哪些: " + wrongCondition.getBody());
+    }
+
+    @Test
+    @DisplayName("筛选器端点：条件名 / 值 / 类型错了都要 400，且报错说清该给什么")
+    void filterEndpointsRejectBadInput() throws Exception {
+        String tag = String.valueOf(System.nanoTime());
+        // 条件名拼错
+        ResponseEntity<String> badKey = exchange(HttpMethod.POST, "/api/wf/filters",
+                body("name", "bad" + tag, "resourceType", "task",
+                        "properties", body("assigne", "alice")));
+        assertEquals(HttpStatus.BAD_REQUEST, badKey.getStatusCode(), badKey.getBody());
+        assertTrue(badKey.getBody().contains("assignee"),
+                "报错要给出正确拼写: " + badKey.getBody());
+
+        // 布尔值写成 JSON 的 true 而不是字符串 —— REST 层就要拦，不能留到服务层。
+        // 放服务层的形态是「存得进去、跑的时候才炸」
+        ResponseEntity<String> notString = exchange(HttpMethod.POST, "/api/wf/filters",
+                body("name", "bad" + tag, "resourceType", "task",
+                        "properties", body("openOnly", Boolean.TRUE)));
+        assertEquals(HttpStatus.BAD_REQUEST, notString.getStatusCode(),
+                "JSON 里的 true 天生是布尔，但筛选器的值是按字符串严格解析的: "
+                        + notString.getBody());
+        // 响应体是 JSON，里面的引号是**转义过的**：原始字节里是 \"true\" 而不是 "true"。
+        // 断言要按转义后的形态写，否则它匹配不到任何东西 —— 而
+        // 「匹配不到」会被误读成「报错里没给例子」
+        assertTrue(notString.getBody().contains("\\\"true\\\""),
+                "报错要直接给出该写的样子: " + notString.getBody());
+
+        // 值的写法不合法
+        assertEquals(HttpStatus.BAD_REQUEST, exchange(HttpMethod.POST, "/api/wf/filters",
+                body("name", "bad" + tag, "resourceType", "task",
+                        "properties", body("openOnly", "yes"))).getStatusCode(),
+                "yes 不是 true —— 宽松解析会让「打错一个字」变成「条件悄悄变了」");
+
+        // 类型不认识
+        ResponseEntity<String> badType = exchange(HttpMethod.POST, "/api/wf/filters",
+                body("name", "bad" + tag, "resourceType", "taskk"));
+        assertEquals(HttpStatus.BAD_REQUEST, badType.getStatusCode());
+        assertTrue(badType.getBody().contains("processInstance")
+                        && badType.getBody().contains("task"),
+                "报错要列出合法类型: " + badType.getBody());
+
+        // 名字为空
+        assertEquals(HttpStatus.BAD_REQUEST, exchange(HttpMethod.POST, "/api/wf/filters",
+                body("resourceType", "task")).getStatusCode());
+
+        // 上面每一条都必须**什么都没存进去**：
+        // 返回 400 但数据落了，是这类接口最常见的"看着拒绝了其实没拒绝"
+        assertEquals(0, countOf("/api/wf/filters/count?nameLike=bad" + tag),
+                "报错的请求不该留下任何一张筛选器");
+    }
+
+    private String idOf(Map<String, Object> filter) {
+        return (String) filter.get("id");
+    }
+
+    private int countOf(String url) throws Exception {
+        return ((Number) asMap(getOk(url).get("data")).get("count")).intValue();
+    }
+
+    private Map<String, Object> readOk(ResponseEntity<String> response) throws Exception {
+        assertEquals(HttpStatus.OK, response.getStatusCode(), response.getBody());
+        return asMap(json.readValue(response.getBody(), Map.class).get("data"));
+    }
+
     @Test
     @DisplayName("局部变量端点：token 不存在 / id 为空要报错")
     void branchVariableEndpointsRejectBadArguments() throws Exception {

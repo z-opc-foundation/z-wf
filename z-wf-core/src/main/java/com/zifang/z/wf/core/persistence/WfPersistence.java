@@ -8,6 +8,7 @@ import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
+import com.zifang.z.wf.core.model.WfFilter;
 import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfTask;
@@ -302,6 +303,34 @@ public interface WfPersistence {
      * 把一条正常结束的流程拽进超时分支 —— 审批系统里这种 bug 最招骂。
      */
     int deleteJobsByExecution(String executionId);
+
+    // ==================== 保存筛选器 ====================
+
+    /**
+     * 保存（新建或覆盖）一个筛选器。
+     *
+     * <p><b>契约与 {@link #saveTask} / {@link #saveJob} 一致</b>：
+     * {@code id == null} 走 INSERT，非空走 UPDATE，
+     * 且 UPDATE 带乐观锁 —— 调用方改既有筛选器前必须先
+     * {@code nextRevision()}，使传入对象的 revision 恰好是库里那份 +1。
+     * 漏了它得到的是乐观锁冲突，而那是那条契约在工作，不是它坏了。
+     *
+     * <p>筛选器是共享资源，乐观锁不是可选项：
+     * 管理员在改它、别人正在用它查，没有版本号时最后写的人赢，
+     * 改的人会读成「我明明改了却没生效」。
+     */
+    void saveFilter(WfFilter filter);
+
+    /** 按 id 取一个筛选器；不存在返回 {@code null}（调用方自己决定要不要报错）。 */
+    WfFilter findFilter(String id);
+
+    /** 删一个筛选器。删不存在的 id 返回 {@code false}，不抛异常。 */
+    boolean deleteFilter(String id);
+
+    List<WfFilter> queryFilters(WfFilterQuery query);
+
+    /** 条数，条件与 {@link #queryFilters} 必须一致，<b>忽略分页</b>。 */
+    int countFilters(WfFilterQuery query);
 
     // ==================== 生命周期 ====================
 

@@ -350,6 +350,36 @@ class UnsupportedBpmnElementTest {
             return 0;
         }
 
+        // 筛选器是这个 stub 用不到的一组方法（它只测解析期的拒绝行为），
+        // 但 WfPersistence 是接口，少一个实现编译就过不去。
+        // 返回"空"而不是抛异常：stub 的语义是"没实现"，
+        // 而真的被调到时抛出的 UnsupportedOperationException 会指向这个测试类，
+        // 让人以为是解析期的行为 —— 实际是某个 stub 没跟上接口
+        @Override
+        public void saveFilter(com.zifang.z.wf.core.model.WfFilter filter) {
+        }
+
+        @Override
+        public com.zifang.z.wf.core.model.WfFilter findFilter(String id) {
+            return null;
+        }
+
+        @Override
+        public boolean deleteFilter(String id) {
+            return false;
+        }
+
+        @Override
+        public java.util.List<com.zifang.z.wf.core.model.WfFilter> queryFilters(
+                com.zifang.z.wf.core.persistence.WfFilterQuery query) {
+            return new java.util.ArrayList<>();
+        }
+
+        @Override
+        public int countFilters(com.zifang.z.wf.core.persistence.WfFilterQuery query) {
+            return 0;
+        }
+
         @Override
         public void saveActivityInstance(com.zifang.z.wf.core.model.WfActivityInstance a) {
         }

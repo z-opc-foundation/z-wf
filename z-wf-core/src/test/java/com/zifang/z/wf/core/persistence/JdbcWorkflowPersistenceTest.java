@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -25,6 +26,8 @@ import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
+import com.zifang.z.wf.core.model.WfFilter;
+import com.zifang.z.wf.core.model.WfFilterType;
 import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfJobType;
 import com.zifang.z.wf.core.model.WfProcessInstance;
@@ -1538,6 +1541,122 @@ class JdbcWorkflowPersistenceTest {
         assertEquals(7, seen.size(), "三页合起来必须正好覆盖全部 7 条");
         assertEquals(0, persistence.queryTasks(
                 new WfTaskQuery().setAssignee("u1").setPageNum(4).setPageSize(3)).size());
+    }
+
+    // ==================== 保存筛选器 ====================
+
+    @Test
+    @DisplayName("筛选器往返：条件那一列 JSON 读回来仍是字符串，且带出类型/时间/版本号")
+    void filterRoundTrip() {
+        WfFilter filter = WfFilter.of("flt-1", "我的长期待办", WfFilterType.TASK, "alice");
+        filter.putProperty("assignee", "alice");
+        filter.putProperty("openOnly", "true");
+        // 值里带引号与逗号：这两个是 JSON 转义最容易翻车的地方，
+        // 条件里出现"张三,李四"这样的候选组很常见
+        filter.putProperty("candidateUsers", "a\"b,c");
+        filter.setCreateTime(new Date(1_700_000_000_000L));
+        filter.setUpdateTime(new Date(1_700_000_000_000L));
+        persistence.saveFilter(filter);
+
+        WfFilter loaded = persistence.findFilter("flt-1");
+        assertNotNull(loaded, "刚存进去的读不回来");
+        assertEquals("我的长期待办", loaded.getName());
+        assertEquals(WfFilterType.TASK, loaded.getResourceType());
+        assertEquals("alice", loaded.getOwner());
+        assertEquals("alice", loaded.getProperty("assignee"));
+        assertEquals("true", loaded.getProperty("openOnly"));
+        assertEquals("a\"b,c", loaded.getProperty("candidateUsers"),
+                "带引号与逗号的值必须原样回来 —— 转义错了的话，"
+                        + "候选组会被拆成两半，而症状是「明明配了却搜不到」");
+        assertEquals(1_700_000_000_000L, loaded.getCreateTime().getTime(),
+                "TIMESTAMP 往返会掉毫秒精度之外的东西，时间对不上就分不清是哪一轮建的");
+        assertEquals(0, loaded.getRevision());
+    }
+
+    @Test
+    @DisplayName("筛选器乐观锁：版本号对不上必须抛异常（0 行受影响不能悄悄当成功）")
+    void filterOptimisticLock() {
+        WfFilter filter = WfFilter.of("flt-2", "x", WfFilterType.TASK, "alice");
+        filter.setCreateTime(new Date());
+        filter.setUpdateTime(new Date());
+        persistence.saveFilter(filter);
+
+        // **两份副本都必须在任何一次写之前读出来**。
+        // 写完再读第二份的话，它拿到的就是最新版本，本来就该写成功 ——
+        // 那测的是"能不能改"，不是"两个人同时改会怎样"
+        WfFilter first = persistence.findFilter("flt-2");
+        WfFilter second = persistence.findFilter("flt-2");
+        assertEquals(first.getRevision(), second.getRevision(), "前置条件：两份读到同一版本");
+
+        first.setName("改过的");
+        first.nextRevision();
+        persistence.saveFilter(first);
+
+        second.setName("过期的");
+        second.nextRevision();
+        assertThrows(WfOptimisticLockException.class, () -> persistence.saveFilter(second),
+                "WHERE REV=? 没命中就必须报错 —— 0 行受影响时静默成功等于没锁");
+        assertEquals("改过的", persistence.findFilter("flt-2").getName());
+    }
+
+    @Test
+    @DisplayName("筛选器顺序确定：创建时间新的在前，同刻按 id 升 —— 摘掉 ORDER BY 就会变")
+    void filterOrderIsDeterministic() {
+        // 造三个创建时间明确递增的筛选器，并让 **id 升序与时间倒序正好相反**：
+        // 最早创建的拿最小 id（a），最晚创建的拿最大 id（z）。
+        // 于是「只按 id 升序」给出 a→m→z（最老在前），
+        // 而「按创建时间倒序」给出 z→m→a（最新在前）—— 两者必然不同，
+        // 这一点不成立的话，ORDER BY 写错了也可能碰巧对上一次
+        String[] ids = {"a-最早创建的", "m-中间的", "z-最晚创建的"};
+        long[] times = {1_700_000_000_000L, 1_700_000_001_000L, 1_700_000_002_000L};
+        for (int i = 0; i < ids.length; i++) {
+            WfFilter filter = WfFilter.of(ids[i], "筛选器-" + i, WfFilterType.TASK, "ops");
+            filter.setCreateTime(new Date(times[i]));
+            filter.setUpdateTime(new Date(times[i]));
+            persistence.saveFilter(filter);
+        }
+        List<String> ordered = new ArrayList<String>();
+        for (WfFilter each : persistence.queryFilters(new WfFilterQuery())) {
+            ordered.add(each.getId());
+        }
+        assertEquals(Arrays.asList("z-最晚创建的", "m-中间的", "a-最早创建的"), ordered,
+                "必须按创建时间倒序。实际 " + ordered);
+    }
+
+    @Test
+    @DisplayName("筛选器查询与删除：条件可组合、count 忽略分页、删不存在的返回 false")
+    void filterQueryAndDelete() {
+        for (int i = 0; i < 3; i++) {
+            WfFilter filter = WfFilter.of("q-" + i, "筛选器-" + i,
+                    i == 0 ? WfFilterType.TASK : WfFilterType.PROCESS_INSTANCE,
+                    i % 2 == 0 ? "alice" : "bob");
+            filter.setCreateTime(new Date(1_700_000_000_000L + i));
+            filter.setUpdateTime(new Date(1_700_000_000_000L + i));
+            persistence.saveFilter(filter);
+        }
+        assertEquals(3, persistence.queryFilters(new WfFilterQuery()).size());
+        assertEquals(1, persistence.queryFilters(
+                new WfFilterQuery().setResourceType(WfFilterType.TASK)).size());
+        assertEquals(2, persistence.queryFilters(new WfFilterQuery().setOwner("alice")).size());
+        assertEquals(1, persistence.queryFilters(new WfFilterQuery().setNameLike("器-1")).size());
+        assertEquals(1, persistence.queryFilters(new WfFilterQuery().setId("q-0")).size());
+        // count 忽略分页：否则调用方会以为只有一页那么多
+        assertEquals(3, persistence.countFilters(new WfFilterQuery().setPageSize(1)));
+
+        List<WfFilter> page1 = persistence.queryFilters(new WfFilterQuery().setPageSize(2));
+        List<WfFilter> page2 = persistence.queryFilters(
+                new WfFilterQuery().setPageSize(2).setPageNum(2));
+        assertEquals(2, page1.size());
+        assertEquals(1, page2.size());
+        // 顺序确定：同一页两次查必须一模一样，否则翻页会漏条目
+        assertEquals(page1.get(0).getId(), persistence.queryFilters(
+                new WfFilterQuery().setPageSize(2)).get(0).getId());
+
+        assertTrue(persistence.deleteFilter("q-0"));
+        assertNull(persistence.findFilter("q-0"));
+        assertFalse(persistence.deleteFilter("q-0"), "删不存在的返回 false，不抛 —— "
+                + "「保证它没了」这个语义由服务层决定要不要报错");
+        assertNull(persistence.findFilter(null));
     }
 
     private WfTask newTask(String id, String assignee, WfTask.Status status, long createTime) {
