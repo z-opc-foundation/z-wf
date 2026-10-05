@@ -280,6 +280,31 @@ public class WfContext {
     }
 
     /**
+     * 本次节点访问的结论（通常是审批意见）。
+     *
+     * <p>存在的理由：活动历史此前有<b>三个写入点</b>（引擎的 enter / leave、
+     * service 的 recordActivityComplete），而 leave 并不掌握审批意见 ——
+     * 于是同一步骤被记了三条，且其中两条的 {@code assignee} 取的是
+     * {@code authenticatedUserId}。在"进入审批"那一刻那个值还是<b>发起人</b>，
+     * 轨迹上就会显示"alice 开始了审批"，而实际办理人是别人。
+     *
+     * <p>现在收敛成：{@code completeTask} 把意见放进这里，
+     * {@code leave()} 一次性写出唯一一条记录。
+     */
+    private String pendingActivityOutcome;
+
+    public void setPendingActivityOutcome(String pendingActivityOutcome) {
+        this.pendingActivityOutcome = pendingActivityOutcome;
+    }
+
+    /** 取走结论；取走后清空，避免下一次节点访问误用上一次的意见。 */
+    public String consumePendingActivityOutcome() {
+        String value = pendingActivityOutcome;
+        pendingActivityOutcome = null;
+        return value;
+    }
+
+    /**
      * 构造一条活动历史并登记。
      */
     public WfActivityInstance recordActivity(String activityId, String activityName,

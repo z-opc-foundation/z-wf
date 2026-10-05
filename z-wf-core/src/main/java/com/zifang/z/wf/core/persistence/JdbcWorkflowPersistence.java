@@ -483,6 +483,48 @@ public class JdbcWorkflowPersistence implements WfPersistence {
     }
 
     /** {@code SELECT COUNT(*)} 的行映射。 */
+    /**
+     * 活动历史行映射。
+     *
+     * <p>抽成常量而不是在 {@code findActivityInstances} 里就地 new：
+     * 新增的历史查询与老方法查的是同一张表、映射同一批列，
+     * 两处各写一份的话，加字段时只改一处就会让另一个查询静默少字段。
+     */
+    private final RowMapper<WfActivityInstance> activityMapper =
+            new RowMapper<WfActivityInstance>() {
+                @Override
+                public WfActivityInstance map(ResultSet rs) throws SQLException {
+                    WfActivityInstance instance = new WfActivityInstance();
+                    instance.setId(rs.getString("ACT_ID"));
+                    instance.setProcessInstanceId(rs.getString("PROC_ID"));
+                    instance.setProcessDefinitionKey(rs.getString("DEF_KEY"));
+                    instance.setActivityId(rs.getString("ACTIVITY_ID"));
+                    instance.setActivityName(rs.getString("ACTIVITY_NAME"));
+                    instance.setActivityType(rs.getString("ACTIVITY_TYPE"));
+                    instance.setExecutionId(rs.getString("EXEC_ID"));
+                    instance.setAssignee(rs.getString("ASSIGNEE"));
+                    instance.setDurationMillis(rs.getLong("DURATION_MS"));
+                    instance.setStartTime(date(rs.getTimestamp("START_TIME")));
+                    instance.setEndTime(date(rs.getTimestamp("END_TIME")));
+                    instance.setOutcome(rs.getString("OUTCOME"));
+                    instance.setDetail(rs.getString("DETAIL"));
+                    instance.setVariables(fromJsonMap(rs.getString("VARIABLES")));
+                    return instance;
+                }
+            };
+
+    /** 拼 AND 条件。SQL 片段来自本类的固定模板，不含用户输入。 */
+    private static String join(List<String> parts, String separator) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < parts.size(); i++) {
+            if (i > 0) {
+                sb.append(separator);
+            }
+            sb.append(parts.get(i));
+        }
+        return sb.toString();
+    }
+
     private static final RowMapper<Long> COUNT_MAPPER = new RowMapper<Long>() {
         @Override
         public Long map(ResultSet rs) throws SQLException {
@@ -908,29 +950,116 @@ public class JdbcWorkflowPersistence implements WfPersistence {
     }
 
     @Override
+    public List<WfActivityInstance> queryActivityInstances(
+            WfHistoricActivityInstanceQuery query) {
+        StringBuilder sql = new StringBuilder("SELECT * FROM ZWF_ACTIVITY");
+        List<Object> args = new ArrayList<>();
+        appendActivityFilters(sql, args, query);
+        sql.append(" ORDER BY ")
+                .append(query != null && "duration".equals(query.getOrderBy())
+                        ? "DURATION_MS DESC" : "START_TIME ASC");
+        int size = query == null || query.getPageSize() <= 0 ? 20 : query.getPageSize();
+        int offset = query == null ? 0 : query.getOffset();
+        // 分页参数放在末尾：bind 是按顺序填 ? 的
+        sql.append(" LIMIT ? OFFSET ?");
+        args.add(size);
+        args.add(offset);
+        return queryList(sql.toString(), args.toArray(), activityMapper);
+    }
+
+    @Override
+    public long countActivityInstances(WfHistoricActivityInstanceQuery query) {
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM ZWF_ACTIVITY");
+        List<Object> args = new ArrayList<>();
+        appendActivityFilters(sql, args, query);
+        Long count = queryOne(sql.toString(), args.toArray(), COUNT_MAPPER);
+        return count == null ? 0L : count;
+    }
+
+    /**
+     * 历史清理只删<b>已结束</b>流程的数据。
+     *
+     * <p>在途流程的历史删掉之后，审批轨迹会出现一个洞，而单据还在被人办 ——
+     * 那比表大更难解释。
+     *
+     * <p>{@code END_TIME IS NOT NULL} 是显式写出来的，不是冗余。实测：把这句去掉
+     * 之后，{@code deleteHistoryBeforeKeepsRunning} 依然全绿 —— 因为 SQL 三值逻辑下
+     * {@code NULL < ?} 求值为 UNKNOWN，本来就匹配不到在途流程。也就是说"在途流程
+     * 不会被删"这件事当时完全依赖数据库对 NULL 的处理，删不删得对都看不出区别。
+     * 一旦有人把条件改成 {@code (END_TIME < ? OR END_TIME IS NULL)}，
+     * 在途流程的历史当场被删光，而那条测试原本抓不住。显式写出这一句，等于把
+     * "在途"这个前提固定下来，改坏时立刻变红。
+     */
+    @Override
+    public int deleteHistoryBefore(Date before) {
+        String sql = "DELETE FROM ZWF_ACTIVITY WHERE PROC_ID IN ("
+                + "SELECT PROC_ID FROM ZWF_PROCESS WHERE END_TIME IS NOT NULL AND END_TIME < ?"
+                + ")";
+        int activities = update(sql, before);
+        String taskSql = "DELETE FROM ZWF_TASK WHERE PROC_ID IN ("
+                + "SELECT PROC_ID FROM ZWF_PROCESS WHERE END_TIME IS NOT NULL AND END_TIME < ?"
+                + ")";
+        int tasks = update(taskSql, before);
+        String commentSql = "DELETE FROM ZWF_COMMENT WHERE PROC_ID IN ("
+                + "SELECT PROC_ID FROM ZWF_PROCESS WHERE END_TIME IS NOT NULL AND END_TIME < ?"
+                + ")";
+        int comments = update(commentSql, before);
+        String processSql = "DELETE FROM ZWF_PROCESS "
+                + "WHERE END_TIME IS NOT NULL AND END_TIME < ?";
+        int processes = update(processSql, before);
+        log.info("清理 {} 之前的历史: 流程 {} 条 / 活动 {} 条 / 任务 {} 条 / 评论 {} 条",
+                before, processes, activities, tasks, comments);
+        return processes;
+    }
+
+    /** 活动历史查询的条件拼装；内存与 JDBC 两套实现共用同一份条件语义。 */
+    private void appendActivityFilters(StringBuilder sql, List<Object> args,
+                                        WfHistoricActivityInstanceQuery q) {
+        if (q == null) {
+            return;
+        }
+        List<String> parts = new ArrayList<>();
+        if (q.getProcessInstanceId() != null) {
+            parts.add("PROC_ID=?");
+            args.add(q.getProcessInstanceId());
+        }
+        if (q.getProcessDefinitionKey() != null) {
+            parts.add("DEF_KEY=?");
+            args.add(q.getProcessDefinitionKey());
+        }
+        if (q.getActivityId() != null) {
+            parts.add("ACTIVITY_ID=?");
+            args.add(q.getActivityId());
+        }
+        if (q.getActivityType() != null) {
+            parts.add("ACTIVITY_TYPE=?");
+            args.add(q.getActivityType());
+        }
+        if (q.getAssignee() != null) {
+            parts.add("ASSIGNEE=?");
+            args.add(q.getAssignee());
+        }
+        if (q.getStartedAfter() != null) {
+            parts.add("START_TIME > ?");
+            args.add(timestamp(q.getStartedAfter()));
+        }
+        if (q.getStartedBefore() != null) {
+            parts.add("START_TIME < ?");
+            args.add(timestamp(q.getStartedBefore()));
+        }
+        if (q.getMinDurationMillis() != null) {
+            parts.add("DURATION_MS >= ?");
+            args.add(q.getMinDurationMillis());
+        }
+        if (!parts.isEmpty()) {
+            sql.append(" WHERE ").append(join(parts, " AND "));
+        }
+    }
+
+    @Override
     public List<WfActivityInstance> findActivityInstances(String processInstanceId) {
         return queryList("SELECT * FROM ZWF_ACTIVITY WHERE PROC_ID=? ORDER BY START_TIME ASC",
-                new Object[]{processInstanceId}, new RowMapper<WfActivityInstance>() {
-                    @Override
-                    public WfActivityInstance map(ResultSet rs) throws SQLException {
-                        WfActivityInstance instance = new WfActivityInstance();
-                        instance.setId(rs.getString("ACT_ID"));
-                        instance.setProcessInstanceId(rs.getString("PROC_ID"));
-                        instance.setProcessDefinitionKey(rs.getString("DEF_KEY"));
-                        instance.setActivityId(rs.getString("ACTIVITY_ID"));
-                        instance.setActivityName(rs.getString("ACTIVITY_NAME"));
-                        instance.setActivityType(rs.getString("ACTIVITY_TYPE"));
-                        instance.setExecutionId(rs.getString("EXEC_ID"));
-                        instance.setAssignee(rs.getString("ASSIGNEE"));
-                        instance.setDurationMillis(rs.getLong("DURATION_MS"));
-                        instance.setStartTime(date(rs.getTimestamp("START_TIME")));
-                        instance.setEndTime(date(rs.getTimestamp("END_TIME")));
-                        instance.setOutcome(rs.getString("OUTCOME"));
-                        instance.setDetail(rs.getString("DETAIL"));
-                        instance.setVariables(fromJsonMap(rs.getString("VARIABLES")));
-                        return instance;
-                    }
-                });
+                new Object[]{processInstanceId}, activityMapper);
     }
 
     @Override

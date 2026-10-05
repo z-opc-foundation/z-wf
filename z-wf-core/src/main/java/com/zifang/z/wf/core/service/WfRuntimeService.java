@@ -277,6 +277,8 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         context.setAuthenticatedUserId(userId);
         context.setSubProcessLauncher(this);
         context.setVariables(variables);
+        // 审批意见交给 leave() 写成唯一那条活动记录（见 WfContext#pendingActivityOutcome）
+        context.setPendingActivityOutcome(comment);
         // 汇合判定需要看到本实例的全部 token
         context.setProcessExecutions(persistence.findExecutionsByProcessInstance(instance.getId()));
 
@@ -309,7 +311,11 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         }
 
         // ---- 3. 活动历史 ----
-        recordActivityComplete(instance, definition, task, execution, userId, comment);
+        // 正常路径由 leave() 统一写；这里仅在"没有 token、无法 advance"时兜底 ——
+        // 那种情况下 leave 不会被调用，不写就丢了这笔历史。
+        if (execution == null) {
+            recordActivityComplete(instance, definition, task, null, userId, comment);
+        }
 
         // ---- 4. 钩子 ----
         hookDispatcher.fireAfterComplete(taskId, userId, "completed");
@@ -557,14 +563,14 @@ public class WfRuntimeService implements WfSubProcessLauncher {
     /**
      * 记一条"该活动完成"的历史。
      *
-     * <p>抽出来是因为会签路径要在"未收口"时也记一条 ——
-     * 每个会签实例的办结都该在审批轨迹上留下痕迹，
-     * 否则轨迹上只有一条"审批完成"，看不出这是一个 3 人会签。
+     * <p><b>只在两条路径上调用</b>：会签未收口（那一步不走 leave），
+     * 以及没有 token 可推进的兜底。正常路径由 {@code WfEngine#leave} 统一写，
+     * 两边都写会让同一步骤在轨迹上出现两条。
      */
     private void recordActivityComplete(WfProcessInstance instance, WfDefinition definition,
                                         WfTask task, WfExecution execution, String userId,
                                         String comment) {
-        if (execution == null || definition.node(task.getDefinitionId()) == null) {
+        if (definition.node(task.getDefinitionId()) == null) {
             return;
         }
         WfActivityInstance history = new WfActivityInstance();

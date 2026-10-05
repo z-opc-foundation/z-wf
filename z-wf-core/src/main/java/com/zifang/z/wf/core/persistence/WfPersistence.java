@@ -1,5 +1,6 @@
 package com.zifang.z.wf.core.persistence;
 
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -157,6 +158,29 @@ public interface WfPersistence {
     void saveActivityInstance(WfActivityInstance instance);
 
     List<WfActivityInstance> findActivityInstances(String processInstanceId);
+
+    /**
+     * 按条件查询历史活动实例。
+     *
+     * <p>此前只有"按流程实例取全量轨迹"这一个口径，导致"上个月所有走完的流程里
+     * 哪一步最慢"这类问题只能逐个流程查完再在内存里聚合。
+     *
+     * @param query 条件；{@code null} 表示查全部
+     */
+    List<WfActivityInstance> queryActivityInstances(WfHistoricActivityInstanceQuery query);
+
+    /** 历史活动实例条数，与 {@link #queryActivityInstances} 的条件必须一致。 */
+    long countActivityInstances(WfHistoricActivityInstanceQuery query);
+
+    /**
+     * 删除 {@code endTime} 早于 {@code before} 的<b>已结束</b>流程实例的全部历史。
+     *
+     * <p>只清理已结束的：在途流程的历史删掉之后，审批轨迹会出现一个空洞，
+     * 而单据还在被人办 —— 那比历史表大得多更难解释。
+     *
+     * @return 被删除的流程实例数
+     */
+    int deleteHistoryBefore(Date before);
 
     void saveComment(WfComment comment);
 

@@ -16,6 +16,7 @@ import com.zifang.z.wf.core.definition.WfFlow;
 import com.zifang.z.wf.core.definition.WfNode;
 import com.zifang.z.wf.core.definition.WfNodeType;
 import com.zifang.z.wf.core.engine.expression.WfExpressionEvaluator;
+import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfProcessStatus;
@@ -203,11 +204,21 @@ public class WfEngine {
 
         token.setState(WfExecution.State.ACTIVE);
         token.arriveAt(node.getId());
-        context.recordActivity(node.getId(), node.getName(), node.getType().bpmnName(), "entered");
+        // 不再在这里记 "entered"：那个时点的 authenticatedUserId 是"谁触发了进入"，
+        // 对审批节点而言通常是发起人而不是办理人，记下来轨迹上就会显示错人。
+        // 一次节点访问只应当在 leave 时记一条（见 leave）。
 
         // ---- 结束事件 ----
         if (node.getType() == WfNodeType.END_EVENT) {
             evaluateResult(context, node);
+            // 结束节点不走 leave，所以在这里补上唯一那条记录
+            WfActivityInstance end = context.recordActivity(node.getId(), node.getName(),
+                    node.getType().bpmnName(),
+                    context.getProcessResult() == null ? "completed" : context.getProcessResult());
+            // 结束不是任何一个人的动作。留着手办人会污染"某人办过哪些单"：
+            // 查 ceo 会把每一条恰好由他办结的流程的结束节点也一并捞出来。
+            // Camunda 的 endEvent 历史同样是 USER_ID 为空。
+            end.setAssignee(null);
             token.setState(WfExecution.State.ENDED);
             return;
         }
@@ -406,7 +417,23 @@ public class WfEngine {
             return;
         }
 
-        context.recordActivity(node.getId(), node.getName(), node.getType().bpmnName(), "completed");
+        // 一次节点访问的唯一一条历史记录。意见取自 completeTask 放进来的
+        // pendingActivityOutcome；没有意见时记 "completed"。
+        //
+        // 网关排除在外：它是路由而不是活动，轨迹上冒出"排他网关 3"这种行
+        // 对审批人没有意义，却会按流程步数把历史表撑大一倍。Camunda 的
+        // HistoricActivityInstance 同样只收 startEvent / endEvent / task /
+        // subProcess / callActivity。
+        //
+        // 这道判断当前并不决定结果 —— 网关走 handleGateway 自己的 followFlows，
+        // 压根到不了 leave。写在这里是把"网关不进历史"这条规则钉在唯一该钉的
+        // 地方：将来若把网关改成经由 leave 推进，这行就是拦住误记的那道闸。
+        // WfHistoryQueryTest#gatewaysAreNotRecorded 负责证明这条规则确实成立。
+        if (!node.getType().isGateway()) {
+            String outcome = context.consumePendingActivityOutcome();
+            context.recordActivity(node.getId(), node.getName(), node.getType().bpmnName(),
+                    outcome == null || outcome.trim().isEmpty() ? "completed" : outcome);
+        }
 
         // ---- 网关离开：先记历史，选线由 handleGateway 在进入时已完成 ----
         List<WfFlow> flows = definition.outgoingFlows(node.getId());

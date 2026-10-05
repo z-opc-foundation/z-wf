@@ -439,6 +439,117 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
     }
 
     @Override
+    public List<WfActivityInstance> queryActivityInstances(
+            WfHistoricActivityInstanceQuery query) {
+        List<WfActivityInstance> matched = new ArrayList<>();
+        for (List<WfActivityInstance> list : activities.values()) {
+            synchronized (list) {
+                for (WfActivityInstance item : list) {
+                    if (matches(item, query)) {
+                        matched.add(copy(item));
+                    }
+                }
+            }
+        }
+        sortHistoric(matched, query);
+        return paginate(matched, query == null ? 0 : query.getOffset(),
+                query == null || query.getPageSize() <= 0 ? 20 : query.getPageSize());
+    }
+
+    @Override
+    public long countActivityInstances(WfHistoricActivityInstanceQuery query) {
+        long count = 0;
+        for (List<WfActivityInstance> list : activities.values()) {
+            synchronized (list) {
+                for (WfActivityInstance item : list) {
+                    if (matches(item, query)) {
+                        count++;
+                    }
+                }
+            }
+        }
+        return count;
+    }
+
+    @Override
+    public int deleteHistoryBefore(Date before) {
+        int removed = 0;
+        List<String> doomed = new ArrayList<>();
+        for (Map.Entry<String, WfProcessInstance> entry : processInstances.entrySet()) {
+            WfProcessInstance instance = entry.getValue();
+            if (instance.getStatus() == null || !instance.getStatus().isTerminal()) {
+                continue;   // 在途流程的历史不能删
+            }
+            Date end = instance.getEndTime();
+            if (end != null && end.before(before)) {
+                doomed.add(entry.getKey());
+            }
+        }
+        for (String id : doomed) {
+            activities.remove(id);
+            comments.remove(id);
+            // 只删已结束流程相关的任务；任务表是流程实例的子表，一并清掉
+            tasks.values().removeIf(task -> id.equals(task.getProcessInstanceId()));
+            executions.values().removeIf(token -> id.equals(token.getProcessInstanceId()));
+            processInstances.remove(id);
+            removed++;
+        }
+        if (removed > 0) {
+            log.info("清理 {} 之前的历史: 删除 {} 个流程实例", before, removed);
+        }
+        return removed;
+    }
+
+    private boolean matches(WfActivityInstance item, WfHistoricActivityInstanceQuery q) {
+        if (q == null) {
+            return true;
+        }
+        if (isNotBlank(q.getProcessInstanceId())
+                && !q.getProcessInstanceId().equals(item.getProcessInstanceId())) {
+            return false;
+        }
+        if (isNotBlank(q.getProcessDefinitionKey())
+                && !q.getProcessDefinitionKey().equals(item.getProcessDefinitionKey())) {
+            return false;
+        }
+        if (isNotBlank(q.getActivityId()) && !q.getActivityId().equals(item.getActivityId())) {
+            return false;
+        }
+        if (isNotBlank(q.getActivityType())
+                && !q.getActivityType().equals(item.getActivityType())) {
+            return false;
+        }
+        if (isNotBlank(q.getAssignee()) && !q.getAssignee().equals(item.getAssignee())) {
+            return false;
+        }
+        if (q.getStartedAfter() != null
+                && (item.getStartTime() == null
+                || !item.getStartTime().after(q.getStartedAfter()))) {
+            return false;
+        }
+        if (q.getStartedBefore() != null
+                && (item.getStartTime() == null
+                || !item.getStartTime().before(q.getStartedBefore()))) {
+            return false;
+        }
+        return q.getMinDurationMillis() == null
+                || item.getDurationMillis() >= q.getMinDurationMillis();
+    }
+
+    private void sortHistoric(List<WfActivityInstance> list,
+                              WfHistoricActivityInstanceQuery query) {
+        if (query != null && "duration".equals(query.getOrderBy())) {
+            list.sort((a, b) -> Long.compare(b.getDurationMillis(), a.getDurationMillis()));
+            return;
+        }
+        list.sort((a, b) -> {
+            if (a.getStartTime() == null || b.getStartTime() == null) {
+                return 0;
+            }
+            return a.getStartTime().compareTo(b.getStartTime());
+        });
+    }
+
     public void saveComment(WfComment comment) {
         if (comment == null || comment.getProcessInstanceId() == null) {
             return;

@@ -553,4 +553,183 @@ class JdbcWorkflowPersistenceTest {
         assertEquals(1, persistence.findTask("t-legacy-1").getDelegateChain().size(),
                 "老库补列后应能正常存读委派链，否则升级后引擎直接报 column not found");
     }
+
+    // ==================== 历史查询（可组合 Query） ====================
+
+    /**
+     * 落一条活动历史。
+     *
+     * <p>时间用固定的毫秒偏移而不是 {@code new Date()}：SQL 里
+     * {@code START_TIME > ?} 传的是 {@link Date}，只有边界值明确时，
+     * 毫秒精度被 TIMESTAMP 截断之类的问题才会暴露成断言失败而不是偶发通过。
+     */
+    private void saveActivity(String id, String procId, String defKey, String activityId,
+                              String type, String assignee, long startOffsetMillis,
+                              long durationMillis) {
+        WfActivityInstance a = new WfActivityInstance();
+        a.setId(id);
+        a.setProcessInstanceId(procId);
+        a.setProcessDefinitionKey(defKey);
+        a.setActivityId(activityId);
+        a.setActivityType(type);
+        a.setAssignee(assignee);
+        long start = BASE + startOffsetMillis;
+        a.setStartTime(new Date(start));
+        a.setEndTime(new Date(start + durationMillis));
+        a.setDurationMillis(durationMillis);
+        a.setOutcome("completed");
+        persistence.saveActivityInstance(a);
+    }
+
+    private static final long BASE = 1_700_000_000_000L;
+
+    @Test
+    @DisplayName("活动查询：六个过滤条件在真库上逐个生效")
+    void activityQueryFiltersAllApply() {
+        saveActivity("a1", "p1", "defA", "approve", "userTask", "boss", 0, 100);
+        saveActivity("a2", "p1", "defA", "second", "userTask", "ceo", 1000, 5000);
+        saveActivity("a3", "p2", "defB", "approve", "userTask", "boss", 2000, 10);
+        saveActivity("a4", "p2", "defB", "e1", "endEvent", null, 3000, 0);
+
+        assertEquals(2, persistence.queryActivityInstances(new WfHistoricActivityInstanceQuery()
+                .setProcessInstanceId("p1").setPageNum(1).setPageSize(50)).size());
+        assertEquals(2, persistence.queryActivityInstances(new WfHistoricActivityInstanceQuery()
+                .setProcessDefinitionKey("defB").setPageNum(1).setPageSize(50)).size());
+        assertEquals(2, persistence.queryActivityInstances(new WfHistoricActivityInstanceQuery()
+                .setActivityId("approve").setPageNum(1).setPageSize(50)).size(),
+                "a1 与 a3 同名节点但分属 p1/p2，靠 activityId 查会同时命中");
+        assertEquals(3, persistence.queryActivityInstances(new WfHistoricActivityInstanceQuery()
+                .setActivityType("userTask").setPageNum(1).setPageSize(50)).size());
+        assertEquals(2, persistence.queryActivityInstances(new WfHistoricActivityInstanceQuery()
+                .setAssignee("boss").setPageNum(1).setPageSize(50)).size());
+        // AND：defA 里 ceo 只在 second 这一步出现过
+        assertEquals(1, persistence.queryActivityInstances(new WfHistoricActivityInstanceQuery()
+                .setProcessDefinitionKey("defA").setAssignee("ceo")
+                .setPageNum(1).setPageSize(50)).size());
+    }
+
+    @Test
+    @DisplayName("时间与耗时过滤：Date 绑定成 TIMESTAMP 后比较依然正确，且卡在边界上")
+    void timeAndDurationFilters() {
+        // 数据刻意贴着阈值排：n2 的起点恰好等于时间阈值，n3 的耗时恰好等于耗时阈值。
+        //
+        // 这条纪律是被反向验证逼出来的：最初的版本三条耗时是 100/5000/10，
+        // 阈值 1000，于是把 SQL 里的 >= 改成 > 测试照样全绿 ——
+        // 一条不卡边界的断言，压根分不出 >= 和 >，它证明不了自己在验什么。
+        saveActivity("a1", "p1", "defA", "n1", "userTask", "u", 0, 100);
+        saveActivity("a2", "p1", "defA", "n2", "userTask", "u", 1000, 3000);
+        saveActivity("a3", "p1", "defA", "n3", "userTask", "u", 2000, 1000);
+        saveActivity("a4", "p1", "defA", "n4", "userTask", "u", 3000, 50);
+
+        assertEquals(2, persistence.queryActivityInstances(new WfHistoricActivityInstanceQuery()
+                .setStartedAfter(new Date(BASE + 1000)).setPageNum(1).setPageSize(50)).size(),
+                "严格大于：起点恰好等于阈值的 n2 不在内");
+        assertEquals(1, persistence.queryActivityInstances(new WfHistoricActivityInstanceQuery()
+                .setStartedBefore(new Date(BASE + 1000)).setPageNum(1).setPageSize(50)).size(),
+                "严格小于：同样不含恰好等于阈值的 n2");
+        assertEquals(2, persistence.queryActivityInstances(new WfHistoricActivityInstanceQuery()
+                .setMinDurationMillis(1000L).setPageNum(1).setPageSize(50)).size(),
+                "含边界：耗时恰好 1000ms 的 n3 必须在内，"
+                        + "这正是 >= 与 > 的分水岭");
+    }
+
+    @Test
+    @DisplayName("办理人为空的行不会被按办理人查询捞出（结束节点正是这种）")
+    void nullAssigneeIsNotMatchedByAssigneeFilter() {
+        saveActivity("a1", "p1", "defA", "approve", "userTask", "ceo", 0, 10);
+        saveActivity("a2", "p1", "defA", "e1", "endEvent", null, 20, 0);
+
+        List<WfActivityInstance> byCeo = persistence.queryActivityInstances(
+                new WfHistoricActivityInstanceQuery().setAssignee("ceo")
+                        .setPageNum(1).setPageSize(50));
+        assertEquals(1, byCeo.size(),
+                "结束节点不记办理人，若被空值比较误伤，"
+                        + "『某人办过哪些单』会凭空少掉整条流程");
+        assertEquals("approve", byCeo.get(0).getActivityId());
+        assertEquals(2, persistence.queryActivityInstances(new WfHistoricActivityInstanceQuery()
+                .setPageNum(1).setPageSize(50)).size(), "不加条件时它仍然在库里");
+    }
+
+    @Test
+    @DisplayName("count 与列表口径一致，total 不受分页影响")
+    void countMatchesList() {
+        for (int i = 0; i < 5; i++) {
+            saveActivity("a" + i, "p1", "defA", "n" + i, "userTask", "u", i * 100, 10);
+        }
+        WfHistoricActivityInstanceQuery query = new WfHistoricActivityInstanceQuery()
+                .setProcessDefinitionKey("defA");
+        assertEquals(5, persistence.countActivityInstances(query));
+        assertEquals(5, persistence.countActivityInstances(query.setPageNum(1).setPageSize(2)),
+                "count 传了分页参数也必须返回全量条数");
+        assertEquals(2, persistence.queryActivityInstances(
+                query.setPageNum(1).setPageSize(2)).size());
+        assertEquals(2, persistence.queryActivityInstances(
+                query.setPageNum(2).setPageSize(2)).size());
+        assertEquals(1, persistence.queryActivityInstances(
+                query.setPageNum(3).setPageSize(2)).size());
+        assertEquals(0, persistence.queryActivityInstances(
+                query.setPageNum(4).setPageSize(2)).size());
+    }
+
+    @Test
+    @DisplayName("耗时倒序排序在真库上生效")
+    void durationOrderInSql() {
+        saveActivity("a1", "p1", "defA", "n1", "userTask", "u", 0, 100);
+        saveActivity("a2", "p1", "defA", "n2", "userTask", "u", 200, 9000);
+        saveActivity("a3", "p1", "defA", "n3", "userTask", "u", 400, 500);
+
+        List<WfActivityInstance> slow = persistence.queryActivityInstances(
+                new WfHistoricActivityInstanceQuery().orderByDurationDesc()
+                        .setPageNum(1).setPageSize(50));
+        assertEquals(3, slow.size());
+        assertEquals("n2", slow.get(0).getActivityId(), "耗时最长的排第一");
+        assertEquals("n3", slow.get(1).getActivityId());
+        assertEquals("n1", slow.get(2).getActivityId());
+    }
+
+    @Test
+    @DisplayName("清理只删已结束流程：在途流程的活动/任务/评论全部留存")
+    void deleteHistoryBeforeKeepsRunning() {
+        WfProcessInstance finished = new WfProcessInstance("p-done", "defA", "k:1");
+        finished.setStatus(WfProcessStatus.COMPLETED);
+        finished.setEndTime(new Date(BASE));
+        persistence.saveProcessInstance(finished);
+
+        WfProcessInstance running = new WfProcessInstance("p-open", "defA", "k:2");
+        running.setStatus(WfProcessStatus.ACTIVE);
+        persistence.saveProcessInstance(running);
+
+        saveActivity("a1", "p-done", "defA", "approve", "userTask", "boss", 0, 10);
+        saveActivity("a2", "p-open", "defA", "approve", "userTask", "boss", 0, 10);
+
+        WfTask t1 = new WfTask();
+        t1.setId("t1");
+        t1.setProcessInstanceId("p-done");
+        t1.setName("审批");
+        t1.setCreateTime(new Date(BASE));
+        t1.nextRevision();
+        persistence.saveTask(t1);
+        WfTask t2 = new WfTask();
+        t2.setId("t2");
+        t2.setProcessInstanceId("p-open");
+        t2.setName("审批");
+        t2.setCreateTime(new Date(BASE));
+        t2.nextRevision();
+        persistence.saveTask(t2);
+
+        persistence.saveComment(new WfComment("c1", "p-done", "u1", "comment", "同意"));
+        persistence.saveComment(new WfComment("c2", "p-open", "u1", "comment", "同意"));
+
+        int removed = persistence.deleteHistoryBefore(new Date(BASE + 60_000L));
+        assertEquals(1, removed, "返回值是删掉的流程条数");
+
+        assertEquals(0, persistence.findActivityInstances("p-done").size());
+        assertEquals(0, persistence.findTask("t1") == null ? 0 : 1, "已结束流程的任务也应清掉");
+        assertEquals(0, persistence.findComments("p-done").size());
+
+        assertEquals(1, persistence.findActivityInstances("p-open").size(),
+                "在途流程的历史删掉之后轨迹会出洞，而单据还在被人办");
+        assertNotNull(persistence.findTask("t2"));
+        assertEquals(1, persistence.findComments("p-open").size());
+    }
 }

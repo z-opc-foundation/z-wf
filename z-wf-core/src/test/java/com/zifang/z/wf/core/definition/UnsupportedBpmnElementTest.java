@@ -266,6 +266,23 @@ class UnsupportedBpmnElementTest {
         }
 
         @Override
+        public List<com.zifang.z.wf.core.model.WfActivityInstance> queryActivityInstances(
+                com.zifang.z.wf.core.persistence.WfHistoricActivityInstanceQuery q) {
+            return null;
+        }
+
+        @Override
+        public long countActivityInstances(
+                com.zifang.z.wf.core.persistence.WfHistoricActivityInstanceQuery q) {
+            return 0L;
+        }
+
+        @Override
+        public int deleteHistoryBefore(java.util.Date before) {
+            return 0;
+        }
+
+        @Override
         public void saveComment(com.zifang.z.wf.core.model.WfComment c) {
         }
 

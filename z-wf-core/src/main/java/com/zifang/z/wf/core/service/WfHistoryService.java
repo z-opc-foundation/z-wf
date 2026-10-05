@@ -3,12 +3,15 @@ package com.zifang.z.wf.core.service;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfProcessStatus;
 import com.zifang.z.wf.core.persistence.WfPersistence;
+import com.zifang.z.wf.core.persistence.WfHistoricActivityInstanceQuery;
 import com.zifang.z.wf.core.persistence.WfProcessInstanceQuery;
 import com.zifang.z.wf.core.persistence.WfTaskQuery;
 
@@ -36,6 +39,77 @@ public class WfHistoryService {
     public WfHistoryService(WfPersistence persistence) {
         this.persistence = persistence;
     }
+
+    /**
+     * 按条件查询历史活动实例。
+     *
+     * <p>这是"上个月所有走完的流程里哪一步最慢"这类问题的入口 ——
+     * 此前只有 {@code getTrail(processInstanceId)} 一个写死口径，
+     * 只能按流程实例取全量，跨流程的统计做不了。
+     */
+    public List<WfActivityInstance> queryActivities(WfHistoricActivityInstanceQuery query) {
+        return persistence.queryActivityInstances(query);
+    }
+
+    /** 与 {@link #queryActivities} 同条件的条数。 */
+    public long countActivities(WfHistoricActivityInstanceQuery query) {
+        return persistence.countActivityInstances(query);
+    }
+
+    /**
+     * 各环节平均耗时，用于定位瓶颈。
+     *
+     * <p>返回 {@code activityId -> 平均毫秒}。取 {@code sampleLimit} 条样本算均值
+     * （默认 {@link #BOTTLENECK_SAMPLE_LIMIT} 条，够看趋势又不至于把全表拖出来）。
+     */
+    public Map<String, Long> getAverageDurationByActivity(String definitionKey, int sampleLimit) {
+        int limit = sampleLimit <= 0 ? BOTTLENECK_SAMPLE_LIMIT : sampleLimit;
+        List<WfActivityInstance> sample = persistence.queryActivityInstances(
+                new WfHistoricActivityInstanceQuery()
+                        .setProcessDefinitionKey(definitionKey)
+                        .orderByDurationDesc()
+                        .setPageNum(1).setPageSize(limit));
+        Map<String, long[]> sums = new HashMap<>();
+        for (WfActivityInstance item : sample) {
+            long[] acc = sums.get(item.getActivityId());
+            if (acc == null) {
+                acc = new long[2];
+                sums.put(item.getActivityId(), acc);
+            }
+            acc[0] += item.getDurationMillis();
+            acc[1]++;
+        }
+        Map<String, Long> averages = new LinkedHashMap<>();
+        for (Map.Entry<String, long[]> entry : sums.entrySet()) {
+            long[] acc = entry.getValue();
+            averages.put(entry.getKey(), acc[1] == 0 ? 0L : acc[0] / acc[1]);
+        }
+        return averages;
+    }
+
+    /**
+     * 清理 {@code before} 之前的历史数据。
+     *
+     * <p>只删<b>已结束</b>流程的历史。在途流程的历史删掉之后，审批轨迹会出现
+     * 一个洞，而单据还在被人办 —— 那比表大难解释得多。
+     *
+     * <p>这是危险操作：{@code before} 传 null 直接拒绝而不是当成"清掉全部"，
+     * 因为后者几乎一定是误用；调用方应当确认该时间点早于业务允许保留的期限
+     * （通常与审计合规要求一致），并自行决定是否先做备份。
+     *
+     * @return 被删除的流程实例数
+     */
+    public int deleteHistoryBefore(Date before) {
+        if (before == null) {
+            throw new WfEngineException(
+                    "清理历史必须给一个时间点。传 null 会被当作'清掉全部历史'，"
+                            + "而那几乎一定是误用，所以这里直接拒绝。");
+        }
+        return persistence.deleteHistoryBefore(before);
+    }
+
+    /** 瓶颈分析的默认样本量。 */
+    private static final int BOTTLENECK_SAMPLE_LIMIT = 1000;
 
     /**
      * 已完成的流程实例。
