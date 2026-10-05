@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.zifang.util.core.meta.Result;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfProcessInstance;
+import com.zifang.z.wf.core.service.WfEngineException;
 import com.zifang.z.wf.core.service.WfHistoryService;
 import com.zifang.z.wf.core.service.WfRepositoryService;
 import com.zifang.z.wf.core.service.WfIncidentService;
@@ -230,5 +231,38 @@ public class WfProcessOperationController {
         }
         return Result.success(viewMapper.toProcessView(
                 runtimeService.getProcessInstance(request.getProcessInstanceId())));
+    }
+
+    // ==================== 分支级变量 ====================
+
+    @GetMapping("/branch-variables")
+    @Operation(summary = "011b_读某条分支的局部变量（不做作用域回退）")
+    public Result<Map<String, Object>> branchVariables(@RequestParam String taskId) {
+        return Result.success(variableService.getVariablesLocal(
+                variableService.executionIdOfTask(taskId)));
+    }
+
+    @PostMapping("/branch-variables")
+    @Operation(summary = "011c_改某条分支的局部变量（并行分支各改各的，不互相污染）")
+    public Result<Map<String, Object>> updateBranchVariables(
+            @RequestBody WfRequests.LocalVariableOperation request) {
+        if (request == null) {
+            throw new WfEngineException("请求体不能为空");
+        }
+        String executionId = variableService.executionIdOfTask(request.getTaskId());
+        // 删除与赋值分两个分支，不复用「值为 null 即删除」：
+        // 那套约定在流程级已经解释过一次，分支级照样成立 ——
+        // 被误用成删除时，条件表达式读不到变量会走 fail-closed 把流程带向另一条路
+        if (request.isRemove()) {
+            for (String name : request.getNames()) {
+                variableService.removeVariableLocal(executionId, name, request.getUserId());
+            }
+        } else {
+            for (Map.Entry<String, Object> entry : request.getValues().entrySet()) {
+                variableService.setVariableLocal(executionId, entry.getKey(),
+                        entry.getValue(), request.getUserId());
+            }
+        }
+        return Result.success(variableService.getVariablesLocal(executionId));
     }
 }

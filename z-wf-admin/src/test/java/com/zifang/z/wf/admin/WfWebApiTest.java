@@ -2,7 +2,9 @@ package com.zifang.z.wf.admin;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Method;
@@ -272,6 +274,138 @@ class WfWebApiTest {
 
         assertNotNull(getOk("/api/wf/process/overview?processInstanceId=" + processId));
         assertNotNull(getOk("/api/wf/process/executions?processInstanceId=" + processId));
+    }
+
+    // ==================== 执行（token）级变量 ====================
+
+    @Test
+    @DisplayName("局部变量端点：并行分支各改各的，读时不做作用域回退")
+    void executionVariableEndpoints() throws Exception {
+        // suffix 必须是部署时用的那个：办理人带的是它，两边不是同一个
+        // 就会查不到待办，而症状是"待办没建出来"，很难联想到是 tag 对不上
+        String suffix = deployParallelProcess();
+        String alice = "lp-a-" + suffix;
+        String bob = "lp-b-" + suffix;
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "lpProcess", "businessKey", "WEB-LV-" + suffix,
+                        "userId", "alice")).get("data");
+
+        // 端点收 taskId 而不是 executionId：执行树是引擎内部结构，
+        // 仓里有测试钉着「任务响应里不得出现 executionId」
+        String taskA = openTaskOf(alice, processId).get("taskId").toString();
+        String taskB = openTaskOf(bob, processId).get("taskId").toString();
+        assertNotEquals(taskA, taskB, "两条分支必须是两个任务，否则本用例测不到分支作用域");
+
+        // 同一个变量名，两个不同的值。写流程级变量的话后写的会覆盖先写的，
+        // 两条分支必然走同一边 —— 那正是这里要证伪的
+        postOk("/api/wf/process/branch-variables",
+                body("taskId", taskA, "userId", "ops", "values", body("amount", 20000)));
+        postOk("/api/wf/process/branch-variables",
+                body("taskId", taskB, "userId", "ops", "values", body("amount", 500)));
+
+        // 读：只读这一层，不回退到流程级
+        Map<String, Object> readA = getOk("/api/wf/process/branch-variables?taskId=" + taskA);
+        assertEquals(20000, asMap(readA.get("data")).get("amount"));
+        assertNull(asMap(getOk("/api/wf/process/variables?processInstanceId="
+                + processId).get("data")).get("amount"),
+                "分支变量不得泄漏到流程级 —— 泄漏了别的分支也会跟着变");
+
+        postOk("/api/approval-center/tasks/complete",
+                body("taskId", openTaskOf(alice, processId).get("taskId"),
+                        "userId", alice, "comment", "办完"));
+        postOk("/api/approval-center/tasks/complete",
+                body("taskId", openTaskOf(bob, processId).get("taskId"),
+                        "userId", bob, "comment", "办完"));
+
+        assertNotNull(openTaskOf("lp-aBig-" + suffix, processId), "甲支线是大额");
+        assertNotNull(openTaskOf("lp-bSmall-" + suffix, processId), "乙支线是小额");
+
+        // 删除
+        postOk("/api/wf/process/branch-variables",
+                body("taskId", taskA, "userId", "ops", "remove", Boolean.TRUE,
+                        "names", java.util.Collections.singletonList("amount")));
+        assertNull(asMap(getOk("/api/wf/process/branch-variables?taskId=" + taskA)
+                .get("data")).get("amount"), "删除后要真的读不到");
+    }
+
+    @Test
+    @DisplayName("局部变量端点：token 不存在 / id 为空要报错")
+    void branchVariableEndpointsRejectBadArguments() throws Exception {
+        ResponseEntity<String> nope = exchange(HttpMethod.POST,
+                "/api/wf/process/branch-variables",
+                body("taskId", "no-such-task", "userId", "ops", "values", body("k", "v")));
+        assertEquals(HttpStatus.BAD_REQUEST, nope.getStatusCode(),
+                "任务不存在要报错而不是静默丢弃 —— 否则调用方以为设上了: " + nope.getBody());
+        // 断言要能区分「没找到任务」与「没找到 token」：入口的参数校验与下游的校验
+        // 是两处，只查「不存在」三个字的话两者都能匹配上 ——
+        // 反向验证里摘掉入口那处检查，端点照样 400（下游拦住了），用例照样绿
+        assertTrue(nope.getBody().contains("任务不存在"),
+                "报错要指出是任务没找到，而不是让它滑到 token 那层才报: " + nope.getBody());
+
+        ResponseEntity<String> blank = exchange(HttpMethod.POST,
+                "/api/wf/process/branch-variables",
+                body("taskId", "  ", "userId", "ops", "values", body("k", "v")));
+        assertEquals(HttpStatus.BAD_REQUEST, blank.getStatusCode(),
+                "id 为空要当场报错: " + blank.getBody());
+    }
+
+    private Map<String, Object> openTaskOf(String assignee, String processId) throws Exception {
+        Map<String, Object> page = getOk("/api/approval-center/tasks/todo?userId=" + assignee);
+        for (Map<String, Object> record : asList(asMap(page.get("data")).get("records"))) {
+            if (processId.equals(record.get("processInstanceId"))) {
+                return record;
+            }
+        }
+        throw new IllegalStateException("办理人 " + assignee + " 在实例 " + processId
+                + " 上没有待办");
+    }
+
+    /**
+     * 两条并行分支，各有自己的排他网关，判别式用<b>同一个变量名</b> {@code amount}。
+     *
+     * <p>办理人带 {@code nanoTime} 是因为所有用例共享同一个 H2 库。
+     */
+    private String deployParallelProcess() {
+        String tag = String.valueOf(System.nanoTime());
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"lpProcess\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"s\"/>\n"
+                + "    <parallelGateway id=\"pg\"/>\n"
+                + "    <userTask id=\"branchA\" name=\"甲支线\""
+                + " zifang:assignee=\"lp-a-" + tag + "\"/>\n"
+                + "    <userTask id=\"branchB\" name=\"乙支线\""
+                + " zifang:assignee=\"lp-b-" + tag + "\"/>\n"
+                + "    <exclusiveGateway id=\"gwA\"/>\n"
+                + "    <exclusiveGateway id=\"gwB\"/>\n"
+                + "    <userTask id=\"aBig\" zifang:assignee=\"lp-aBig-" + tag + "\"/>\n"
+                + "    <userTask id=\"aSmall\" zifang:assignee=\"lp-aSmall-" + tag + "\"/>\n"
+                + "    <userTask id=\"bBig\" zifang:assignee=\"lp-bBig-" + tag + "\"/>\n"
+                + "    <userTask id=\"bSmall\" zifang:assignee=\"lp-bSmall-" + tag + "\"/>\n"
+                + "    <endEvent id=\"e1\"/><endEvent id=\"e2\"/>\n"
+                + "    <endEvent id=\"e3\"/><endEvent id=\"e4\"/>\n"
+                + "    <sequenceFlow sourceRef=\"s\" targetRef=\"pg\"/>\n"
+                + "    <sequenceFlow sourceRef=\"pg\" targetRef=\"branchA\"/>\n"
+                + "    <sequenceFlow sourceRef=\"pg\" targetRef=\"branchB\"/>\n"
+                + "    <sequenceFlow sourceRef=\"branchA\" targetRef=\"gwA\"/>\n"
+                + "    <sequenceFlow sourceRef=\"branchB\" targetRef=\"gwB\"/>\n"
+                + "    <sequenceFlow sourceRef=\"gwA\" targetRef=\"aBig\">\n"
+                + "      <conditionExpression>amount &gt; 10000</conditionExpression>\n"
+                + "    </sequenceFlow>\n"
+                + "    <sequenceFlow sourceRef=\"gwA\" targetRef=\"aSmall\"/>\n"
+                + "    <sequenceFlow sourceRef=\"gwB\" targetRef=\"bBig\">\n"
+                + "      <conditionExpression>amount &gt; 10000</conditionExpression>\n"
+                + "    </sequenceFlow>\n"
+                + "    <sequenceFlow sourceRef=\"gwB\" targetRef=\"bSmall\"/>\n"
+                + "    <sequenceFlow sourceRef=\"aBig\" targetRef=\"e1\"/>\n"
+                + "    <sequenceFlow sourceRef=\"aSmall\" targetRef=\"e2\"/>\n"
+                + "    <sequenceFlow sourceRef=\"bBig\" targetRef=\"e3\"/>\n"
+                + "    <sequenceFlow sourceRef=\"bSmall\" targetRef=\"e4\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        repositoryService.deploy(new com.zifang.z.wf.core.definition.WfXmlParser().parse(xml));
+        return tag;
     }
 
     // ==================== 按消息/信号发起 ====================

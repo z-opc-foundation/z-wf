@@ -76,7 +76,7 @@
 | `addIdentityLink` / `deleteIdentityLink` | 🟡 | 候选人用户/组存在 `WfTask.candidateUsers/candidateGroups`，**可运行时增删**（`addCandidateUser/Group` / `removeCandidateUser/Group`，REST `POST /api/wf/task/candidate`），BPMN 部署时写入的与运行时加的走同一份数据。**仍缺** Camunda 那套带 type 的通用关联表（participating / starter 等）—— 刻意不另建：审批场景的判定需求现有字段已覆盖，另建一张表会带来两个真源 |
 | `handleBpmnError` | ✅ | **本轮补上**：`BpmnError(code, msg)` 抛错 → 路由到匹配的边界事件 → 走补偿分支；无匹配则流程终止并记错误码 |
 | `handleEscalation` | ❌ | |
-| 任务级变量 `setVariableLocal` / `getVariablesLocal` | 🟡 | 本轮已由 `WfVariableService` 覆盖读写，但**没有变量作用域链**：Camunda 的 Local 变量只在当前 execution 可见，z-wf 的任务级变量随任务走、不会下传给子流程 token |
+| 任务级变量 `setVariableLocal` / `getVariablesLocal` | ✅ | **本轮补上第三层作用域**：`WfVariableService#setVariableLocal(executionId, …) / getVariableLocal / getVariablesLocal / hasVariableLocal / removeVariableLocal`，REST `GET/POST /api/wf/process/branch-variables`（**入参用 `taskId` 而不是 `executionId`** —— 执行树是引擎内部结构，仓里有测试钉着「任务响应里不得出现 executionId」；服务层 `executionIdOfTask` 负责换算）。它填的是**并行分支真正的需求**：两条分支各自要不同的局部值时，写流程级会互相覆盖（后写的赢），写任务级则对条件表达式**完全不可见** —— 只剩「污染全局」或「完全无效」两个都不对的选项。它对条件可见靠的是 `WfContext#mergedVariables()` 早就把当前 token 的变量并了进去（引擎内部量 `loopCounter`/`loopAssignee` 就是走这条路生效的），缺的从来不是求值，而是一个**能让业务方写进去的入口**。**读时不做作用域回退**：token 上没设就是没有，哪怕外层有同名值 —— 回退会让「这条分支覆盖了什么」无法回答，而并行分支排障问的正是这个 |
 | 任务挂起（suspension state） | ✅ | `WfTaskService#suspendTask / activateTask`，REST `POST /api/wf/task/suspend\|activate`。**挂起后仍留在待办列表并带 `suspended` 标记**（前端显示暂停角标），刻意不隐藏 —— 挂起常是「等条件成立」不是「单子不存在」，藏起来用户的感受是「我那张单不见了」。闸门覆盖认领/办结/转办/委派/撤回/强制完成/跳转**全部七处**，且报错文案与「已结束」分开：挂起能一键恢复，报成结束会让人去查历史而不是恢复 |
 | `withdraw` | ✅ | z-wf 扩展，比 Camunda 多 |
 
@@ -295,7 +295,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 524 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 535 个测试兜着
 - 从测试与审计中逼出并修复的**真实缺陷 31 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **本轮（运行期故障查询）没有发现已发布的真缺陷，这一点要照实说**：缺陷计数仍是 31。
@@ -332,6 +332,17 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
   ② 写完发现消息启动入口里自己查了一遍停用是**冗余**的 —— 真正的闸门在
      `startProcessInstance` 内（所有启动路径共用）。已删掉并把闸门位置写进注释：
      两道一样的闸门不只是冗余，还会让人以为某条路径有它自己的一道
+- **本轮（分支级变量）差点报一个不存在的缺陷，值得记**：读代码时发现
+  `setTaskVariable` 只写 `task.variables`，而条件求值读 `mergedVariables()`
+  （只含流程实例 + 当前 token），于是判定「任务变量对条件不可见」是缺陷。
+  写探针实测后发现 `WfVariableServiceTest` 里早有断言 ——
+  「任务级变量泄漏到流程级会让条件表达式读到不该读到的值」，
+  **实现与既定意图完全一致**，是我的判断错了。
+  真缺口在另一头：`mergedVariables()` 早就含 token 变量（引擎内部量就是走这条路），
+  缺的只是**一个能让业务方写进去的入口**。
+  ⇒ **「读代码看出一处不一致」时，先去找它是不是某条既定契约的体现**；
+  找到了就把那条契约补一条护栏测试，找不到再当缺陷报。
+
 - **一处注释里的因果句被探针证伪，已改正**：`arrivedActivities`（token 的到达记录）
   全仓**只写不读** —— 汇合判定 `allSiblingsArrived` 比的是兄弟 token 的 `activityId`，
   并不查这份列表。原先"迁移不清到达记录会导致汇合误判"的说法不成立
@@ -355,6 +366,35 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 > 维护约定：新增或移除一项能力时，**同步改这份文档**。
 > 一份会过期的能力表比没有更糟——它会让读者以为"没提到就是不支持"。
+
+### 本轮反向验证记录（分支级变量）
+
+10 条变异：**8 条由绿转红**，1 条保持绿且已如实标注，1 条首轮误判为绿、查实是**流程错误**。
+
+| 变异 | 结果 | 说明 |
+| --- | --- | --- |
+| 局部变量写进流程级 | 🔴 红 | 两条分支会互相污染 |
+| 读局部变量做作用域回退 | 🔴 红 | 「这条分支覆盖了什么」会无法回答 |
+| 已结束 token 不拦 / token 不存在不报错 / 删除不生效 | 🔴 红 ×3 | — |
+| 审计不记 token | 🔴 红 | 并行分支下没有它就分不清谁改的 |
+| REST 忽略 taskId→token 换算 / 删改变成写 | 🔴 红 ×2 | — |
+| `taskId` 换算不校验任务存在 | 🔴 红 | **首轮误判为绿**：见下 |
+| `getVariablesLocal` 直接返回内部 map | ⚪ 绿 | 如实标注：两套持久化返回的本来就是副本，**服务层拷不拷贝当前测不出差别**。仍保留该写法与断言 —— 它钉的是服务层不把内部引用交出去，而一旦存储层改成缓存同一份对象就会立刻变红 |
+
+**一条流程教训（比上面任何一条判据都值钱）**：验证**跨模块**的变异时，
+「跑了目标模块的测试」**不等于**「变异生效」。
+本轮改的是 core 里的 `executionIdOfTask`，判据在 admin 的 web 用例里；
+只跑 `mvn -pl z-wf-core test` 就得出"没拦住"的结论，而 admin 读的是
+`.m2` 里的旧 core jar —— 变异压根没进到被测代码里。
+改成先 `install -pl z-wf-core` 再跑 admin 用例，立刻转红。
+⇒ 凡是**变异目标模块 ≠ 断言所在模块**，脚本必须先 install 中间模块；
+否则"绿"这个信号是假的，而它看起来与"判据漏写"完全一样。
+
+**另一条判据教训**：web 端「任务不存在要报错」最初只断言响应体含「不存在」三个字，
+而下游的 token 校验报的是「token 不存在」—— 也含这三个字，于是端点层那道
+检查被摘掉照样绿。断言要能区分**两处检查各自负责的那一段文案**。
+
+---
 
 ### 本轮反向验证记录（消息 / 信号启动流程）
 

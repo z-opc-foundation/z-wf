@@ -248,6 +248,77 @@ public final class WfRequests {
      * 误用，赋值会静默变成删除，而被删掉的变量会让引用它的条件表达式
      * 走 fail-closed 分支改变流程走向。
      */
+    /**
+     * 分支级变量操作（写在某条并行分支上，只对该分支的条件表达式可见）。
+     *
+     * <p>与 {@link VariableOperation} 分成两个 DTO 而不是加个 scope 字段：
+     * 两者作用的对象<b>生命周期不同</b> —— 流程变量跟着实例走，分支变量跟着那条
+     * 分支走、分支结束就没了。合成一个带 scope 的 DTO，调用方很容易以为
+     * scope 只是换个存储位置，而误用之后症状是「变量莫名其妙失效了」。
+     *
+     * <p><b>入参用 taskId 而不是 executionId</b>：执行树是引擎内部结构，
+     * 仓里有测试钉着「任务响应里不得出现 executionId」。而任务天然绑定一条 token，
+     * 调用方手上有的恰恰是 taskId。服务层 {@code WfVariableService#executionIdOfTask}
+     * 负责换算，换算不了（流程级待办那种）时当场报错。
+     */
+    public static class LocalVariableOperation implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        /** 任务 id；服务层据此定位它所在的 token。 */
+        private String taskId;
+
+        /** 操作人。 */
+        private String userId;
+
+        private Map<String, Object> values = new HashMap<>();
+
+        private List<String> names = new ArrayList<>();
+
+        /** true = 删除 {@link #names}；false = 写入 {@link #values}。 */
+        private boolean remove;
+
+        public String getTaskId() {
+            return taskId;
+        }
+
+        public void setTaskId(String taskId) {
+            this.taskId = taskId;
+        }
+
+        public String getUserId() {
+            return userId;
+        }
+
+        public void setUserId(String userId) {
+            this.userId = userId;
+        }
+
+        public Map<String, Object> getValues() {
+            return values;
+        }
+
+        public void setValues(Map<String, Object> values) {
+            this.values = values == null ? new HashMap<String, Object>() : values;
+        }
+
+        public List<String> getNames() {
+            return names;
+        }
+
+        public void setNames(List<String> names) {
+            this.names = names == null ? new ArrayList<String>() : names;
+        }
+
+        public boolean isRemove() {
+            return remove;
+        }
+
+        public void setRemove(boolean remove) {
+            this.remove = remove;
+        }
+    }
+
     public static class VariableOperation implements Serializable {
 
         private static final long serialVersionUID = 1L;

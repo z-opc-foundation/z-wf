@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 
 import com.zifang.z.wf.core.engine.WfIdGenerator;
 import com.zifang.z.wf.core.model.WfComment;
+import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfTask;
 import com.zifang.z.wf.core.persistence.WfPersistence;
@@ -179,8 +180,10 @@ public class WfVariableService {
      * 写任务级变量。
      *
      * <p>任务级变量只随这条任务走，不进流程级命名空间，因此<b>不会被后续
-     * 条件表达式当作流程变量读到</b>。要影响流程走向请用
-     * {@link #setVariable}。
+     * 条件表达式当作流程变量读到</b>。这一点有测试钉着（见
+     * {@code WfTaskVariableVisibilityTest}）：泄漏到流程级会让条件读到不该读的值。
+     * 要影响流程走向请用 {@link #setVariable}（全局）或
+     * {@link #setVariableLocal}（只影响某条并行分支）。
      */
     public WfTask setTaskVariable(String taskId, String name, Object value, String operatorId) {
         requireName(name);
@@ -215,6 +218,141 @@ public class WfVariableService {
         recordTaskAudit(task, operatorId,
                 "remove " + name + ": " + render(before) + " -> (已删除)");
         return task;
+    }
+
+    // ==================== 执行（token）级 ====================
+
+    /**
+     * 写<b>某一条 token</b> 的局部变量。
+     *
+     * <p><b>它是本仓唯一的「中间那条作用域」</b>，填的是并行分支真正的需求：
+     * 两条并行分支各自要不同的局部值时，写流程级变量会互相覆盖（后写的赢），
+     * 写任务级变量则对条件表达式完全不可见（见 {@link #setTaskVariable}）——
+     * 只剩"污染全局"或"完全无效"两个都不对的选项。token 级正好在中间：
+     * 它只在这条分支的推进里可见，别的分支读不到。
+     *
+     * <p><b>它对条件表达式可见</b>，靠的是 {@code WfContext#mergedVariables()}
+     * 早就把当前 token 的变量并了进去 —— 引擎内部量（{@code loopCounter} /
+     * {@code loopAssignee}）就是走这条路生效的。缺的从来不是求值，
+     * 而是<b>一个能让业务方写进去的入口</b>。
+     *
+     * <p><b>token 结束即失效</b>：局部变量随它那条分支走，分支走完就没了。
+     * 需要跨分支的请用 {@link #setVariable}。
+     */
+    public WfExecution setVariableLocal(String executionId, String name,
+                                        Object value, String operatorId) {
+        WfExecution execution = requireExecution(executionId);
+        requireName(name);
+        if (value == null) {
+            throw new WfEngineException("变量 [" + name + "] 的值为 null，请改用 removeVariableLocal");
+        }
+        Object before = execution.getVariables().put(name, value);
+        // 直接 saveExecution 而不是等 persistAll：这里是服务层直改存储，没有 context 可依托。
+        // 注意 WfExecution **没有** revision 字段、saveExecution 的 UPDATE 也不带乐观锁
+        // （WHERE 只有 EXEC_ID）—— 这是本仓既有的事实，不是这里偷的懒。
+        // 对本方法而言影响有限：并行分支各改各的 token，EXEC_ID 不同互不干扰；
+        // 真正没有保护的是"两个请求同时改同一条 token"，那在本 API 出现前就存在了
+        persistence.saveExecution(execution);
+        recordExecutionAudit(execution, operatorId,
+                "set " + name + ": " + render(before) + " -> " + render(value));
+        return execution;
+    }
+
+    /**
+     * 读某条 token 的局部变量。
+     *
+     * <p><b>读的是局部这一层，不做作用域回退</b>：token 上没设就是 {@code null}，
+     * 哪怕流程级或更外层有同名值。回退会让"这个分支覆盖了什么"变得无法回答，
+     * 而并行分支排障时问的恰恰是这个。
+     */
+    public Object getVariableLocal(String executionId, String name) {
+        if (name == null || name.trim().isEmpty()) {
+            return null;
+        }
+        WfExecution execution = persistence.findExecution(executionId);
+        return execution == null ? null : execution.getVariables().get(name);
+    }
+
+    /** 某条 token 的全部局部变量。token 不存在时返回空 Map 而不是 null。 */
+    public Map<String, Object> getVariablesLocal(String executionId) {
+        WfExecution execution = persistence.findExecution(executionId);
+        return execution == null
+                ? new HashMap<String, Object>()
+                : new LinkedHashMap<String, Object>(execution.getVariables());
+    }
+
+    public boolean hasVariableLocal(String executionId, String name) {
+        if (name == null || name.trim().isEmpty()) {
+            return false;
+        }
+        WfExecution execution = persistence.findExecution(executionId);
+        return execution != null && execution.getVariables().containsKey(name);
+    }
+
+    /**
+     * 删一条 token 的局部变量。删不存在的<b>不报错</b> ——
+     * 删除的语义是"保证它不存在"，而非要它本来存在。
+     */
+    public WfExecution removeVariableLocal(String executionId, String name, String operatorId) {
+        WfExecution execution = requireExecution(executionId);
+        requireName(name);
+        if (!execution.getVariables().containsKey(name)) {
+            return execution;
+        }
+        Object before = execution.getVariables().remove(name);
+        persistence.saveExecution(execution);
+        recordExecutionAudit(execution, operatorId,
+                "remove " + name + ": " + render(before) + " -> (已删除)");
+        return execution;
+    }
+
+    /**
+     * 任务所在的 token。
+     *
+     * <p><b>REST 层用它代替 executionId 作为入参</b>：执行树是引擎内部结构，
+     * 仓里已有测试钉着「任务响应里不得出现 executionId」。而任务天然绑定一条 token，
+     * 调用方手上有的恰恰是 taskId —— 让他自己去 executions 端点反查
+     * 「哪个 token 停在这个任务上」，一旦猜错改的就是别的分支，
+     * 症状是「并行流程里有一条莫名其妙走了另一条路」。
+     *
+     * @throws WfEngineException 任务不存在，或没有绑定 token
+     */
+    public String executionIdOfTask(String taskId) {
+        if (taskId == null || taskId.trim().isEmpty()) {
+            throw new WfEngineException("任务 id 不能为空");
+        }
+        WfTask task = persistence.findTask(taskId);
+        if (task == null) {
+            throw new WfEngineException("任务不存在: " + taskId);
+        }
+        if (task.getExecutionId() == null || task.getExecutionId().trim().isEmpty()) {
+            throw new WfEngineException("任务 " + taskId + " 没有绑定 token，"
+                    + "无法确定它属于哪条分支。该任务可能是在分支之外创建的"
+                    + "（例如流程级待办），那种情况下没有分支级变量可言");
+        }
+        return task.getExecutionId();
+    }
+
+    private void recordExecutionAudit(WfExecution execution, String operatorId, String trace) {
+        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                execution.getProcessInstanceId(), operatorId, COMMENT_TYPE_VARIABLE,
+                "token " + execution.getActivityId() + "(" + execution.getId() + ") " + trace));
+        log.info("token {} 变量变更 by {}: {}", execution.getId(), operatorId, trace);
+    }
+
+    private WfExecution requireExecution(String id) {
+        if (id == null || id.trim().isEmpty()) {
+            throw new WfEngineException("token id 不能为空");
+        }
+        WfExecution execution = persistence.findExecution(id);
+        if (execution == null) {
+            throw new WfEngineException("token 不存在: " + id);
+        }
+        if (execution.isEnded()) {
+            throw new WfEngineException("token 已结束，它的局部变量随这条分支一起失效，"
+                    + "改它等于伪造记录: " + id);
+        }
+        return execution;
     }
 
     // ==================== 内部 ====================
