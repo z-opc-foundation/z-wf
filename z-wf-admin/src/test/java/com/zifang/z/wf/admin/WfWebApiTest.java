@@ -274,6 +274,127 @@ class WfWebApiTest {
         assertNotNull(getOk("/api/wf/process/executions?processInstanceId=" + processId));
     }
 
+    // ==================== 按消息/信号发起 ====================
+
+    @Test
+    @DisplayName("按事件发起端点：消息能起流程，信号能起流程，参数互斥要报错")
+    void startByEventOverHttp() throws Exception {
+        // suffix 必须是部署时用的那个：办理人带的是它，两边不是同一个
+        // 就会查不到待办，而症状是"待办没建出来"，很难联想到是 tag 对不上
+        String suffix = deployTwoEntryProcess();
+
+        // 消息启动
+        String byMsg = (String) postOk("/api/approval-center/processes/start-by-event",
+                body("messageName", "orderCreated", "businessKey", "WEB-START-" + suffix,
+                        "userId", "erp", "variables", body("amount", 500))).get("data");
+        assertNotNull(byMsg, "消息启动应当返回实例 id");
+        Map<String, Object> msgInstance = asMap(getOk(
+                "/api/approval-center/processes/get?processInstanceId=" + byMsg).get("data"));
+        assertEquals("ACTIVE", msgInstance.get("status"));
+        assertEquals("WEB-START-" + suffix, msgInstance.get("businessKey"),
+                "业务键要透传到实例上 —— 外部系统回调后拿到的是单号，不给它就没法回查");
+        assertEquals("checkOrder", firstOpenTaskNodeOf("purchase-" + suffix, byMsg),
+                "必须落在消息入口那条线上");
+
+        // 信号启动
+        String bySig = (String) postOk("/api/approval-center/processes/start-by-event",
+                body("signalName", "orderSynced", "businessKey", "WEB-SIG-" + suffix,
+                        "userId", "erp")).get("data");
+        assertNotNull(bySig);
+        assertEquals("checkSync", firstOpenTaskNodeOf("sync-" + suffix, bySig),
+                "信号启动要走信号入口那条线，不能与消息入口混");
+
+        // 两个都填：报错，且要说清都填了什么
+        ResponseEntity<String> both = exchange(HttpMethod.POST,
+                "/api/approval-center/processes/start-by-event",
+                body("messageName", "orderCreated", "signalName", "orderSynced"));
+        assertEquals(HttpStatus.BAD_REQUEST, both.getStatusCode(),
+                "两个都填时挑一个执行等于替调用方做决定，而它要的结果很可能不是另一个: "
+                        + both.getBody());
+        assertTrue(both.getBody().contains("只能填一个"),
+                "报错要说清约束是什么。实际: " + both.getBody());
+
+        // 两个都不填：同样报错。
+        // 断言的是**文案**而不只是状态码：引擎层也有"事件名不能为空"的兜底，
+        // 只断言 400 的话，端点层那道检查被摘掉也照样绿 —— 两层检查串在一起
+        // 时，状态码是没有区分力的那种断言
+        ResponseEntity<String> neither = exchange(HttpMethod.POST,
+                "/api/approval-center/processes/start-by-event", body("businessKey", "X"));
+        assertEquals(HttpStatus.BAD_REQUEST, neither.getStatusCode(),
+                "都不填要报错，而不是去启动一个无条件入口的流程: " + neither.getBody());
+        assertTrue(neither.getBody().contains("只能填一个"),
+                "端点层要给出「必须且只能填一个」这种能指导调用的提示。"
+                        + "只报「信号名不能为空」的话，调用方看不出自己是两个都没填: "
+                        + neither.getBody());
+
+        // 没有流程订阅这条消息：400，且点名消息名
+        ResponseEntity<String> unknown = exchange(HttpMethod.POST,
+                "/api/approval-center/processes/start-by-event",
+                body("messageName", "noSuchMessage"));
+        assertEquals(HttpStatus.BAD_REQUEST, unknown.getStatusCode(),
+                "找不到订阅者要报错: " + unknown.getBody());
+        assertTrue(unknown.getBody().contains("noSuchMessage"),
+                "报错要点名消息。实际: " + unknown.getBody());
+
+        // 手工发起的那个入口仍然可用
+        String plain = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webTwoEntryProcess", "businessKey", "WEB-PLAIN-" + suffix,
+                        "userId", "alice", "variables", body("amount", 500))).get("data");
+        assertEquals("checkAmount", firstOpenTaskNodeOf("finance-" + suffix, plain),
+                "加了消息起始之后手工发起不能被带偏");
+    }
+
+    private String firstOpenTaskNodeOf(String assigneeTag, String processId) throws Exception {
+        Map<String, Object> page = getOk(
+                "/api/approval-center/tasks/todo?userId=" + assigneeTag);
+        for (Map<String, Object> record : asList(asMap(page.get("data")).get("records"))) {
+            if (processId.equals(record.get("processInstanceId"))) {
+                return (String) record.get("definitionId");
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 部署一个「手工发起 + 消息启动 + 信号启动」三入口的流程。
+     *
+     * <p>三个入口各走各的第一个待办（{@code checkAmount} / {@code checkOrder} /
+     * {@code checkSync}）是刻意的：汇合到同一个待办的话，"走的是哪个入口"就没法
+     * 从对外可见的东西上判出来，而那正是这条用例要证明的事。
+     * 办理人带 {@code nanoTime} 后缀是因为所有用例共享同一个 H2 库。
+     */
+    private String deployTwoEntryProcess() {
+        String tag = String.valueOf(System.nanoTime());
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"webTwoEntryProcess\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"manualStart\"/>\n"
+                + "    <startEvent id=\"orderStart\">\n"
+                + "      <messageEventDefinition messageRef=\"orderCreated\"/>\n"
+                + "    </startEvent>\n"
+                + "    <startEvent id=\"syncStart\">\n"
+                + "      <signalEventDefinition signalRef=\"orderSynced\"/>\n"
+                + "    </startEvent>\n"
+                + "    <userTask id=\"checkAmount\" name=\"核金额\""
+                + " zifang:assignee=\"finance-" + tag + "\"/>\n"
+                + "    <userTask id=\"checkOrder\" name=\"核订单\""
+                + " zifang:assignee=\"purchase-" + tag + "\"/>\n"
+                + "    <userTask id=\"checkSync\" name=\"核同步\""
+                + " zifang:assignee=\"sync-" + tag + "\"/>\n"
+                + "    <endEvent id=\"e1\"/>\n"
+                + "    <sequenceFlow id=\"f1\" sourceRef=\"manualStart\" targetRef=\"checkAmount\"/>\n"
+                + "    <sequenceFlow id=\"f2\" sourceRef=\"orderStart\" targetRef=\"checkOrder\"/>\n"
+                + "    <sequenceFlow id=\"f3\" sourceRef=\"syncStart\" targetRef=\"checkSync\"/>\n"
+                + "    <sequenceFlow id=\"f4\" sourceRef=\"checkAmount\" targetRef=\"e1\"/>\n"
+                + "    <sequenceFlow id=\"f5\" sourceRef=\"checkOrder\" targetRef=\"e1\"/>\n"
+                + "    <sequenceFlow id=\"f6\" sourceRef=\"checkSync\" targetRef=\"e1\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        repositoryService.deploy(new com.zifang.z.wf.core.definition.WfXmlParser().parse(xml));
+        return tag;
+    }
+
     // ==================== 运行期故障查询 ====================
 
     @Test

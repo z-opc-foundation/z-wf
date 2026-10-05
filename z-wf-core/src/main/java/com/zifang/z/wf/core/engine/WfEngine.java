@@ -128,8 +128,23 @@ public class WfEngine {
      * 启动流程：根 token 落在开始节点，然后 <b>enter</b>。
      */
     public void start(WfContext context) {
+        startAt(context, context.getDefinition().startNode());
+    }
+
+    /**
+     * 从指定起始节点启动（{@code startProcessInstanceByMessage} / {@code BySignal} 用）。
+     *
+     * <p>与 {@link #start} 的区别只有一个参数，语义却差很远：{@code start} 的入口是
+     * "这个流程无条件开始"，而消息启动的入口是"收到了 X 才开始" ——
+     * 两者落到同一段代码，但只有拆开写，调用方才不能误把消息起始当成无条件入口
+     * （{@code WfDefinition#startNode} 已经把带触发条件的那个排除掉了）。
+     *
+     * <p><b>起始事件本身不进 enter</b>：BPMN 里 startEvent 是流程的入口，
+     * 不是一步要执行的活动。{@link #enter} 对 startEvent 直接放行到它的出线，
+     * 根 token 落在 startEvent 上而活动历史从它的下一个节点开始记。
+     */
+    public void startAt(WfContext context, WfNode startNode) {
         WfDefinition definition = context.getDefinition();
-        WfNode startNode = definition.startNode();
 
         WfExecution root = new WfExecution(idGenerator.nextExecutionId(),
                 context.getProcessInstanceId(), startNode.getId());

@@ -19,6 +19,102 @@ public final class WfRequests {
     /**
      * 发起流程。
      */
+    /**
+     * 按消息 / 信号启动流程。
+     *
+     * <p>不同时给 {@code messageName} 与 {@code signalName}：那是两种不同的触发源，
+     * 都填了说明调用方自己也没想清楚要哪一种，此时挑一个执行等于替它做决定。
+     */
+    public static class StartByEvent implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        /** 消息名（对应 startEvent 上的 messageRef）。与 {@link #signalName} 二选一。 */
+        private String messageName;
+
+        /** 信号名（对应 startEvent 上的 signalRef）。与 {@link #messageName} 二选一。 */
+        private String signalName;
+
+        /**
+         * 流程定义 key。
+         *
+         * <p>不填则跨定义查找订阅了该事件的流程。填了就只在这一份里找 ——
+         * 同名订阅有多个时用它消除歧义。
+         */
+        private String definitionKey;
+
+        /** 业务键（单号）。 */
+        private String businessKey;
+
+        /**
+         * 发起人。
+         *
+         * <p>由外部系统触发时通常没有"人"，留空即可。
+         * 注意它<b>不等于</b>流程里的当前办理人 —— 后者由流程自己在第一个任务节点决定。
+         */
+        private String userId;
+
+        private String deptId;
+
+        private Map<String, Object> variables = new HashMap<>();
+
+        public String getMessageName() {
+            return messageName;
+        }
+
+        public void setMessageName(String messageName) {
+            this.messageName = messageName;
+        }
+
+        public String getSignalName() {
+            return signalName;
+        }
+
+        public void setSignalName(String signalName) {
+            this.signalName = signalName;
+        }
+
+        public String getDefinitionKey() {
+            return definitionKey;
+        }
+
+        public void setDefinitionKey(String definitionKey) {
+            this.definitionKey = definitionKey;
+        }
+
+        public String getBusinessKey() {
+            return businessKey;
+        }
+
+        public void setBusinessKey(String businessKey) {
+            this.businessKey = businessKey;
+        }
+
+        public String getUserId() {
+            return userId;
+        }
+
+        public void setUserId(String userId) {
+            this.userId = userId;
+        }
+
+        public String getDeptId() {
+            return deptId;
+        }
+
+        public void setDeptId(String deptId) {
+            this.deptId = deptId;
+        }
+
+        public Map<String, Object> getVariables() {
+            return variables;
+        }
+
+        public void setVariables(Map<String, Object> variables) {
+            this.variables = variables == null ? new HashMap<String, Object>() : variables;
+        }
+    }
+
     public static class StartProcess implements Serializable {
 
         private static final long serialVersionUID = 1L;

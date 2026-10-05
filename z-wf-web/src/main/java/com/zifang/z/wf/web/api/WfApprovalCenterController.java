@@ -199,6 +199,46 @@ public class WfApprovalCenterController {
         return Result.success(processId);
     }
 
+    /**
+     * 按消息 / 信号启动流程。
+     *
+     * <p><b>与 {@code /processes/start} 分成两个端点而不是加个参数</b>：
+     * 两者是<b>不同的触发源</b>，不是同一个操作的两种叫法。合并成一个端点加
+     * {@code if} 分支，调用方就会把"收到订单"和"用户点了发起"写成同一段代码的
+     * 两种参数组合，而它们在引擎里走的是不同的入口节点、不同的定义查找方式。
+     */
+    @PostMapping("/processes/start-by-event")
+    @Operation(summary = "009b_按消息/信号发起流程（外部系统回调触发）")
+    public Result<String> startByEvent(@RequestBody WfRequests.StartByEvent request) {
+        if (request == null) {
+            throw new WfEngineException("请求体不能为空");
+        }
+        boolean byMessage = notBlank(request.getMessageName());
+        boolean bySignal = notBlank(request.getSignalName());
+        if (byMessage == bySignal) {
+            // 两个都填或两个都没填都要报错：挑一个执行等于替调用方做决定，
+            // 而它要的结果很可能不是另一个
+            throw new WfEngineException("messageName 与 signalName 必须且只能填一个。"
+                    + "当前 messageName=" + request.getMessageName()
+                    + "，signalName=" + request.getSignalName());
+        }
+        String processId = byMessage
+                ? runtimeService.startProcessInstanceByMessage(request.getMessageName(),
+                        request.getDefinitionKey(), request.getBusinessKey(), request.getUserId(),
+                        request.getDeptId(), request.getVariables())
+                : runtimeService.startProcessInstanceBySignal(request.getSignalName(),
+                        request.getDefinitionKey(), request.getBusinessKey(), request.getUserId(),
+                        request.getDeptId(), request.getVariables());
+        if (processId == null) {
+            return Result.fail("流程启动被钩子否决");
+        }
+        return Result.success(processId);
+    }
+
+    private boolean notBlank(String value) {
+        return value != null && !value.trim().isEmpty();
+    }
+
     @GetMapping("/processes/definitions")
     @Operation(summary = "010_可发起的流程定义")
     public Result<List<WfViews.DefinitionView>> definitions() {

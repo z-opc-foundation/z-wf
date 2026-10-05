@@ -125,6 +125,19 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      */
     public String startProcessInstance(WfDefinition definition, String businessKey, String userId,
                                        String deptId, Map<String, Object> variables) {
+        return startProcessInstance(definition, null, businessKey, userId, deptId, variables);
+    }
+
+    /**
+     * 从指定起始节点启动。
+     *
+     * <p>{@code startNode} 传 {@code null} 表示走无条件入口（{@link WfDefinition#startNode}）。
+     * 不做成两个各写一遍的方法，是因为"建实例 → 钩子 → 落库 → 终态判定 → 后置钩子"
+     * 这一整套有 5 步，抄一遍就多一处将来只改一边的可能。
+     */
+    public String startProcessInstance(WfDefinition definition, WfNode startNode,
+                                       String businessKey, String userId,
+                                       String deptId, Map<String, Object> variables) {
         // ---- 0. 定义必须已落库，否则启动即制造一个永远推不动的死实例 ----
         // 流程一旦停在等待态，后续 completeTask / advance 都要靠 definitionKey+version
         // 从仓储重新载入定义；没 deploy 过的定义拿不回来，于是每推进一步都报
@@ -175,7 +188,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         WfContext context = newContext(definition, instance, null);
         context.setAuthenticatedUserId(userId);
         context.setSubProcessLauncher(this);
-        engine.start(context);
+        engine.startAt(context, startNode == null ? definition.startNode() : startNode);
 
         // ---- 4. 落库 ----
         persistAll(context);
@@ -188,6 +201,117 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         }
 
         return instance.getId();
+    }
+
+    // ==================== 消息 / 信号启动 ====================
+
+    /**
+     * 收到消息就启动流程（不指定定义 —— 跨定义找订阅了这条消息的那个）。
+     *
+     * <p><b>与 {@link #triggerMessage} 是两件不同的事，别混</b>：
+     * {@code triggerMessage} 唤醒<b>已经在等</b>这条消息的实例；这里创建<b>新</b>实例。
+     * 一个流程实例身上可以同时挂着这两件事（消息起始 + 消息边界），
+     * 收到一条消息时两个都可能发生，调用方得自己分清要哪一种。
+     *
+     * <p>不带版本号找定义是刻意的：触发方（另一个系统）通常只知道自己发了
+     * 一条"订单已创建"，不知道也不该知道我们把这个流程部署了几个版本。
+     * 若多个定义都订阅了这条消息，报错并列出是哪几个 ——
+     * 静默挑一个启动的后果是"流程起来了但不是预期的那个"，而调用方看不出问题。
+     *
+     * @return 流程实例 ID；被钩子否决时返回 {@code null}
+     */
+    public String startProcessInstanceByMessage(String messageName, String businessKey,
+                                                String userId, String deptId,
+                                                Map<String, Object> variables) {
+        return startProcessInstanceByMessage(messageName, null, businessKey, userId, deptId, variables);
+    }
+
+    /** 同上，但显式指定定义 key —— 跨定义查找有歧义时用它消除歧义。 */
+    public String startProcessInstanceByMessage(String messageName, String definitionKey,
+                                                String businessKey, String userId,
+                                                String deptId, Map<String, Object> variables) {
+        WfDefinition definition = resolveEventStartDefinition(messageName, definitionKey, true);
+        WfNode startNode = definition.messageStartNode(messageName);
+        if (startNode == null) {
+            throw new WfEngineException("流程定义 [" + definition.getKey() + "] 里没有订阅消息 ["
+                    + messageName + "] 的起始事件。该定义只能用无条件入口启动，"
+                    + "或换一个订阅了这条消息的定义");
+        }
+        return startProcessInstance(definition, startNode, businessKey, userId, deptId, variables);
+    }
+
+    /** 收到信号就启动流程。语义与 {@link #startProcessInstanceByMessage} 一一对应。 */
+    public String startProcessInstanceBySignal(String signalName, String businessKey,
+                                               String userId, String deptId,
+                                               Map<String, Object> variables) {
+        return startProcessInstanceBySignal(signalName, null, businessKey, userId, deptId, variables);
+    }
+
+    /** 同上，但显式指定定义 key。 */
+    public String startProcessInstanceBySignal(String signalName, String definitionKey,
+                                               String businessKey, String userId,
+                                               String deptId, Map<String, Object> variables) {
+        WfDefinition definition = resolveEventStartDefinition(signalName, definitionKey, false);
+        WfNode startNode = definition.signalStartNode(signalName);
+        if (startNode == null) {
+            throw new WfEngineException("流程定义 [" + definition.getKey() + "] 里没有订阅信号 ["
+                    + signalName + "] 的起始事件。该定义只能用无条件入口启动，"
+                    + "或换一个订阅了这个信号的定义");
+        }
+        return startProcessInstance(definition, startNode, businessKey, userId, deptId, variables);
+    }
+
+    /**
+     * 找到订阅了该消息 / 信号的定义。
+     *
+     * <p>指定了 {@code definitionKey} 就只在这一份里找 —— 调用方显式点名时，
+     * 即使别处也有同名订阅也不该在这里报歧义，那是两件事。
+     *
+     * <p>跨定义扫描只看<b>未被停用</b>的版本：停用是"这一版不再接新单"，
+     * 让一条停用的消息起始继续接单，运维会以为自己已经下架了它。
+     * 同一 key 的多个版本都订阅时取最新 —— 消息启动不带版本号，
+     * "该用哪个版本"不该由触发方回答。
+     */
+    private WfDefinition resolveEventStartDefinition(String eventName, String definitionKey,
+                                                     boolean message) {
+        if (eventName == null || eventName.trim().isEmpty()) {
+            throw new WfEngineException((message ? "消息" : "信号") + "名不能为空");
+        }
+        if (definitionKey != null && !definitionKey.trim().isEmpty()) {
+            // 这里刻意**不**再查一次停用：闸门在 startProcessInstance 的 0.5 步，
+            // 是所有启动路径共用的那一条。再查一遍不仅多余，还会让人以为
+            // 消息启动有自己一道独立的闸门 —— 而真删掉它，行为完全一样。
+            return repositoryService.getDefinitionOrLatest(definitionKey, null);
+        }
+        String wanted = eventName.trim();
+        List<WfDefinition> hits = new ArrayList<WfDefinition>();
+        for (WfDefinition each : repositoryService.getAllDefinitions()) {
+            if (each == null || each.isSuspended()) {
+                continue;
+            }
+            boolean matched = message
+                    ? each.messageStartNode(wanted) != null
+                    : each.signalStartNode(wanted) != null;
+            if (matched) {
+                hits.add(each);
+            }
+        }
+        if (hits.isEmpty()) {
+            throw new WfEngineException("没有流程订阅" + (message ? "消息" : "信号") + " [" + wanted
+                    + "] 的起始事件。检查对应定义的 startEvent 上是否写了 "
+                    + (message ? "messageEventDefinition" : "signalEventDefinition")
+                    + " 且 messageRef/signalRef 与此一致");
+        }
+        if (hits.size() > 1) {
+            List<String> keys = new ArrayList<String>();
+            for (WfDefinition each : hits) {
+                keys.add(each.getKey() + ":" + each.getVersion());
+            }
+            throw new WfEngineException((message ? "消息" : "信号") + " [" + wanted
+                    + "] 被多个流程订阅: " + keys + "。引擎无法判断该起哪一个 —— "
+                    + "请改用带 definitionKey 的重载显式指定");
+        }
+        return hits.get(0);
     }
 
     // ==================== 推进 ====================

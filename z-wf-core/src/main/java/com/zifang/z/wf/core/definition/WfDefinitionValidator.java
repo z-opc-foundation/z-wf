@@ -5,7 +5,9 @@ import com.zifang.z.wf.core.engine.WfEngine;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -187,39 +189,91 @@ public class WfDefinitionValidator {
     }
 
     /**
+     * 同一条消息 / 信号不得对应两个起始节点。
+     *
+     * <p>分两类报：<b>同一个定义内</b>重复是定义本身有问题；
+     * <b>同一 key 的不同版本</b>重复则是升级时新增了一个同名起始节点 ——
+     * 后者同样要报，因为"按消息启动"是不带版本号找定义的，
+     * 两个版本都匹配时调用方没有参数可以消除歧义。
+     */
+    private void checkEventStartAmbiguity(List<WfNode> eventStarts) {
+        Map<String, List<String>> byMessage = new LinkedHashMap<String, List<String>>();
+        Map<String, List<String>> bySignal = new LinkedHashMap<String, List<String>>();
+        for (WfNode node : eventStarts) {
+            if (node.isMessageEvent()) {
+                put(byMessage, node.getMessageName(), node.getId());
+            }
+            if (node.isSignalEvent()) {
+                put(bySignal, node.getSignalName(), node.getId());
+            }
+        }
+        reportAmbiguity(byMessage, "消息");
+        reportAmbiguity(bySignal, "信号");
+    }
+
+    private void put(Map<String, List<String>> map, String name, String id) {
+        if (name == null || name.trim().isEmpty()) {
+            return;
+        }
+        List<String> ids = map.get(name.trim());
+        if (ids == null) {
+            ids = new ArrayList<String>();
+            map.put(name.trim(), ids);
+        }
+        ids.add(id);
+    }
+
+    private void reportAmbiguity(Map<String, List<String>> byEvent, String kind) {
+        for (Map.Entry<String, List<String>> entry : byEvent.entrySet()) {
+            if (entry.getValue().size() > 1) {
+                add(WfValidationIssue.Severity.ERROR, entry.getValue().get(0),
+                        kind + " [" + entry.getKey() + "] 对应多个起始节点: " + join(entry.getValue())
+                                + "。startProcessInstanceBy" + kind + " 不带版本号，"
+                                + "两个都匹配时调用方没有参数能消除歧义");
+            }
+        }
+    }
+
+    private String join(List<String> values) {
+        StringBuilder sb = new StringBuilder();
+        for (String value : values) {
+            if (sb.length() > 0) {
+                sb.append(", ");
+            }
+            sb.append(value);
+        }
+        return sb.toString();
+    }
+
+    /**
      * 图形状校验：开始节点唯一性、网关默认流、死节点、死胡同。
      */
     private void validateGraphShape(WfDefinition definition, Set<String> ids) {
         definition.buildIndex();
 
-        // ---- 恰好一个开始节点 ----
-        List<WfNode> starts = new ArrayList<>();
-        for (String id : ids) {
-            WfNode node = definition.node(id);
-            if (node != null && node.getType() == WfNodeType.START_EVENT) {
-                starts.add(node);
-            }
-        }
-        if (starts.isEmpty()) {
-            // 退化判定：无入线节点
-            for (String id : ids) {
-                if (definition.incomingFlows(id).isEmpty()) {
-                    starts.add(definition.node(id));
-                }
-            }
-        }
-        if (starts.isEmpty()) {
+        // ---- 起始节点：无条件的至多一个，事件起始的名字不得重复 ----
+        // 刻意**不**要求"恰好一个 startEvent"：BPMN 里"收到订单才起流程"
+        // 与"手工发起"是同一流程的两个入口，共存是正常写法。
+        // 要求唯一会把这类定义整条挡在部署期，而它们的作者没有任何办法绕开 ——
+        // 只能拆成两个流程，那是把建模限制转嫁到业务上。
+        List<WfNode> plainStarts = definition.unconditionalStartNodes();
+        List<WfNode> eventStarts = definition.eventStartNodes();
+        if (plainStarts.isEmpty() && eventStarts.isEmpty()) {
             add(WfValidationIssue.Severity.ERROR, null, "找不到开始节点（无 startEvent 且无无入线节点）");
-        } else if (starts.size() > 1) {
-            StringBuilder sb = new StringBuilder();
-            for (WfNode n : starts) {
-                if (sb.length() > 0) {
-                    sb.append(", ");
-                }
-                sb.append(n.getId());
-            }
-            add(WfValidationIssue.Severity.ERROR, null, "存在多个开始节点: " + sb);
         }
+        if (plainStarts.size() > 1) {
+            List<String> startIds = new ArrayList<String>();
+            for (WfNode n : plainStarts) {
+                startIds.add(n.getId());
+            }
+            add(WfValidationIssue.Severity.ERROR, null, "存在多个无条件开始节点: " + join(startIds)
+                    + "。引擎无法判断 startProcessInstanceByKey 该从哪进入 —— "
+                    + "带 messageRef/signalRef 的起始事件不算在内，那种靠消息启动");
+        }
+        // 同一条消息对应两个起始节点时，"收到这条消息该起哪个流程"没有答案。
+        // 部署期拦掉，而不是等到运行时收到消息才抛 —— 那时候调用方已经在
+        // 发消息的路上了，错误会出现在一个与配置毫无关系的地方
+        checkEventStartAmbiguity(eventStarts);
 
         // ---- 网关出线规则 ----
         for (String id : ids) {

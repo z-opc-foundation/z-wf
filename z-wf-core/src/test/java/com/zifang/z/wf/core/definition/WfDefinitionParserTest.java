@@ -234,11 +234,92 @@ class WfDefinitionParserTest {
     }
 
     @Test
-    @DisplayName("校验拦下：多个开始节点")
+    @DisplayName("校验拦下：多个无条件开始节点")
     void validateRejectsMultipleStartNodes() {
         WfDefinition definition = new WfXmlParser().parse(BPMN_LEAVE);
         definition.getNodes().add(new WfNode("start2", "另一个开始", WfNodeType.START_EVENT));
-        assertTrue(hasErrorContaining(definition, "多个开始节点"));
+        assertTrue(hasErrorContaining(definition, "多个无条件开始节点"),
+                "两个都能被 startProcessInstanceByKey 进入的入口，引擎无法判断从哪进");
+    }
+
+    @Test
+    @DisplayName("有事件起始也不能放过多个无条件起始 —— 放宽的是事件那个，不是无条件那个")
+    void multiplePlainStartsRejectedEvenWithEventStart() {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">"
+                + "<process id=\"twoPlain\" isExecutable=\"true\">"
+                + "<startEvent id=\"p1\"/>"
+                + "<startEvent id=\"p2\"/>"
+                + "<startEvent id=\"msgStart\">"
+                + "<messageEventDefinition messageRef=\"orderCreated\"/></startEvent>"
+                + "<userTask id=\"a\" name=\"甲\"/>"
+                + "<endEvent id=\"e1\"/>"
+                + "<sequenceFlow sourceRef=\"p1\" targetRef=\"a\"/>"
+                + "<sequenceFlow sourceRef=\"p2\" targetRef=\"a\"/>"
+                + "<sequenceFlow sourceRef=\"msgStart\" targetRef=\"a\"/>"
+                + "<sequenceFlow sourceRef=\"a\" targetRef=\"e1\"/>"
+                + "</process></definitions>";
+        WfDefinition definition = new WfXmlParser().parse(xml);
+        // 反向验证时把校验条件改成 size()>1 && eventStarts.isEmpty() 放过来了 ——
+        // 那种改法在"只有无条件起始"的老用例上照样绿，是本条用例钉住它的原因
+        assertTrue(hasErrorContaining(definition, "多个无条件开始节点"),
+                "两个无条件入口并存时引擎无法判断 startProcessInstanceByKey 从哪进，"
+                        + "有没有事件起始都一样要报错");
+    }
+
+    @Test
+    @DisplayName("带 messageRef 的起始事件可以与无条件起始共存 —— 这是 BPMN 的正常写法")
+    void messageStartEventCoexistsWithPlainStart() {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">"
+                + "<process id=\"twoStarts\" isExecutable=\"true\">"
+                + "<startEvent id=\"manualStart\"/>"
+                + "<startEvent id=\"msgStart\">"
+                + "<messageEventDefinition messageRef=\"orderCreated\"/>"
+                + "</startEvent>"
+                + "<userTask id=\"approve\" name=\"审单\" zifang:assignee=\"ops\"/>"
+                + "<endEvent id=\"e1\"/>"
+                + "<sequenceFlow sourceRef=\"manualStart\" targetRef=\"approve\"/>"
+                + "<sequenceFlow sourceRef=\"msgStart\" targetRef=\"approve\"/>"
+                + "<sequenceFlow sourceRef=\"approve\" targetRef=\"e1\"/>"
+                + "</process></definitions>";
+        WfDefinition definition = new WfXmlParser().parse(xml);
+        List<WfValidationIssue> issues = new WfDefinitionValidator().validate(definition);
+        for (WfValidationIssue issue : issues) {
+            assertFalse(issue.getSeverity() == WfValidationIssue.Severity.ERROR,
+                    "手工发起 + 消息启动是同一流程的两个入口，不该报错。实际: " + issue.getMessage());
+        }
+        assertEquals(1, definition.unconditionalStartNodes().size(),
+                "带 messageRef 的那个不算无条件入口");
+        assertEquals(1, definition.eventStartNodes().size());
+        assertNotNull(definition.messageStartNode("orderCreated"),
+                "要能按消息名找到那个入口");
+    }
+
+    @Test
+    @DisplayName("校验拦下：一条消息对应两个起始节点 —— 引擎无从判断该起哪个流程")
+    void rejectsAmbiguousMessageStart() {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">"
+                + "<process id=\"dupStart\" isExecutable=\"true\">"
+                + "<startEvent id=\"s1\">"
+                + "<messageEventDefinition messageRef=\"orderCreated\"/></startEvent>"
+                + "<startEvent id=\"s2\">"
+                + "<messageEventDefinition messageRef=\"orderCreated\"/></startEvent>"
+                + "<userTask id=\"a\" name=\"甲\"/>"
+                + "<endEvent id=\"e1\"/>"
+                + "<sequenceFlow sourceRef=\"s1\" targetRef=\"a\"/>"
+                + "<sequenceFlow sourceRef=\"s2\" targetRef=\"a\"/>"
+                + "<sequenceFlow sourceRef=\"a\" targetRef=\"e1\"/>"
+                + "</process></definitions>";
+        WfDefinition definition = new WfXmlParser().parse(xml);
+        assertTrue(hasErrorContaining(definition, "orderCreated"),
+                "同一条消息对应两个入口必须在部署期就报 —— "
+                        + "留到运行时的话，调用方已经在发消息的路上了，"
+                        + "错误会出现在一个与配置毫无关系的地方");
     }
 
     @Test

@@ -218,41 +218,137 @@ public class WfDefinition implements Serializable {
     }
 
     /**
-     * 找出开始节点。
+     * 找出<b>无条件</b>的开始节点 —— 即 {@code startProcessInstanceByKey} 的入口。
      *
      * <p>判定顺序：显式 {@link WfNodeType#START_EVENT} 优先；没有则退化为"无入线的节点"
      * —— 后者让最小可用定义（只写节点不写 startEvent）也能跑起来。
      *
-     * @throws IllegalStateException 存在多个开始节点 —— 引擎无法判断入口，必须由校验器在部署期拦掉
+     * <p><b>带触发条件的起始事件不算数</b>：{@code <startEvent><messageEventDefinition
+     * messageRef="orderCreated"/></startEvent>} 是"收到订单才起流程"的入口，
+     * 拿它当无条件入口会让调用 {@code startProcessInstanceByKey} 的那条路
+     * 也需要先满足那个条件 —— 而那条路上根本没有消息可发。
+     * 所以这里按 {@link WfNode#isMessageEvent()} / {@link WfNode#isSignalEvent()} 排除，
+     * 退化路径同样排除（否则一个手写的"无入线 messageEventDefinition 节点"
+     * 会被当成无条件入口）。
+     *
+     * @throws IllegalStateException 没有无条件起始节点，或有多个 ——
+     *         前者说明这个定义只能用消息/信号启动，该在部署期就说清而不是启动时炸；
+     *         后者引擎无法判断入口，同样必须由校验器在部署期拦掉
      */
     public WfNode startNode() {
+        List<WfNode> starts = unconditionalStartNodes();
+        if (starts.isEmpty()) {
+            List<WfNode> triggered = eventStartNodes();
+            if (!triggered.isEmpty()) {
+                throw new IllegalStateException("流程定义 " + key + " 没有无条件的开始节点，"
+                        + "只能用消息/信号启动。带触发条件的起始事件: " + idsOf(triggered));
+            }
+            throw new IllegalStateException("流程定义 " + key + " 没有开始节点（无 startEvent 且无无入线节点）");
+        }
+        if (starts.size() > 1) {
+            throw new IllegalStateException("流程定义 " + key + " 存在多个无条件开始节点: "
+                    + idsOf(starts));
+        }
+        return starts.get(0);
+    }
+
+    /** 有无条件入口吗 —— {@link #startNode()} 会不会抛。 */
+    public boolean hasUnconditionalStart() {
+        return unconditionalStartNodes().size() == 1;
+    }
+
+    /**
+     * 全部<b>无条件</b>起始节点（不加"至多一个"的约束，供校验器用）。
+     *
+     * <p>返回列表而不是单个：校验期要拿它和"事件起始节点"分开比对，
+     * 只拿到一个的话，"有三个无条件起始"这个错误本身就没法报出来。
+     */
+    public List<WfNode> unconditionalStartNodes() {
         List<WfNode> starts = new ArrayList<>();
         for (WfNode node : nodeNodes()) {
-            if (node.getType() == WfNodeType.START_EVENT) {
+            if (node.getType() == WfNodeType.START_EVENT && !isEventTriggered(node)) {
                 starts.add(node);
             }
         }
         if (starts.isEmpty()) {
             for (WfNode node : nodeNodes()) {
-                if (incomingFlows(node.getId()).isEmpty()) {
+                if (incomingFlows(node.getId()).isEmpty() && !isEventTriggered(node)) {
                     starts.add(node);
                 }
             }
         }
-        if (starts.isEmpty()) {
-            throw new IllegalStateException("流程定义 " + key + " 没有开始节点（无 startEvent 且无无入线节点）");
-        }
-        if (starts.size() > 1) {
-            StringBuilder ids = new StringBuilder();
-            for (WfNode node : starts) {
-                if (ids.length() > 0) {
-                    ids.append(", ");
-                }
-                ids.append(node.getId());
+        return starts;
+    }
+
+    /**
+     * 全部<b>带触发条件</b>的起始节点（消息起始 / 信号起始）。
+     *
+     * <p>{@code startProcessInstanceByMessage} 跨定义找入口时遍历的就是它 ——
+     * 走这个列表而不是全表扫节点，是为了让"哪些流程能被这条消息启动"这件事
+     * 在定义上就是可枚举的，而不是靠扫描时现猜。
+     */
+    public List<WfNode> eventStartNodes() {
+        List<WfNode> starts = new ArrayList<>();
+        for (WfNode node : nodeNodes()) {
+            if (node.getType() == WfNodeType.START_EVENT && isEventTriggered(node)) {
+                starts.add(node);
             }
-            throw new IllegalStateException("流程定义 " + key + " 存在多个开始节点: " + ids);
         }
-        return starts.get(0);
+        return starts;
+    }
+
+    /** 这个起始节点是被消息还是信号触发的；两者都没写才算无条件。 */
+    private boolean isEventTriggered(WfNode node) {
+        return node.isMessageEvent() || node.isSignalEvent();
+    }
+
+    /**
+     * 按消息名找消息起始节点。
+     *
+     * @return 匹配的那一个；没有匹配时是 {@code null}（调用方要区分"没有这种启动方式"
+     *         与"有但被歧义拦下了"，所以不抛）
+     * @throws IllegalStateException 同一条消息对应了多个起始节点 ——
+     *         那时"收到这条消息该起哪个流程"没有答案，必须由校验器在部署期拦掉
+     */
+    public WfNode messageStartNode(String messageName) {
+        return findEventStartNode(messageName, true);
+    }
+
+    /** 按信号名找信号起始节点。语义与 {@link #messageStartNode} 相同。 */
+    public WfNode signalStartNode(String signalName) {
+        return findEventStartNode(signalName, false);
+    }
+
+    private WfNode findEventStartNode(String eventName, boolean message) {
+        if (eventName == null || eventName.trim().isEmpty()) {
+            return null;
+        }
+        String wanted = eventName.trim();
+        WfNode found = null;
+        List<WfNode> hits = new ArrayList<>();
+        for (WfNode node : eventStartNodes()) {
+            String actual = message ? node.getMessageName() : node.getSignalName();
+            if (wanted.equals(actual == null ? null : actual.trim())) {
+                found = node;
+                hits.add(node);
+            }
+        }
+        if (hits.size() > 1) {
+            throw new IllegalStateException("流程定义 " + key + " 中消息/信号 [" + wanted
+                    + "] 对应多个起始节点: " + idsOf(hits) + "。引擎无法判断该启动哪一个");
+        }
+        return found;
+    }
+
+    private static String idsOf(List<WfNode> nodes) {
+        StringBuilder ids = new StringBuilder();
+        for (WfNode node : nodes) {
+            if (ids.length() > 0) {
+                ids.append(", ");
+            }
+            ids.append(node.getId());
+        }
+        return ids.toString();
     }
 
     /**

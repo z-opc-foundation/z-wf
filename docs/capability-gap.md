@@ -51,7 +51,7 @@
 | Camunda 能力 | z-wf | 说明 |
 |---|---|---|
 | `startProcessInstanceByKey` / `ById` | ✅ | 三个重载（key / key+version / 定义对象） |
-| `startProcessInstanceByMessage` | ❌ | 消息启动流程 |
+| `startProcessInstanceByMessage` | ✅ | **本轮补上** `WfRuntimeService#startProcessInstanceByMessage` / `#startProcessInstanceBySignal`，REST `POST /api/approval-center/processes/start-by-event`，DTO `WfRequests.StartByEvent`（`messageName` 与 `signalName` **必须且只能填一个**）。前提是定义层**放宽了「恰好一个 startEvent」**这条老规则：BPMN 里「手工发起」与「收到订单才起」是同一流程的两个正常入口，要求唯一等于逼作者把一个流程拆成两个。`WfDefinition#startNode` 只认**无条件**入口（带 `messageRef`/`signalRef` 的不算），跨定义查找走 `eventStartNodes()`。同名事件被多个定义订阅时**报错并点名是哪几个** —— 静默挑一个的后果是「流程起来了但不是预期的那个」，而调用方看不出来 |
 | `suspend` / `activate` / `delete` 实例 | ✅ | `terminate` 对应 delete |
 | **变量服务** `getVariable(s)` / `setVariable(s)` / `getVariableLocal` / `setVariableLocal` | ✅ | **本轮补上** `WfVariableService`：流程级 get/set/remove/has + 任务级 get/set/remove，批量整批只落一次库，变更留审计 |
 | `createProcessInstanceQuery` 流畅查询 | 🟡 | `WfProcessInstanceQuery` 有 10 个条件，但没有 `variableValueEquals`（按变量值查实例，审批系统常用） |
@@ -295,7 +295,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 506 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 524 个测试兜着
 - 从测试与审计中逼出并修复的**真实缺陷 31 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **本轮（运行期故障查询）没有发现已发布的真缺陷，这一点要照实说**：缺陷计数仍是 31。
@@ -324,6 +324,14 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
   而 `jump` 只针对一条 token。若让 `jump` 也走那条路，多实例节点（同节点 N 条 token N 个待办）
   上跳走一条会把**别人的待办一起撤掉**，那些分支停在原地却没有任何入口能推进它们 ——
   既办不完也查不出来。所以待办撤销留在 `move` 的循环前，`migrateToken` 不碰待办
+- **本轮（消息 / 信号启动）同样没有发现已发布的真缺陷**，但有两处工程决定要记：
+  ① **放宽了「恰好一个 startEvent」这条老规则**。BPMN 里「手工发起」与「收到订单才起」
+     是同一流程的两个正常入口，要求唯一等于逼作者把一个流程拆成两个 ——
+     那是把建模限制转嫁到业务上。`startNode()` 现在只认无条件入口，
+     带 `messageRef`/`signalRef` 的走 `eventStartNodes()`；
+  ② 写完发现消息启动入口里自己查了一遍停用是**冗余**的 —— 真正的闸门在
+     `startProcessInstance` 内（所有启动路径共用）。已删掉并把闸门位置写进注释：
+     两道一样的闸门不只是冗余，还会让人以为某条路径有它自己的一道
 - **一处注释里的因果句被探针证伪，已改正**：`arrivedActivities`（token 的到达记录）
   全仓**只写不读** —— 汇合判定 `allSiblingsArrived` 比的是兄弟 token 的 `activityId`，
   并不查这份列表。原先"迁移不清到达记录会导致汇合误判"的说法不成立
@@ -347,6 +355,27 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 > 维护约定：新增或移除一项能力时，**同步改这份文档**。
 > 一份会过期的能力表比没有更糟——它会让读者以为"没提到就是不支持"。
+
+### 本轮反向验证记录（消息 / 信号启动流程）
+
+12 条变异，最终全部消解：**11 条由绿转红**，1 条经查证是**冗余实现**、直接删掉。
+
+| 变异 | 结果 | 说明 |
+| --- | --- | --- |
+| `startNode` 不排除带触发条件的起始 | 🔴 红 | 否则 `startProcessInstanceByKey` 会走进消息入口那条线 |
+| `startAt` 忽略传入的起始节点 | 🔴 红 | **首轮绿**：变异打在了 `start()` 上，而实际走的是 `startAt()` |
+| RuntimeService 丢弃算出的起始节点 | 🔴 红 | **首轮 PATCH-NOT-FOUND**：锚点取到了两个同形调用里的另一个 |
+| 歧义时静默挑第一个定义 | 🔴 红 | — |
+| 跨定义查找不跳过停用版本 | 🔴 红 | — |
+| 显式指定定义时不查停用 | ⚪→删 | 真正的闸门在 `startProcessInstance` 的 0.5 步，是所有启动路径共用的那一条；这道检查是**冗余**的，删掉行为不变，留着反而让人以为消息启动有自己一道独立闸门 |
+| 找不到订阅者不报错 | 🔴 红 | — |
+| 事件名为空不报错 | 🔴 红 | 否则要去全表扫一遍才回来说没有 |
+| 定义内不查同消息多起始 | 🔴 红 | 部署期比运行时早 |
+| 校验「有事件起始就放过多个无条件起始」 | 🔴 红 | **首轮绿**：老用例里没有事件起始，条件恒真 —— 已补「事件起始 + 两个无条件起始」那条组合用例 |
+| REST 两个都填不报错 | 🔴 红 | **首轮绿**：变异只影响「都不填」，而引擎层兜住了照样 400；断言只看状态码时两层检查串在一起没有区分力，改成断言报错文案后转红 |
+| REST 绕过引擎改走无条件启动 | 🔴 红 | **首轮绿**：本轮当时还没有 web 端点测试，已补 |
+
+---
 
 ### 本轮反向验证记录（运行期故障查询）
 
