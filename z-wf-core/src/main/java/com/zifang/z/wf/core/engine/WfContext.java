@@ -110,14 +110,14 @@ public class WfContext {
             job.setCreateTime(new Date());
             job.setRetries(WfJob.DEFAULT_RETRIES);
             if (boundary.isMessageBoundary() || boundary.isSignalBoundary()) {
-                // 订阅型：没有触发时刻，duedate 留空。名字记在 job 的 exceptionMessage 里 ——
-                // 复用一列而不是加新列，是因为"哪条订阅在等什么"只在触发那一刻才需要看，
-                // 而触发时 job 已经被删了，日志与调试输出里能对上名字就够了。
+                // 订阅型：没有触发时刻，duedate 留空。
+                // 名字记在 subscriptionName 而不是 exceptionMessage ——
+                // 后者要和"失败原因"共用，而排障视图需要同时看到这两个值（见 WfJob#subscriptionName）。
                 job.setType(boundary.isSignalBoundary()
                         ? com.zifang.z.wf.core.model.WfJobType.SIGNAL
                         : com.zifang.z.wf.core.model.WfJobType.MESSAGE);
                 job.setDuedate(null);
-                job.setExceptionMessage(boundary.isSignalBoundary()
+                job.setSubscriptionName(boundary.isSignalBoundary()
                         ? boundary.getSignalName() : boundary.getMessageName());
                 createdJobs.add(job);
                 continue;

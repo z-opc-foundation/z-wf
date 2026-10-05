@@ -203,6 +203,9 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 + "DUEDATE TIMESTAMP,"
                 + "RETRIES INT,"
                 + "EXCEPTION_MSG VARCHAR(2048),"
+                // 订阅型 job 在等什么。与 EXCEPTION_MSG 分列：排障视图要同时
+                // 看到「在等什么」与「错在哪」，挤在一列只能二选一（见 WfJob#subscriptionName）
+                + "SUBSCRIPTION_NAME VARCHAR(128),"
                 + "CREATE_TIME TIMESTAMP,"
                 + "LAST_FAIL_TIME TIMESTAMP,"
                 + "REV INT,"
@@ -298,6 +301,48 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         }
         addJobColumnIfMissing(connection, "LOCKED_BY VARCHAR(128)");
         addJobColumnIfMissing(connection, "LOCK_AT TIMESTAMP");
+        // 拆列不是新增信息：老库里订阅名就存在 EXCEPTION_MSG 里。
+        // 补列时顺手搬过来，否则升级之后老的订阅型 job 全部匹配不上事件 ——
+        // 症状是"部署升级后所有等消息的流程都不再被触发"，且没有任何报错
+        addJobColumnIfMissing(connection, "SUBSCRIPTION_NAME VARCHAR(128)");
+        backfillSubscriptionName(connection);
+    }
+
+    /**
+     * 把老库 {@code EXCEPTION_MSG} 里的订阅名搬到 {@code SUBSCRIPTION_NAME}。
+     *
+     * <p>不做这一步的代价很具体：升级之后，存量订阅型 job 的订阅名留在旧列里，
+     * 而匹配逻辑已经改读新列 —— 于是<b>所有等消息/等信号的流程都不再被触发</b>，
+     * 且没有任何报错，只是流程静静地停在原地。
+     *
+     * <p>限定在这四个类型上：只有它们当初把订阅名写进了 {@code EXCEPTION_MSG}。
+     * {@code TIMER} / {@code EXTERNAL} / {@code ASYNC_*} 那一列存的是失败原因，
+     * 搬过去等于把一句报错当成订阅名。虽然匹配不上任何事件名（与升级前同样匹配不上），
+     * 但那会让排障视图显示出一个莫名其妙的"订阅名"，比空值更难解释。
+     *
+     * <p>已知的历史遗留：若某个订阅型 job 在升级前就已失败，它的订阅名当时
+     * 已被失败原因覆盖，搬过来的会是那句报错。这种行本来就匹配不上了，
+     * 搬家不改变它的行为，只是不让它继续伪装成订阅名。
+     */
+    private void backfillSubscriptionName(Connection connection) {
+        Statement statement = null;
+        try {
+            statement = connection.createStatement();
+            int moved = statement.executeUpdate(
+                    "UPDATE ZWF_JOB SET SUBSCRIPTION_NAME = EXCEPTION_MSG "
+                            + "WHERE JOB_TYPE IN ('MESSAGE','SIGNAL','EVENT_MESSAGE','EVENT_SIGNAL') "
+                            + "AND SUBSCRIPTION_NAME IS NULL AND EXCEPTION_MSG IS NOT NULL");
+            if (moved > 0) {
+                log.info("已把 {} 条存量订阅的等待事件名搬到 SUBSCRIPTION_NAME 列", moved);
+            }
+        } catch (SQLException e) {
+            // 搬不动不是致命错误：新流程照常工作，只是升级前建的订阅仍匹配不上，
+            // 与升级前的行为一致。不能因此让整个 initialize 失败
+            log.warn("存量订阅名回填失败，升级前创建的消息/信号订阅将仍匹配不到事件: {}",
+                    e.getMessage());
+        } finally {
+            closeQuietly(statement);
+        }
     }
 
     private void addJobColumnIfMissing(Connection connection, String column) {
@@ -1605,7 +1650,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         if (exists) {
             int affected = update("UPDATE ZWF_JOB SET RETRIES=?, EXCEPTION_MSG=?, LAST_FAIL_TIME=?, "
                             + "DUEDATE=?, JOB_TYPE=?, TOPIC=?, LOCKED_BY=?, LOCK_AT=?, "
-                            + "REV=? WHERE JOB_ID=? AND REV=?",
+                            + "SUBSCRIPTION_NAME=?, REV=? WHERE JOB_ID=? AND REV=?",
                     job.getRetries(), job.getExceptionMessage(),
                     timestamp(job.getLastFailureTime()), timestamp(job.getDuedate()),
                     // 类型必须跟着 UPDATE 走。只写 INSERT 的话，任何对已有 job 的
@@ -1615,6 +1660,10 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                     // 租约三列必须跟着 UPDATE 走：worker 领活就是一次 UPDATE，
                     // 漏了的话领活不生效 —— 表现为"两个 worker 领到同一件活"
                     job.getTopic(), job.getLockedBy(), timestamp(job.getLockedAt()),
+                    // 订阅名必须跟着 UPDATE 走：新建 job 时它写在 INSERT 上，
+                    // 而流程推进会先把 job 查出来改一改再存回去，
+                    // 漏掉这一列等于每次更新都把订阅名抹成 null
+                    job.getSubscriptionName(),
                     job.getRevision(), job.getId(), job.getRevision() - 1);
             if (affected == 0) {
                 throw new WfOptimisticLockException("job", job.getId(), job.getRevision() - 1);
@@ -1627,8 +1676,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             PreparedStatement ps = connection.prepareStatement(
                     "INSERT INTO ZWF_JOB (JOB_ID, PROC_ID, EXEC_ID, ELEMENT_ID, ATTACHED_TO, "
                             + "JOB_TYPE, TOPIC, LOCKED_BY, LOCK_AT, DUEDATE, RETRIES, "
-                            + "EXCEPTION_MSG, CREATE_TIME, LAST_FAIL_TIME, REV) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                            + "EXCEPTION_MSG, SUBSCRIPTION_NAME, CREATE_TIME, LAST_FAIL_TIME, REV) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
             try {
                 int i = 1;
                 ps.setString(i++, job.getId());
@@ -1643,6 +1692,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 ps.setTimestamp(i++, timestamp(job.getDuedate()));
                 ps.setInt(i++, job.getRetries());
                 ps.setString(i++, job.getExceptionMessage());
+                ps.setString(i++, job.getSubscriptionName());
                 ps.setTimestamp(i++, timestamp(job.getCreateTime()));
                 ps.setTimestamp(i++, timestamp(job.getLastFailureTime()));
                 ps.setInt(i, job.getRevision());
@@ -1817,6 +1867,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             job.setDuedate(date(rs.getTimestamp("DUEDATE")));
             job.setRetries(rs.getInt("RETRIES"));
             job.setExceptionMessage(rs.getString("EXCEPTION_MSG"));
+            job.setSubscriptionName(rs.getString("SUBSCRIPTION_NAME"));
             job.setCreateTime(date(rs.getTimestamp("CREATE_TIME")));
             job.setLastFailureTime(date(rs.getTimestamp("LAST_FAIL_TIME")));
             job.setRevision(rs.getInt("REV"));

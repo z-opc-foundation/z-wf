@@ -34,8 +34,9 @@ import com.zifang.z.wf.core.view.WfSubscriptionView;
  * {@code updateJob} 自带的行为，与查询本身无关。
  *
  * <p><b>为什么在内存里过滤</b>：条件里有一半（事件名、已等待时长）在本仓的
- * {@code ZWF_JOB} 表上<b>没有对应列</b> —— 事件名存在 {@code exceptionMessage} 里，
- * 那是"订阅型 job 复用一列"的历史决定（见 {@code WfContext#startTimerJobs}）。
+ * {@code ZWF_JOB} 表上<b>没有对应列</b> —— 事件名与失败原因同列是订阅型 job 的
+ * 历史决定（现已拆成 {@code SUBSCRIPTION_NAME} 与 {@code EXCEPTION_MSG} 两列，
+ * 但仍没有"事件名等值"的索引与 WHERE 支持，见 {@code WfJob#subscriptionName}）。
  * 要把它们变成 WHERE 条件，就得改表结构并同步两套实现；而订阅的量级是"在办的单数"
  * （审批系统里通常只有同时在办的那几十上百条），全捞回来过滤完全够用。
  * 真正会堆积的是 job 的<b>历史</b>，而那些已经被执行器消费掉了。
@@ -196,8 +197,8 @@ public class WfSubscriptionService {
         view.setDefinitionKey(instance.getDefinitionKey());
         view.setJobType(job.getType() == null ? null : job.getType().name());
         view.setWaitingFor(waitingFor(job.getType()));
-        view.setEventName(job.getExceptionMessage() != null
-                ? job.getExceptionMessage() : job.getTopic());
+        view.setEventName(job.getSubscriptionName() != null
+                ? job.getSubscriptionName() : job.getTopic());
         view.setDuedate(job.getDuedate());
         view.setLockedBy(job.getLockedBy());
         view.setRetries(job.getRetries());

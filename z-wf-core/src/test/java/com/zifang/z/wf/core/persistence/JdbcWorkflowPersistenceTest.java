@@ -261,7 +261,10 @@ class JdbcWorkflowPersistenceTest {
         WfJob message = newJob("j-msg", "p1", "e1", "b2", 0L);
         message.setType(WfJobType.MESSAGE);
         message.setDuedate(null);
-        message.setExceptionMessage("cancel");
+        // 同时写两列：订阅名与失败原因必须能各自独立往返，
+        // 只写一列的话"拆列"这个改动对持久化就是透明的，测不出它有没有生效
+        message.setSubscriptionName("cancel");
+        message.setExceptionMessage("上一个 worker 报过错");
         message.nextRevision();
         persistence.saveJob(message);
 
@@ -275,8 +278,11 @@ class JdbcWorkflowPersistenceTest {
                 "默认应当是定时器，存量行的语义不能变");
         assertEquals(WfJobType.MESSAGE, persistence.findJob("j-msg").getType());
         assertEquals(WfJobType.SIGNAL, persistence.findJob("j-sig").getType());
-        assertEquals("cancel", persistence.findJob("j-msg").getExceptionMessage(),
-                "订阅名存在这一列里");
+        assertEquals("cancel", persistence.findJob("j-msg").getSubscriptionName(),
+                "订阅名存在自己那一列里");
+        assertEquals("上一个 worker 报过错",
+                persistence.findJob("j-msg").getExceptionMessage(),
+                "失败原因与订阅名必须各存各的：挤在一列的话排障视图只能二选一");
 
         assertEquals(1, persistence.countJobs(new WfJobQuery().setType(WfJobType.TIMER)));
         assertEquals(1, persistence.countJobs(new WfJobQuery().setType(WfJobType.MESSAGE)));
@@ -1235,6 +1241,57 @@ class JdbcWorkflowPersistenceTest {
 
         assertEquals(1, persistence.findTask("t-legacy-1").getDelegateChain().size(),
                 "老库补列后应能正常存读委派链，否则升级后引擎直接报 column not found");
+    }
+
+    @Test
+    @DisplayName("老库里的订阅名要被搬到新列 —— 否则升级后所有等消息的流程都不再被触发")
+    void legacySubscriptionNameIsBackfilled() {
+        // 模拟老库：ZWF_JOB 还没有 SUBSCRIPTION_NAME 列，订阅名躺在 EXCEPTION_MSG 里
+        try {
+            java.sql.Connection c = dataSource.getConnection();
+            java.sql.Statement st = c.createStatement();
+            try {
+                st.execute("DROP TABLE ZWF_JOB");
+                st.execute("CREATE TABLE ZWF_JOB ("
+                        + "JOB_ID VARCHAR(128) NOT NULL PRIMARY KEY,"
+                        + "PROC_ID VARCHAR(128) NOT NULL, EXEC_ID VARCHAR(128),"
+                        + "ELEMENT_ID VARCHAR(128), ATTACHED_TO VARCHAR(128),"
+                        + "JOB_TYPE VARCHAR(16) NOT NULL DEFAULT 'TIMER',"
+                        + "TOPIC VARCHAR(128), LOCKED_BY VARCHAR(128), LOCK_AT TIMESTAMP,"
+                        + "DUEDATE TIMESTAMP, RETRIES INT,"
+                        + "EXCEPTION_MSG VARCHAR(2048),"
+                        + "CREATE_TIME TIMESTAMP, LAST_FAIL_TIME TIMESTAMP, REV INT)");
+                // 三种订阅型 job 各一条，验证不是只搬了某一种
+                st.execute("INSERT INTO ZWF_JOB (JOB_ID, PROC_ID, JOB_TYPE, EXCEPTION_MSG) "
+                        + "VALUES ('j-legacy-msg','p1','MESSAGE','cancelIt')");
+                st.execute("INSERT INTO ZWF_JOB (JOB_ID, PROC_ID, JOB_TYPE, EXCEPTION_MSG) "
+                        + "VALUES ('j-legacy-sig','p1','SIGNAL','erpDone')");
+                st.execute("INSERT INTO ZWF_JOB (JOB_ID, PROC_ID, JOB_TYPE, EXCEPTION_MSG) "
+                        + "VALUES ('j-legacy-race','p1','EVENT_MESSAGE','bossApprove')");
+                // 非订阅型的那一列存的是失败原因，搬过去等于把报错当成订阅名
+                st.execute("INSERT INTO ZWF_JOB (JOB_ID, PROC_ID, JOB_TYPE, EXCEPTION_MSG) "
+                        + "VALUES ('j-legacy-ext','p1','EXTERNAL','下游 503')");
+            } finally {
+                st.close();
+                c.close();
+            }
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException("构造老库失败", e);
+        }
+
+        persistence.initialize();
+
+        assertEquals("cancelIt", persistence.findJob("j-legacy-msg").getSubscriptionName(),
+                "老库的订阅名必须被搬到新列 —— 不搬的话匹配逻辑改读新列，"
+                        + "升级之后所有等消息的流程都不再被触发，且没有任何报错");
+        assertEquals("erpDone", persistence.findJob("j-legacy-sig").getSubscriptionName());
+        assertEquals("bossApprove", persistence.findJob("j-legacy-race").getSubscriptionName());
+
+        WfJob external = persistence.findJob("j-legacy-ext");
+        assertNull(external.getSubscriptionName(),
+                "外部任务那一列存的是失败原因，不能被搬成订阅名 —— "
+                        + "排障页上会显示出一个莫名其妙的等待事件名，比空值更难解释");
+        assertEquals("下游 503", external.getExceptionMessage(), "失败原因要原样留在原处");
     }
 
     // ==================== 历史查询（可组合 Query） ====================

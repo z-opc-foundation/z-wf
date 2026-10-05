@@ -75,6 +75,28 @@ public class WfJob implements Serializable {
     /** 最近一次失败的异常信息，排障时直接看得到为什么它不执行。 */
     private String exceptionMessage;
 
+    /**
+     * 这条订阅在等什么（消息名 / 信号名）。
+     *
+     * <p><b>从 {@link #exceptionMessage} 里搬出来，单独占一列</b> ——
+     * 理由与 {@link #topic} 给外部任务单开一列完全一样，而且这里更硬：
+     * 排障视图必须同时呈现「这个 job 在等什么」与「它错在哪」，
+     * 而这两个值原来挤在同一列里，只能二选一。
+     *
+     * <p><b>为什么以前没出事</b>：引擎的 {@code recordFailure} 目前只作用于
+     * {@code TIMER} / {@code ASYNC} / {@code EXTERNAL} 三类，而这三种都不写这一列；
+     * 写订阅名的 {@code MESSAGE} / {@code SIGNAL} / {@code EVENT_*} 走不到扣重试那条路。
+     * 但这是<b>巧合而不是约定</b> —— 引擎本来就有"job 失败就扣重试"的机制
+     * （{@link #recordFailure}），只是当前按类型分流绕开了。
+     * 一旦哪条路径对订阅型 job 调了它，订阅名会被失败信息覆盖，
+     * 之后按名字匹配再也匹配不上，那条订阅等于从引擎里消失且不报错。
+     *
+     * <p>订阅型 job 在触发那一刻就被删了，正常路径上不需要读这一列；
+     * 留着是为了故障视图能说清「它在等什么、等的是什么」，
+     * 以及让上面那条隐患不再成立。
+     */
+    private String subscriptionName;
+
     private Date createTime;
 
     private Date lastFailureTime;
@@ -212,6 +234,14 @@ public class WfJob implements Serializable {
 
     public void setExceptionMessage(String exceptionMessage) {
         this.exceptionMessage = exceptionMessage;
+    }
+
+    public String getSubscriptionName() {
+        return subscriptionName;
+    }
+
+    public void setSubscriptionName(String subscriptionName) {
+        this.subscriptionName = subscriptionName;
     }
 
     public Date getCreateTime() {

@@ -36,6 +36,7 @@ import com.zifang.z.wf.core.service.WfRepositoryService;
 import com.zifang.z.wf.core.service.WfRuntimeService;
 import com.zifang.z.wf.core.service.WfTaskService;
 import com.zifang.z.wf.core.service.WfOverdueScanner;
+import com.zifang.z.wf.core.service.WfIncidentService;
 import com.zifang.z.wf.core.service.WfSubscriptionService;
 import com.zifang.z.wf.core.service.WfVariableService;
 
@@ -244,6 +245,17 @@ public class WfAutoConfiguration {
     public WfSubscriptionService wfSubscriptionService(WfPersistence persistence,
                                                       WfRepositoryService repositoryService) {
         return new WfSubscriptionService(persistence, repositoryService);
+    }
+
+    /**
+     * 运行期故障查询。纯读，不启动任何线程 ——
+     * 要不要定时轮询由宿主决定（监控场景自己接一个定时任务调 {@code countIncidents}）。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WfIncidentService wfIncidentService(WfPersistence persistence,
+                                              WfRepositoryService repositoryService) {
+        return new WfIncidentService(persistence, repositoryService);
     }
 
     // ==================== 启动部署 ====================

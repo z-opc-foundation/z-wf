@@ -274,6 +274,90 @@ class WfWebApiTest {
         assertNotNull(getOk("/api/wf/process/executions?processInstanceId=" + processId));
     }
 
+    // ==================== 运行期故障查询 ====================
+
+    @Test
+    @DisplayName("故障端点：失败上报后查得到，且要同时看得到「在等什么」与「报了什么错」")
+    void incidentEndpointOverHttp() throws Exception {
+        deployExternalProcess();
+        String suffix = String.valueOf(System.nanoTime());
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webExternalProcess", "businessKey", "WEB-INC-" + suffix,
+                        "userId", "inc-owner-" + suffix)).get("data");
+
+        // 前置条件：还没失败过时不该报故障 —— 否则这个端点等于永远有东西，没人再看
+        assertEquals(0, count("/api/wf/incidents/count?processInstanceId=" + processId),
+                "没失败过就不该是故障");
+
+        String worker = "web-inc-w-" + suffix;
+        Map<String, Object> fetched = postOk("/api/wf/external-tasks/fetch",
+                body("topic", "web.notify", "workerId", worker, "maxTasks", 10));
+        String taskId = null;
+        for (Map<String, Object> t : asList(fetched.get("data"))) {
+            if (processId.equals(t.get("processInstanceId"))) {
+                taskId = (String) t.get("id");
+            }
+        }
+        assertNotNull(taskId, "前置条件：应当领到本实例的活");
+
+        postOk("/api/wf/external-tasks/" + taskId + "/fail",
+                body("workerId", worker, "errorMessage", "下游 503"));
+
+        Map<String, Object> page = asMap(getOk(
+                "/api/wf/incidents?processInstanceId=" + processId).get("data"));
+        List<Map<String, Object>> rows = asList(page.get("records"));
+        assertEquals(1, rows.size(), "一条失败就是一条故障。实际 " + rows.size());
+        assertEquals(1, ((Number) page.get("total")).intValue(), "total 要与列表一致");
+
+        Map<String, Object> row = rows.get(0);
+        assertTrue(String.valueOf(row.get("errorMessage")).contains("下游 503"),
+                "要能看到为什么失败。实际 " + row.get("errorMessage"));
+        assertEquals("EXTERNAL", row.get("jobType"));
+        assertEquals("web.notify", row.get("subscriptionName"),
+                "要能看到它在等什么（外部任务的主题）—— 与失败原因分开展示，"
+                        + "挤在一列就只能说出一个");
+        // 上报一次只扣掉一次重试（3 -> 2），所以它仍在自动重试的范围内。
+        // 这一侧与"彻底不动"必须分得开：前者可以等，后者必须人去看
+        assertEquals(Boolean.TRUE, row.get("retryable"), "只失败一次，重试还剩着");
+
+        assertEquals(1, count("/api/wf/incidents/count?processInstanceId=" + processId
+                + "&retriesExhausted=false"), "还没扣完的应当归到还在重试那一侧");
+        assertEquals(0, count("/api/wf/incidents/count?processInstanceId=" + processId
+                + "&retriesExhausted=true"), "还没扣完就不该出现在彻底不动里");
+
+        // list 端点的同一个参数要一并验：count 与 list 是两个方法，
+        // 只验 count 会漏掉「列表这条路没把参数传下去」这种错 —— 而它照样返回
+        // 一份看起来完整的列表，调用方无从察觉筛选压根没生效
+        String listBase = "/api/wf/incidents?processInstanceId=" + processId;
+        assertEquals(1, asList(asMap(getOk(
+                listBase + "&retriesExhausted=false").get("data")).get("records")).size(),
+                "list 也要能按还在重试筛出这一条");
+        assertEquals(0, asList(asMap(getOk(
+                listBase + "&retriesExhausted=true").get("data")).get("records")).size(),
+                "list 也不能把还没扣完的混进彻底不动那一侧");
+
+        // 按类型筛：订阅的故障不该混进外部任务的结果
+        String base = "/api/wf/incidents/count?processInstanceId=" + processId + "&type=";
+        assertEquals(1, count(base + "EXTERNAL"), "外部任务那条要能被筛出来");
+        assertEquals(0, count(base + "MESSAGE"),
+                "类型筛错了会静默返回空，而调用方会读成「这一类没有故障」");
+
+        // 总览里要能一眼看到故障 —— 排障的人通常先开总览，而不是单独查订阅
+        Map<String, Object> overview = asMap(getOk(
+                "/api/wf/process/overview?processInstanceId=" + processId).get("data"));
+        assertEquals(1, asList(overview.get("incidents")).size(),
+                "总览里必须带上 incidents —— 只给订阅的话「单子不动了」"
+                        + "分不清是在耐心等还是已经炸了");
+
+        // 拼错类型要报错并列出合法值，不能当没传
+        ResponseEntity<String> bad = exchange(HttpMethod.GET,
+                "/api/wf/incidents/count?type=NOT_A_TYPE", null);
+        assertEquals(HttpStatus.BAD_REQUEST, bad.getStatusCode(),
+                "拼错的类型必须报错而不是被忽略: " + bad.getBody());
+        assertTrue(bad.getBody().contains("EXTERNAL"),
+                "报错要列出合法值。实际: " + bad.getBody());
+    }
+
     // ==================== 实例迁移 ====================
 
     @Test
@@ -1747,6 +1831,17 @@ class WfWebApiTest {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         return rest.exchange(url, method, new HttpEntity<Object>(request, headers), String.class);
+    }
+
+    /**
+     * 读一个只返回 {@code {"count": N}} 的端点。
+     *
+     * <p>抽出来是因为 {@code data} 还得先过一道 {@code asMap} 才拿得到 {@code count}，
+     * 内联写就会出现 {@code ((Number) getOk(...).get("data")).get("count")} 这种
+     * 转型套错层级的写法 —— 那个 {@code .get} 落在 Number 上，编译期报错。
+     */
+    private int count(String url) throws Exception {
+        return ((Number) asMap(getOk(url).get("data")).get("count")).intValue();
     }
 
     private static Map<String, Object> body(Object... kv) {

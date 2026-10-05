@@ -91,7 +91,7 @@
 | `createHistoricProcessInstanceQuery` | ✅ | 复用 `WfProcessInstanceQuery` + `WfHistoryService#queryFinishedProcesses`。新增 `finishedOnly` / `unfinishedOnly` 开关 —— 终态有三种（正常完成/外部终止/内部终止），单个 `status` 字段表达不了"已结束"；写死成 `COMPLETED` 会让被终止的单子从历史里消失，而"这单怎么没的"恰恰是事后最常被问的问题。旧的 `getCompletedInstances` / `getCompletedInstancesByUser`（零调用方、全量拉取、只认 COMPLETED）已删除 |
 | `createHistoricVariableInstanceQuery` | ⚠️ 部分 | 能查**变量最终值**（`WfRuntimeService#getVariables` + 历史流程实例组合），但没有 Camunda 那种"历史变量实例"独立实体。本引擎变量是存在流程实例上的 KV，Camunda 的 HistoricVariableInstance 语义（每变量一行、有独立生命周期）没有一一对应物，**刻意不硬造** |
 | `createHistoricDetailQuery`（变量/字段变更明细） | ✅ | `WfVariableAuditQuery` + `WfHistoryService#queryVariableChanges` / `countVariableChanges`，REST `GET /api/wf/history/variable-changes`。条件：流程实例 / 变量名 / 操作人 / 时间区间，可组合 + 真实分页。**批量写是「一个变量一条」审计**而不是整批拼一条 —— 拼一起就没法按变量名精确查（查 `amount` 会顺带命中 `discount_amount`），变量名按 `LIKE 'name:%'` 前缀匹配且对 `%` / `_` 转义（对外承诺精确匹配，且无二次判定兜底，通配符会直接进审计结果）。倒序返回（与轨迹正序相反），同毫秒由 id 兜底；id 序号**定长补零**以保证字典序 == 插入序 |
-| `createHistoricIncidentQuery` | ❌ | |
+| `createHistoricIncidentQuery` | ❌ | 仍缺。`createIncidentQuery` 只覆盖**当前**故障：job 一旦执行成功就被删掉，"上周三那批单为什么全卡住了"这类事后复盘查不到。要做就得给故障建独立的持久化记录 —— 那正是本轮刻意不建独立表所换来的代价，两者不能各要一半 |
 
 > **本轮修掉的待办/候选相关缺陷**（都是"接口正常返回、内容不对"这一类，最难自查）：
 > ① `getTodoList` 的 `groups` 参数接进来就被丢弃，待办列表**只查 assignee/owner，不查候选池**
@@ -109,7 +109,7 @@
 | Camunda 能力 | z-wf | 说明 |
 |---|---|---|
 | **Job / 定时器** `createJobQuery` / `executeJob` / `setJobRetries` | 🟡 | **本轮补上 job 机制**：`WfJob` + `ZWF_JOB` 表 + `WfJobService#executeDueJobs`（重试计数、耗尽可查）。**本轮再补外部任务**（`externalTask`）：`WfExternalTaskService` + `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制领活、`fail` 解锁+退避、重试耗尽留档不删。**异步执行也已补上**（`asyncBefore`/`asyncAfter`，`camunda:` 前缀同样识别）。**剩余**：`jobPriority`、循环定时器、异步 job 的优先级与手动触发 REST 入口 |
-| `createIncidentQuery` | ❌ | 无运行期故障的概念 |
+| `createIncidentQuery` | 🟡 | **本轮补上** `WfIncidentService` + `WfIncidentView` + `WfIncidentQuery`，REST `GET /api/wf/incidents` 与 `/incidents/count`，并进 `GET /api/wf/process/overview`。回答的是订阅回答不了的那一半：「在等什么」与「已经没干成」必须一起给 —— 只有订阅时，"单子不动了"分不清是在耐心等还是已经炸了，而这两者处置完全不同。**故障从 job 派生，不建 Camunda 那张独立 incident 表**：故障的定义完全由 job 的 `retries` + `lastFailureTime` 决定，另存一份就多一处可能与 job 对不上，而排障时最不能容忍的就是对不上。代价见 `createHistoricIncidentQuery` 那行 |
 | `createMetricQuery`（引擎指标） | 🟡 | 只有 `getProcessStatusCounts` 一个自定义统计 |
 | `getTableCount` / `getTableNames` / `getProperties` | ❌ | |
 | 诊断 / 历史级别调整 | ❌ | |
@@ -295,9 +295,22 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 493 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 506 个测试兜着
 - 从测试与审计中逼出并修复的**真实缺陷 31 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
+- **本轮（运行期故障查询）没有发现已发布的真缺陷，这一点要照实说**：缺陷计数仍是 31。
+  本轮消除了一个**潜伏隐患**并当场抓住一个自己写出来的 bug：
+  - 潜伏隐患：`WfJob.exceptionMessage` 一列两义 —— 订阅名（消息/信号/边界/网关分支）
+    与失败原因共用一列。**当前引擎路径上触发不到**（三处 `recordFailure` 分别只作用于
+    `TIMER` / `ASYNC` / `EXTERNAL`，都不写订阅名），但正确性此前**依赖**这条分流一直成立。
+    一旦哪条路径对订阅型 job 调了 `recordFailure`，订阅名会被失败信息覆盖，
+    之后按名字匹配再也匹配不上，那条订阅等于从引擎里消失且不报错。
+    本轮拆成 `SUBSCRIPTION_NAME` 两列（含 JDBC 补列 + 存量回填），
+    正确性不再依赖任何分流约定 —— 这是做故障视图的**前置条件**：
+    视图要同时说清「它在等什么」与「它报了什么错」，挤在一列就只能二选一
+  - 当场抓住：`retriesExhausted` 过滤写反了（拿参数与 `isRetryable()` 直接比大小，
+    于是筛"还在重试"时一条都查不出来，而调用方会读成"没有在重试的故障"）。
+    写测试时第一轮就红了，未流出
 - **本轮实例迁移时逼出 `jump` 的两个同源缺陷**，两个都是"接口返回成功、效果却不对"：
   ① `jump` 推进时调的是 `advance`（语义为"这个节点已经执行过了"，内部走 `leave`），
   于是跳到人工节点时**不建待办、流程一路跑到结束** —— 而"这个审批人不管了，直接跳给总经理"
@@ -334,6 +347,25 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 > 维护约定：新增或移除一项能力时，**同步改这份文档**。
 > 一份会过期的能力表比没有更糟——它会让读者以为"没提到就是不支持"。
+
+### 本轮反向验证记录（运行期故障查询）
+
+15 条变异，**15 条全部由绿转红**。其中 3 条首轮未转红或不可信，查下来是判据缺口，已补测试后复验：
+
+| 变异 | 结果 | 说明 |
+| --- | --- | --- |
+| 故障判据改成"什么都算" / 改按 `retries` 判 | 🔴 红 ×2 | 后者会把"创建时就配置成不重试"的 job 全算成故障 |
+| `retriesExhausted` 不过滤 | 🔴 红 | 两侧必须分得开 |
+| 视图改读 `exceptionMessage` | 🔴 红 | 拆列的核心判据 |
+| 超量护栏、类型过滤、错误子串过滤失效 | 🔴 红 ×3 | — |
+| 实例已消失的 job 跳过不报 | 🔴 红 | 那是清理漏了一步的证据 |
+| 列拆分回退：写回旧列 / 匹配读旧列 | 🔴 红 ×2 | — |
+| JDBC INSERT / UPDATE 漏新列 | 🔴 红 ×2 | 漏 UPDATE 会把订阅名每次更新都抹成 null |
+| 拆掉存量回填 | 🔴 红 | **首轮绿**：原测试库每次都是新建 schema，回填面对的是空的库 —— 已补一条在"老库"上跑的用例 |
+| REST `list` 端点丢 `retriesExhausted` | 🔴 红 | **首轮绿**：测试只用了 `count` 端点，两者是两个方法，参数根本没传到 `list` 那条路，而它照样返回一份看起来完整的列表 |
+| REST 吞掉拼错的类型 | 🔴 红 | **首轮不可信**：变异串只替换了 `throw` 的前半句，留下悬空拼接导致编译失败 —— 是变异写错，不是代码问题 |
+
+---
 
 ### 本轮反向验证记录（实例迁移 `move`）
 

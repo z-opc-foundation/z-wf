@@ -121,7 +121,10 @@ class WfMessageBoundaryTest {
         assertEquals(1, subs.size(), "token 一进入审批节点就该挂上消息订阅");
         assertEquals("cancelBoundary", subs.get(0).getElementId());
         assertEquals("approve", subs.get(0).getAttachedToRef());
-        assertEquals("cancel", subs.get(0).getExceptionMessage());
+        assertEquals("cancel", subs.get(0).getSubscriptionName());
+        assertEquals(null, subs.get(0).getExceptionMessage(),
+                "订阅名不能写进 exceptionMessage —— 那一列是失败原因的位置，"
+                        + "两个语义挤在一起时 job 一失败订阅名就没了");
         assertEquals(null, subs.get(0).getDuedate(), "消息订阅不由时间触发");
 
         // 扫描器不许碰订阅另有一条用例（scannerNeverConsumesSubscriptionsEvenWithDuedate）

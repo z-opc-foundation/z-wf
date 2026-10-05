@@ -18,6 +18,7 @@ import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.service.WfHistoryService;
 import com.zifang.z.wf.core.service.WfRepositoryService;
+import com.zifang.z.wf.core.service.WfIncidentService;
 import com.zifang.z.wf.core.service.WfSubscriptionService;
 import com.zifang.z.wf.core.service.WfRuntimeService;
 import com.zifang.z.wf.core.service.WfVariableService;
@@ -57,6 +58,9 @@ public class WfProcessOperationController {
 
     @Resource
     private WfSubscriptionService subscriptionService;
+
+    @Resource
+    private WfIncidentService incidentService;
 
     @PostMapping("/suspend")
     @Operation(summary = "001_挂起流程实例")
@@ -176,6 +180,10 @@ public class WfProcessOperationController {
         // 之所以非加不可：一条在等消息的流程在待办、轨迹、评论里都看不到任何东西，
         // 而且没有任何报错。没有这一段，"这条单子怎么不动了"只能靠翻 XML 猜
         overview.put("subscriptions", subscriptionService.subscriptionsOf(processInstanceId));
+        // 故障与订阅要一起给：只给订阅时，"单子不动了"分不清是在耐心等还是已经炸了，
+        // 而这两者的处置完全不同。与订阅同理，放在 web 层合并，
+        // 不让 WfHistoryService 去依赖运行期状态
+        overview.put("incidents", incidentService.incidentsOf(processInstanceId));
         return Result.success(overview);
     }
 

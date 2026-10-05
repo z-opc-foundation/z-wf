@@ -377,7 +377,7 @@ public class WfEngine {
                 : com.zifang.z.wf.core.model.WfJobType.EVENT_MESSAGE);
         // 订阅型 job 没有触发时刻，duedate 留空：留了会被定时器扫描器当成"到点了"
         job.setDuedate(null);
-        job.setExceptionMessage(node.isSignalEvent() ? node.getSignalName() : node.getMessageName());
+        job.setSubscriptionName(node.isSignalEvent() ? node.getSignalName() : node.getMessageName());
         job.setCreateTime(new java.util.Date());
         job.setRetries(com.zifang.z.wf.core.model.WfJob.DEFAULT_RETRIES);
         return job;

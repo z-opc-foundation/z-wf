@@ -644,7 +644,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             query.setProcessInstanceId(processInstanceId);
         }
         for (WfJob job : persistence.queryJobs(query.setPageNum(1).setPageSize(500))) {
-            if (!wanted.equals(job.getExceptionMessage())) {
+            if (!wanted.equals(job.getSubscriptionName())) {
                 continue;
             }
             // 先删再触发：并发触发器抢同一条订阅时，
@@ -1205,7 +1205,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         WfProcessInstance advanced = null;
         int fired = 0;
         for (WfJob job : persistence.queryJobs(query.setPageNum(1).setPageSize(500))) {
-            if (!wanted.equals(job.getExceptionMessage())) {
+            if (!wanted.equals(job.getSubscriptionName())) {
                 continue;
             }
             if (fireEventGatewayBranch(job, userId, type.outcomePrefix() + type.getLabel()
