@@ -36,6 +36,7 @@ import com.zifang.z.wf.core.service.WfRepositoryService;
 import com.zifang.z.wf.core.service.WfRuntimeService;
 import com.zifang.z.wf.core.service.WfTaskService;
 import com.zifang.z.wf.core.service.WfOverdueScanner;
+import com.zifang.z.wf.core.service.WfSubscriptionService;
 import com.zifang.z.wf.core.service.WfVariableService;
 
 /**
@@ -230,6 +231,19 @@ public class WfAutoConfiguration {
     public WfExternalTaskService wfExternalTaskService(WfPersistence persistence,
                                                       WfRuntimeService runtimeService) {
         return new WfExternalTaskService(persistence, runtimeService);
+    }
+
+    /**
+     * 订阅查询服务 —— "现在有哪些流程在等什么"。
+     *
+     * <p>纯读，不需要执行器也不需要定时器；宿主想接监控就自己定时调
+     * {@code listSubscriptions}，不想接就只是个查询工具。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WfSubscriptionService wfSubscriptionService(WfPersistence persistence,
+                                                      WfRepositoryService repositoryService) {
+        return new WfSubscriptionService(persistence, repositoryService);
     }
 
     // ==================== 启动部署 ====================

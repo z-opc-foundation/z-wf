@@ -1382,6 +1382,76 @@ class WfWebApiTest {
     }
 
     @Test
+    @DisplayName("订阅端点：在等消息的流程查得到等待状态，且总览里也带得出来")
+    void subscriptionsOverHttp() throws Exception {
+        postOk("/api/wf/definitions/deploy", body("key", "webSub", "xml", RACE_BPMN));
+        String pid = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webSub", "businessKey", "SUB-1",
+                        "userId", "web-sub-alice")).get("data");
+
+        // 排障现场最需要的一条信息：这条单子在等谁。
+        // 它在待办列表里查不到（没有待办）、轨迹里也没动静、而且没有任何报错
+        Map<String, Object> page = asMap(getOk(
+                "/api/wf/subscriptions?processInstanceId=" + pid).get("data"));
+        List<Map<String, Object>> records = asList(page.get("records"));
+        assertEquals(2, records.size(), "两条分支各一条订阅。实际 " + records.size());
+        assertEquals(2, ((Number) page.get("total")).intValue(), "总数要与列表一致");
+
+        boolean sawMessage = false;
+        for (Map<String, Object> record : records) {
+            // 等消息与等信号归并成不同的「等什么」，不要都显示成同一种
+            String expectedKind = "bossApprove".equals(record.get("eventName"))
+                    ? "message" : "signal";
+            assertEquals(expectedKind, record.get("waitingFor"),
+                    "等消息与等信号必须分得开。实际 " + record);
+            assertEquals("wreg", record.get("gatewayId"),
+                    "竞速订阅要带出网关 id，运维才看得出这几条是同一次竞速");
+            if ("bossApprove".equals(record.get("eventName"))) {
+                sawMessage = true;
+            }
+        }
+        assertTrue(sawMessage, "应当能看到在等主管批的那条");
+
+        // 按类型过滤。必须限定实例：这些用例共享同一个 Spring 容器与持久化，
+        // 不限定的话同类型订阅会来自别的用例起的实例，数字随执行顺序变 ——
+        // 那种"有时绿有时红"的测试比没有测试更糟
+        assertEquals(1, ((Number) asMap(getOk(
+                "/api/wf/subscriptions/count?processInstanceId=" + pid
+                        + "&type=EVENT_SIGNAL").get("data")).get("count")).intValue());
+        assertEquals(2, ((Number) asMap(getOk(
+                "/api/wf/subscriptions/count?processInstanceId=" + pid).get("data"))
+                .get("count")).intValue());
+        // 拼错类型要报错并列出合法值，不能当没传 ——
+        // 静默忽略的话调用方会以为"筛过了、没有"，而他正要靠这个结论判断没有等待中的订阅
+        ResponseEntity<String> bad = exchange(HttpMethod.GET,
+                "/api/wf/subscriptions/count?type=NOT_A_TYPE", null);
+        assertEquals(HttpStatus.BAD_REQUEST, bad.getStatusCode(),
+                "拼错的类型必须报错而不是被忽略: " + bad.getBody());
+        assertTrue(bad.getBody().contains("EVENT_MESSAGE"),
+                "报错要列出合法值。实际 " + bad.getBody());
+    }
+
+    @Test
+    @DisplayName("总览端点带出当前等待 —— 不用再开一个页面才能看出卡在哪")
+    void overviewCarriesSubscriptionsOverHttp() throws Exception {
+        postOk("/api/wf/definitions/deploy", body("key", "webSub2", "xml", RACE_BPMN));
+        String pid = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webSub2", "businessKey", "SUB-2",
+                        "userId", "web-sub-bob")).get("data");
+
+        Map<String, Object> overview = asMap(getOk(
+                "/api/wf/process/overview?processInstanceId=" + pid).get("data"));
+        // 拆成独立用例是因为「总览带不带等待」与「订阅端点准不准」是两件事：
+        // 混在一条里，订阅端点自己出问题时这条也会红，于是分不清是谁坏了
+        List<Map<String, Object>> waiting = asList(overview.get("subscriptions"));
+        assertEquals(2, waiting.size(),
+                "总览必须带出当前等待，否则「这条单子怎么不动了」还是没有答案。实际 " + waiting);
+        assertNotNull(overview.get("openTasks"));
+        assertTrue(asList(overview.get("openTasks")).isEmpty(),
+                "等事件期间没有待办 —— 这正是为什么必须靠 subscriptions 才能看出它在等什么");
+    }
+
+    @Test
     @DisplayName("事件投递端点：消息走到事件网关的对应分支，其余分支被作废")
     void eventGatewayOverHttp() throws Exception {
         postOk("/api/wf/definitions/deploy", body("key", "webRace", "xml", RACE_BPMN));

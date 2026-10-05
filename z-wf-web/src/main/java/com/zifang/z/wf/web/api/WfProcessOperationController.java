@@ -18,6 +18,7 @@ import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.service.WfHistoryService;
 import com.zifang.z.wf.core.service.WfRepositoryService;
+import com.zifang.z.wf.core.service.WfSubscriptionService;
 import com.zifang.z.wf.core.service.WfRuntimeService;
 import com.zifang.z.wf.core.service.WfVariableService;
 import com.zifang.z.wf.web.dto.WfRequests;
@@ -53,6 +54,9 @@ public class WfProcessOperationController {
 
     @Resource
     private WfVariableService variableService;
+
+    @Resource
+    private WfSubscriptionService subscriptionService;
 
     @PostMapping("/suspend")
     @Operation(summary = "001_挂起流程实例")
@@ -138,9 +142,17 @@ public class WfProcessOperationController {
     }
 
     @GetMapping("/overview")
-    @Operation(summary = "007_流程总览（实例+待办+轨迹+评论）")
+    @Operation(summary = "007_流程总览（实例+待办+轨迹+评论+当前等待）")
     public Result<Map<String, Object>> overview(@RequestParam String processInstanceId) {
-        return Result.success(historyService.getProcessOverview(processInstanceId));
+        Map<String, Object> overview = historyService.getProcessOverview(processInstanceId);
+        // 在 web 这一层把"当前等待"并进总览，而不是让 WfHistoryService 依赖
+        // WfSubscriptionService：订阅是**运行期**状态，而 history 管的是已经发生的事，
+        // 让它去依赖运行期是分层倒置。视图的组装本来就归 web。
+        //
+        // 之所以非加不可：一条在等消息的流程在待办、轨迹、评论里都看不到任何东西，
+        // 而且没有任何报错。没有这一段，"这条单子怎么不动了"只能靠翻 XML 猜
+        overview.put("subscriptions", subscriptionService.subscriptionsOf(processInstanceId));
+        return Result.success(overview);
     }
 
     @GetMapping("/executions")

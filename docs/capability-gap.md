@@ -57,7 +57,7 @@
 | `createProcessInstanceQuery` 流畅查询 | 🟡 | `WfProcessInstanceQuery` 有 10 个条件，但没有 `variableValueEquals`（按变量值查实例，审批系统常用） |
 | `createExecutionQuery` | 🟡 | 只有 `getExecutions(processInstanceId)` 列举，没有按条件查 |
 | `createVariableInstanceQuery` | ❌ | |
-| `createEventSubscriptionQuery` | ❌ | 订阅都落在 `ZWF_JOB` 里，但没有面向调用方的订阅查询 |
+| `createEventSubscriptionQuery` | ✅ | **本轮补上** `WfSubscriptionService` + `WfSubscriptionView`（放 core 不放 web：订阅查询通常由独立部署的监控/运维服务消费，放 web 会把它拖进 Spring MVC 运行时）。REST `GET /api/wf/subscriptions` 与 `/subscriptions/count`，并**并进 `GET /api/wf/process/overview`**。回答的是"这条单子怎么不动了"——在等消息的流程没有待办、轨迹没动、也不报错，没有这张表就只能翻 XML 猜。**job 类型归并成"等什么"**（message/signal/timer/external/async）同时**保留原 jobType** 以区分"打断"与"竞速"；竞速分支额外带 `gatewayId`，让人看得出几条是同一次竞速。**超过扫描上限（2000）直接报错**而不是给一份看起来完整的截断列表 |
 | `getActivityInstance`（树形活动实例） | 🟡 | 有扁平轨迹 `getTrail`，没有 Camunda 的树形结构 |
 | `messageEventReceived` / `signalEventReceived` | ✅ | `triggerMessage`（点对点）/ `broadcastSignal`（广播），**本轮补上 REST**：`POST /api/wf/process/message` 与 `POST /api/wf/process/signal`。此前只有 Java 入口，纯 HTTP 的调用方根本没法投递事件，事件网关等于对它们不存在。一个端点同时能叫醒三种等待者（事件网关分支 / 消息边界订阅 / receiveTask），谁先判决定了这条事件落到哪种语义上 |
 | `correlate`（关联消息到执行） | ❌ | |
@@ -295,7 +295,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 457 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 473 个测试兜着
 - 从测试与审计中逼出并修复的**真实缺陷 29 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **两处"两套实现语义不一致"值得单独记**：内存版 `lockExternalTasks` 直接改内部引用，
@@ -309,6 +309,10 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
   事件网关的落选分支因此永远留在那儿，流程再也结束不了，而引擎日志一片正常
 - **`broadcastSignal` 曾只推进不返回**：三类等待者里，边界订阅那一路的实例没进返回值，
   调用方拿到空列表以为没人订阅，而流程其实已经被打断了
+- **一处已登记的潜伏分歧**：`WfPersistence#saveJob` 收到 `id == null` 的 job 时，
+  内存实现**静默丢弃**，JDBC 实现会**走 INSERT 插进一行 JOB_ID 为 null 的记录**。
+  引擎正常路径总在 `persistAll` 里先分配 id，所以现在触发不到；
+  但两套实现的语义必须一样，否则换存储那天才会暴露
 - 引擎面缺口按上面 P0/P1 排期推进；身份/表单/鉴权/CMMN 有意不做
 
 > 维护约定：新增或移除一项能力时，**同步改这份文档**。
