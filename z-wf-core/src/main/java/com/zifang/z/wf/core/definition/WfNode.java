@@ -78,6 +78,16 @@ public class WfNode implements Serializable {
     /** 流程结束事件的流程结果表达式（决定流程实例的 outcome，如 approved / rejected）。 */
     private String resultExpression;
 
+    /**
+     * 结果写进哪个变量名。
+     *
+     * <p>与 {@link #resultExpression} 是一对且<b>缺一不可</b>：
+     * 前者说"写进哪"，后者说"怎么算"。
+     * 不做成一个属性是因为 {@code ${a+b}} 与 {@code a+b} 从字符串形状上
+     * 分不出"要算的"和"变量名"，猜错会把值静默写进没人读的变量。
+     */
+    private String resultVariable;
+
     /** 扩展属性。 */
     private Map<String, Object> properties = new HashMap<>();
 
@@ -96,6 +106,28 @@ public class WfNode implements Serializable {
      * 光看 type=TASK 无法区分这两者，所以退化时必须留下原名。
      */
     public static final String PROPERTY_UNSUPPORTED_BPMN_ELEMENT = "zifang:unsupportedBpmnElement";
+
+    /**
+     * {@link #properties} 里标记"这个节点不是 {@code <process>} 的直接子节点，
+     * 而是被嵌在某个容器元素（目前只有 {@code subProcess}）里"的键。
+     *
+     * <p>值为外层容器元素的 id，没有则不存在。
+     *
+     * <p>存在的理由：解析结果是<b>扁平节点表</b>，父子关系在收表那一刻就没了。
+     * 而"这个节点嵌在 subProcess 里"恰恰是判断它会不会被执行的关键依据 ——
+     * 丢了这条信息，校验器就看不出哪些内联节点永远跑不到。
+     */
+    public static final String PROPERTY_NESTED_IN = "zifang:nestedIn";
+
+    /**
+     * 本节点被嵌在哪个容器元素里。
+     *
+     * @return 外层容器 id；是 {@code <process>} 的直接子节点则返回 {@code null}
+     */
+    public String nestedIn() {
+        Object value = property(PROPERTY_NESTED_IN);
+        return value == null ? null : String.valueOf(value);
+    }
 
     /**
      * 本节点是否由不支持的 BPMN 元素退化而来。
@@ -250,6 +282,14 @@ public class WfNode implements Serializable {
 
     public void setResultExpression(String resultExpression) {
         this.resultExpression = resultExpression;
+    }
+
+    public String getResultVariable() {
+        return resultVariable;
+    }
+
+    public void setResultVariable(String resultVariable) {
+        this.resultVariable = resultVariable;
     }
 
     public Map<String, Object> getProperties() {

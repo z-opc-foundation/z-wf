@@ -127,6 +127,7 @@ public final class WfDefinitionCodec {
         private String delegateExpression;
         private String script;
         private String messageName;
+        private String resultVariable;
         private String calledElementKey;
         private String resultExpression;
         private Map<String, Object> properties = new HashMap<>();
@@ -246,6 +247,14 @@ public final class WfDefinitionCodec {
 
         public String getMessageName() {
             return messageName;
+        }
+
+        public String getResultVariable() {
+            return resultVariable;
+        }
+
+        public void setResultVariable(String resultVariable) {
+            this.resultVariable = resultVariable;
         }
 
         public void setMessageName(String messageName) {
@@ -384,6 +393,7 @@ public final class WfDefinitionCodec {
             gn.setDelegateExpression(node.getDelegateExpression());
             gn.setScript(node.getScript());
             gn.setMessageName(node.getMessageName());
+            gn.setResultVariable(node.getResultVariable());
             gn.setCalledElementKey(node.getCalledElementKey());
             gn.setResultExpression(node.getResultExpression());
             gn.setProperties(new HashMap<>(node.getProperties()));
@@ -458,6 +468,7 @@ public final class WfDefinitionCodec {
             node.setDelegateExpression(gn.getDelegateExpression());
             node.setScript(gn.getScript());
             node.setMessageName(gn.getMessageName());
+            node.setResultVariable(gn.getResultVariable());
             node.setCalledElementKey(gn.getCalledElementKey());
             node.setResultExpression(gn.getResultExpression());
             node.setProperties(new HashMap<>(gn.getProperties()));

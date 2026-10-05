@@ -90,6 +90,22 @@ public class WfDefinitionValidator {
                     add(WfValidationIssue.Severity.ERROR, node.getId(), "callActivity 缺少 calledElementKey");
                 }
             }
+            // ---- 嵌入式 subProcess：内联内容不会被执行，必须挡住部署 ----
+            // 解析器把 <subProcess> 里的内联节点也收进扁平节点表（isDirectChildOf
+            // 判的是"祖先链里有 process"，不是"直接子节点"），但引擎不会进入
+            // 嵌入式子流程 —— 它没有独立的作用域与 token。结果是流程从 subProcess
+            // 节点直接穿到它的出线，内联的那些节点一个都不会执行，
+            // 而流程照样跑到结束、状态 COMPLETED。
+            // 与其让作者以为"我画了个子流程所以它会跑"，不如部署时就拒绝。
+            if (node.getType() == WfNodeType.SUB_PROCESS) {
+                List<String> inline = inlineChildIds(definition, node.getId());
+                if (!inline.isEmpty()) {
+                    add(WfValidationIssue.Severity.ERROR, node.getId(),
+                            "嵌入式 subProcess 的内联内容不会被执行（本引擎尚不支持嵌入式子流程）。"
+                                    + "被收进节点表但永远跑不到的内联节点: " + inline
+                                    + "。请改用 callActivity 指向一个独立的流程定义 key");
+                }
+            }
             if (node.getType() == WfNodeType.RECEIVE_TASK) {
                 if (isBlank(node.getMessageName())) {
                     add(WfValidationIssue.Severity.WARN, node.getId(),
@@ -257,6 +273,25 @@ public class WfDefinitionValidator {
 
     private List<WfValidationIssue> result() {
         return new ArrayList<>(issues);
+    }
+
+    /**
+     * 找出被嵌在指定容器元素里的节点 id。
+     *
+     * <p>依赖解析期写下的 {@link WfNode#PROPERTY_NESTED_IN} 标记 ——
+     * 解析结果���扁平表，父子关系不靠这个标记无从还原。
+     */
+    private static List<String> inlineChildIds(WfDefinition definition, String containerId) {
+        List<String> inline = new ArrayList<>();
+        if (definition == null || definition.getNodes() == null) {
+            return inline;
+        }
+        for (WfNode node : definition.getNodes()) {
+            if (node != null && containerId.equals(node.nestedIn())) {
+                inline.add(node.getId());
+            }
+        }
+        return inline;
     }
 
     /**

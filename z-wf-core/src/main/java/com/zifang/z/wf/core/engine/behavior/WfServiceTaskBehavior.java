@@ -23,10 +23,22 @@ public class WfServiceTaskBehavior implements WfActivityBehavior {
     public WfTask execute(WfContext context, WfNode node, WfExecution execution) {
         WfJavaDelegate delegate = context.getDelegateRegistry().resolve(context, node);
         if (delegate == null) {
-            // 无 delegate 配置：直接通过。
-            // 部署期 WfDefinitionValidator 已对 serviceTask 缺 delegate 报 ERROR，
-            // 这里仍不抛异常是为了让"跳过校验、纯开发态"也能跑起来。
-            return null;
+            // 解析不到 delegate 时**必须让流程失败**，不能当成"这一步没有外部逻辑"放过去。
+            //
+            // 实测过的后果：delegateClass 写错一个字母 → Class.forName 抛
+            // ClassNotFoundException → 旧实现只 log.error 然后返回 null →
+            // serviceTask 静默退化成穿透 → 流程一路跑到结束、状态 COMPLETED →
+            // 审批记录上"通知 HR""写台账"这些步骤全都显示成功，
+            // 而那一步压根没有执行。
+            //
+            // 对审批系统来说这是最坏的一类错：流程看起来完全正常，
+            // 真正缺失的是那一步业务动作，而它往往要到几天后对账才发现。
+            //
+            // 部署期 WfDefinitionValidator 已对"完全没配 delegate"报 ERROR；
+            // 运行期再挡一次，是为了覆盖"配了但解析不出来"——
+            // 类名拼错、类没实现 WfJavaDelegate、bean 名没注册，
+            // 这三种在校验期都发现不了。
+            throw new WfDelegateResolutionException(node.getId(), node);
         }
         delegate.execute(context, execution);
         return null;

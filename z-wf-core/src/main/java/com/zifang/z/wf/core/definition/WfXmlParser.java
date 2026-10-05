@@ -179,6 +179,12 @@ public class WfXmlParser {
                 if (node == null || node.getId() == null) {
                     continue;
                 }
+                // 记下"嵌在谁里面"：解析结果是扁平表，父子关系在这里之后就找不回来了，
+                // 而校验器要靠它判断哪些内联节点永远不会被执行。
+                Element parent = parentElement(element);
+                if (parent != null && parent != process) {
+                    node.getProperties().put(WfNode.PROPERTY_NESTED_IN, parentId(parent));
+                }
                 if (!seenIds.add(node.getId())) {
                     throw new WfDefinitionException("BPMN XML 中节点 id 重复: " + node.getId());
                 }
@@ -233,6 +239,7 @@ public class WfXmlParser {
         node.setCalledElementKey(firstNonBlank(extension(element, "calledElementKey"),
                 firstNonBlank(extension(element, "calledElement"), null)));
         node.setResultExpression(extension(element, "resultExpression"));
+        node.setResultVariable(extension(element, "resultVariable"));
         node.setDueDateDuration(extension(element, "dueDate"));
 
         String priority = extension(element, "priority");
@@ -353,6 +360,28 @@ public class WfXmlParser {
             node = node.getParentNode();
         }
         return false;
+    }
+
+    /**
+     * 取元素的直接父元素。
+     *
+     * <p>与 {@link #isDirectChildOf} 的区别：那个方法判的是"祖先链里有没有它"
+     * （名字里的 direct 有误导性），这里要的是"紧挨着的那个父元素"，
+     * 用来区分"流程主图的节点"与"嵌在容器里的节点"。
+     */
+    private Element parentElement(Element candidate) {
+        Node node = candidate.getParentNode();
+        return node != null && node.getNodeType() == Node.ELEMENT_NODE ? (Element) node : null;
+    }
+
+    /** 容器元素可能没写 id，退回元素名，至少能让人看出是"嵌在什么里面"。 */
+    private String parentId(Element parent) {
+        String id = parent.getAttribute("id");
+        return isBlank(id) ? "<" + parent.getTagName() + ">" : id;
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
     }
 
     private String attr(Element element, String name) {

@@ -45,6 +45,15 @@ public class WfRuntimeService implements WfSubProcessLauncher {
 
     private static final Logger log = LoggerFactory.getLogger(WfRuntimeService.class);
 
+    /** 子实例 id 在父流程变量里的存放前缀，键为 callActivity 节点 id。 */
+    public static final String SUB_INSTANCE_PREFIX = "__wf_sub_";
+
+    /** 子流程结果在父流程变量里的固定名（未配 resultExpression 时也写入）。 */
+    public static final String SUB_RESULT_VARIABLE = "__wf_sub_result";
+
+    /** 被调流程实例 id 在父流程变量里的固定名。 */
+    public static final String SUB_INSTANCE_VARIABLE = "__wf_sub_instance";
+
     private final WfRepositoryService repositoryService;
 
     private final WfPersistence persistence;
@@ -537,24 +546,77 @@ public class WfRuntimeService implements WfSubProcessLauncher {
     public String launch(WfContext context, com.zifang.z.wf.core.definition.WfNode node,
                          WfExecution execution) {
         String calledKey = node.getCalledElementKey();
-        try {
-            WfDefinition subDefinition = repositoryService.getLatestDefinition(calledKey);
-            // 子流程继承父流程变量（浅拷贝：子流程改自己的变量不影响父）
-            Map<String, Object> subVariables = new HashMap<>(context.getProcessInstance().getVariables());
-            String subInstanceId = startProcessInstance(subDefinition, null,
-                    context.getAuthenticatedUserId(), null, subVariables);
-            // 记录父子关联：父 token 的 children 之外，用变量记住子实例 id
-            context.setVariable("__wf_sub_" + node.getId(), subInstanceId);
-            log.info("启动子流程: node={}, 子流程定义={}, 子实例={}",
-                    node.getId(), calledKey, subInstanceId);
-            return subInstanceId;
-        } catch (Exception e) {
-            // 子流程启动失败：记录并让父流程继续（不因为子流程缺失而卡死主流程），
-            // 业务方可通过 trail 里缺失的节点发现"这一步没真正跑起来"
-            log.error("启动子流程失败: node={}, key={}", node.getId(), calledKey, e);
-            context.setVariable("__wf_sub_error_" + node.getId(), e.getMessage());
-            return null;
+        // 被调流程不存在时必须让父流程失败。旧实现在这里 catch 住所有异常、
+        // 记一条 __wf_sub_error_ 变量就放行，于是"调子流程算价"这一步静默失败，
+        // 主流程照样一路跑完并报完成 —— 而下一步拿到的是空结果。
+        // 与 serviceTask 的 delegate 同理：这一步没做，不能装作做过。
+        WfDefinition subDefinition = repositoryService.getLatestDefinition(calledKey);
+
+        // 子流程继承父流程变量（浅拷贝：子流程改自己的变量不影响父）
+        Map<String, Object> subVariables = new HashMap<>(context.getProcessInstance().getVariables());
+        String subInstanceId = startProcessInstance(subDefinition, null,
+                context.getAuthenticatedUserId(), null, subVariables);
+        context.setVariable(SUB_INSTANCE_PREFIX + node.getId(), subInstanceId);
+        backfillCallResult(context, node, subInstanceId);
+        log.info("启动子流程: node={}, 子流程定义={}, 子实例={}",
+                node.getId(), calledKey, subInstanceId);
+        return subInstanceId;
+    }
+
+    /**
+     * 被调流程的结果回填到父流程变量。
+     *
+     * <p>此前 {@code WfNode#resultExpression} 在 callActivity 上是<b>死字段</b>：
+     * 解析器把它读进节点、校验器也不管，但 launch 从不求值它 ——
+     * 作者写 {@code zifang:resultExpression="..."} 期望拿到子流程结果，
+     * 实际永远是 null，而流程照常完成。
+     *
+     * <p><b>为什么拆成 resultVariable + resultExpression 两个属性</b>，
+     * 而不靠"剥掉 {@code ${}} 剩下的就是变量名"来猜：
+     * {@code ${a + b}} 和 {@code a + b} 都是合法表达式，前者求值、后者是字面量，
+     * 从字符串形状根本分不出"这段是要算的"还是"这段是要写进哪个变量的"。
+     * 猜错的后果是静默把值写进一个没人读的变量。
+     * 所以和 Camunda 一样：{@code resultVariable} 存名字（要写进哪），
+     * {@code resultExpression} 存表达式（怎么算）。两个都不配时，
+     * 结果落在固定名 {@link #SUB_RESULT_VARIABLE} 上。
+     */
+    private void backfillCallResult(WfContext context,
+                                    com.zifang.z.wf.core.definition.WfNode node,
+                                    String subInstanceId) {
+        WfProcessInstance child = persistence.findProcessInstance(subInstanceId);
+        if (child == null) {
+            throw new WfEngineException("子流程实例不存在，无法回填结果: " + subInstanceId);
         }
+
+        String target = node.getResultVariable();
+        String expression = node.getResultExpression();
+        boolean hasTarget = target != null && !target.trim().isEmpty();
+        boolean hasExpression = expression != null && !expression.trim().isEmpty();
+
+        if (!hasTarget && !hasExpression) {
+            // 什么都没配：结果仍要能取到，否则子流程算出来的东西无处可取
+            context.setVariable(SUB_RESULT_VARIABLE, child.getResult());
+            context.setVariable(SUB_INSTANCE_VARIABLE, subInstanceId);
+            return;
+        }
+        if (hasTarget && !hasExpression) {
+            // 只配了变量名：直接把子流程的流程结果放进去，这是最常见的用法
+            context.setVariable(target.trim(), child.getResult());
+            context.setVariable(SUB_INSTANCE_VARIABLE, subInstanceId);
+            return;
+        }
+
+        Map<String, Object> merged = new HashMap<>(context.mergedVariables());
+        merged.putAll(child.getVariables());
+        merged.put(SUB_RESULT_VARIABLE, child.getResult());
+        merged.put(SUB_INSTANCE_VARIABLE, subInstanceId);
+        Object value = context.getExpressionEvaluator()
+                .evalRaw(expression, merged);
+
+        // 配了表达式但没配变量名：结果只能落固定名，否则无处安放
+        String name = hasTarget ? target.trim() : SUB_RESULT_VARIABLE;
+        context.setVariable(name, value);
+        log.info("回填子流程结果: node={} 变量={} 值={}", node.getId(), name, value);
     }
 
     // ==================== 内部 ====================

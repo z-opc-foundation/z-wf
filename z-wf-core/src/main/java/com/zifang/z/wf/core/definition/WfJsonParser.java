@@ -166,6 +166,7 @@ public class WfJsonParser {
         node.setDelegateExpression(str(raw.get("delegateExpression"), null));
         node.setScript(str(raw.get("script"), null));
         node.setCalledElementKey(str(raw.get("calledElementKey"), str(raw.get("calledElement"), null)));
+        node.setResultVariable(str(raw.get("resultVariable"), null));
         node.setResultExpression(str(raw.get("resultExpression"), null));
         node.setDueDateDuration(str(raw.get("dueDate"), str(raw.get("dueDateDuration"), null)));
         node.setPriority(intOf(raw.get("priority"), WfNode.DEFAULT_PRIORITY));
