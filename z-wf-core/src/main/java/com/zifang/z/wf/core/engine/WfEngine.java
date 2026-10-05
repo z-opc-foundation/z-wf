@@ -826,6 +826,14 @@ public class WfEngine {
                 context.addNewExecution(branchToken);
             }
 
+            // 流转钩子放在"token 改位之后、进入目标之前"：
+            // 这时 from/to/flowId 三个值都拿得到，而 token 已经落到目标节点上，
+            // 钩子实现方看到的 activeActivityId 与本引擎内部是一致的。
+            //
+            // 放在 enter 之后触发则不行：目标节点可能自己就往下走了若干步
+            // （serviceTask 链、网关），钩子拿到的"到达时状态"与到达那一刻已不相干。
+            context.fireTransition(from.getId(), target.getId(), flow.getId());
+
             branchToken.setActivityId(target.getId());
             branchToken.setEnteredTime(new Date());
             branchToken.setState(WfExecution.State.ACTIVE);

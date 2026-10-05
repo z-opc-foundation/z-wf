@@ -169,6 +169,37 @@ public class WfContext {
 
     private Resume resume = Resume.NONE;
 
+    /**
+     * 本次推进的钩子分发器；为 null 表示没有装配任何钩子。
+     *
+     * <p><b>为什么挂在 context 上而不是注入 engine</b>：钩子触发属于"本次推进"
+     * 的过程，而 dispatcher 是宿主共享的编排组件。挂 context 就不用改
+     * {@code WfEngine} 的构造签名 —— 那会让每一个直接 new 引擎的测试都要跟着改，
+     * 而它们与钩子毫无关系。
+     *
+     * <p>允许为 null：core 层的单元测试大量直接用引擎，强制注入会让它们
+     * 为一个与被测行为无关的依赖付出构造代价。触发点一律判空。
+     */
+    private com.zifang.z.wf.core.hook.WfHookDispatcher hookDispatcher;
+
+    public com.zifang.z.wf.core.hook.WfHookDispatcher getHookDispatcher() {
+        return hookDispatcher;
+    }
+
+    public void setHookDispatcher(
+            com.zifang.z.wf.core.hook.WfHookDispatcher hookDispatcher) {
+        this.hookDispatcher = hookDispatcher;
+    }
+
+    /** 触发流转钩子；没装配钩子时静默跳过。 */
+    public void fireTransition(String fromActivityId, String toActivityId, String flowId) {
+        if (hookDispatcher == null || getDefinition() == null) {
+            return;
+        }
+        hookDispatcher.fireTransition(getDefinition().getKey(), getProcessInstanceId(),
+                fromActivityId, toActivityId, flowId);
+    }
+
     public Resume getResume() {
         return resume;
     }

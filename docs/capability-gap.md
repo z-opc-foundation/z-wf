@@ -198,14 +198,26 @@
 
 | 维度 | Camunda 7 | z-wf |
 |---|---|---|
-| 生命周期监听器 | ExecutionListener / TaskListener，按事件类型注册，几十个事件点 | 3 个 hook 接口共 11 个回调（`WfHookDispatcher`）。本轮做完行为级审计后修掉 3 处失效回调，详见下文 |
+| 生命周期监听器 | ExecutionListener / TaskListener，按事件类型注册，几十个事件点 | 3 个 hook 接口共 15 个回调（`WfHookDispatcher`）。本轮做完行为级审计后修掉 3 处失效回调，并补了流转 / job 生命周期 / 任务消失三类事件点，详见下文 |
 | 表达式 | JUEL（`${}` / `#{}`） | z-util EL（`${}`） |
 | Java Delegate | `JavaDelegate` / `DelegateExpression` / `ClassDelegate` | `WfJavaDelegate` + `WfDelegateRegistry` |
 | 外部任务 Worker | `ExternalTaskService` | ✅ `WfExternalTaskService`（fetchAndLock / complete / fail / release / list）。**剩余**：Camunda 侧的 `handleBpmnError` / `handleEscalation` 交回流程、`setVariableLocal`、优先级与批量操作 |
 
-**扩展面比 Camunda 窄很多**，这是实话。Camunda 的监听器可以挂在
-"任务创建前/后、实例启动/结束、变量更新、流程图绘制"等几十个点上；
-z-wf 的 3 个 hook 覆盖不到那么多细粒度的时机。
+### 3.2 本轮补的事件点
+
+Camunda 差距最大的是细粒度事件点。本轮补了三个（`WfTransitionAndJobHookTest` 逐条证明真触发）：
+
+| 回调 | 触发时机 | 为什么必要 |
+|---|---|---|
+| `onTransition(from, to, flowId)` | 每次 token 沿连线移动 | Camunda 拆成 transitionStart/End 两个事件；合成一个是因为本引擎"离开"与"到达"发生在同一次推进里，拆开只能拿到一半信息 —— start 拿不到 to，end 拿不到 flowId，而"这条线上跑了多少单"最想要 flowId。**通知型，不能改线**（能改线的扩展点是 serviceTask + delegate） |
+| `onJobScheduled` / `onJobExecuted` | job 落库后 / 执行完 | 现在有七种 job，但此前没有任何对外入口。做"这一步平均等了多久""哪个节点的定时器最常被撤"只能改引擎代码。`onJobExecuted` 带 `success`，残留 job 发 false —— 报 true 会让执行成功率凭空好看 |
+| `onDeleted(reason)` | 任务被终止 / 被边界打断 / 会签收口时 | 与 `onAfterComplete` **互斥**：办结了走前者，没办结就没了走这条。**撤回不在这里** —— 撤回把任务放回待办，任务并没消失，混进来会让"任务消失率"这个指标彻底失去意义 |
+
+> `onDeleted` 补上后顺带修掉一个语义错误：终止路径原来对被作废的任务发的是
+> `fireAfterComplete`（"某人办结了这单"），据此发通知的接入方会发出一条假消息。
+
+**扩展面比 Camunda 窄**，但差距已从"整个生命周期只有 11 个点"缩到
+"缺少消息/信号到达、任务字段更新、流程图绘制等少数点"。
 
 ---
 
@@ -277,8 +289,8 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 389 个测试兜着
-- 从测试与审计中逼出并修复的**真实缺陷 25 项**，其中 4 项属于"能力看着在、实际不生效"：
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 402 个测试兜着
+- 从测试与审计中逼出并修复的**真实缺陷 28 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **两处"两套实现语义不一致"值得单独记**：内存版 `lockExternalTasks` 直接改内部引用，
   绕过了 `saveJob` 的乐观锁契约（表现为"领一次活就把 job 永久锁死在乐观锁异常里"）；

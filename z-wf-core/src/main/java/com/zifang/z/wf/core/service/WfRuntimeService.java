@@ -169,7 +169,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         }
 
         // ---- 3. 引擎推进 ----
-        WfContext context = engine.newContext(definition, instance, null);
+        WfContext context = newContext(definition, instance, null);
         context.setAuthenticatedUserId(userId);
         context.setSubProcessLauncher(this);
         engine.start(context);
@@ -209,7 +209,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         WfDefinition definition = definitionOf(instance);
         List<WfExecution> executions = persistence.findExecutionsByProcessInstance(processInstanceId);
 
-        WfContext context = engine.newContext(definition, instance, null);
+        WfContext context = newContext(definition, instance, null);
         context.setSubProcessLauncher(this);
         context.setVariables(variables);
         // 汇合判定需要看到本实例的全部 token（含上次请求建的）
@@ -293,7 +293,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             }
         }
 
-        WfContext context = engine.newContext(definition, instance, execution);
+        WfContext context = newContext(definition, instance, execution);
         context.setAuthenticatedUserId(userId);
         context.setSubProcessLauncher(this);
         context.setVariables(variables);
@@ -405,6 +405,8 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             task.setEndTime(new Date());
             task.nextRevision();
             persistence.saveTask(task);
+            hookDispatcher.fireDeleted(task.getId(), task.getAssignee(),
+                    processInstanceId, "terminated");
             cancelled++;
         }
 
@@ -427,10 +429,13 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         hookDispatcher.fireComplete(instance.getDefinitionKey(), processInstanceId, "terminated");
         hookDispatcher.notifyApprovalResult(processInstanceId, instance.getDefinitionKey(),
                 instance.getStartUserId(), "terminated", reason);
-        for (WfTask task : persistence.queryTasks(new WfTaskQuery()
-                .setProcessInstanceId(processInstanceId).setStatus(WfTask.Status.CANCELLED))) {
-            hookDispatcher.fireAfterComplete(task.getId(), task.getAssignee(), "terminated");
-        }
+        // 这里原来还有一个循环，对 CANCELLED 的任务发 fireAfterComplete。
+        // 去掉有两个原因：
+        // 1) 它查的正是上面作废循环刚标记的那批任务 ⇒ 同一个终止动作，
+        //    每个被作废的任务会收到两次通知。按通知发短信/IM 的接入方会发两条。
+        // 2) 它发的是 fireAfterComplete（"办结"），而任务是被作废的 ——
+        //    审批方据此发出的"某人办结了这单"是条假消息。
+        // 逐个任务的消失通知由上面的作废循环负责，流程级的由 fireComplete/notify 负责。
     }
 
     // ==================== 查询 ====================
@@ -754,6 +759,8 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             pending.setEndTime(new Date());
             pending.nextRevision();
             persistence.saveTask(pending);
+            hookDispatcher.fireDeleted(pending.getId(), pending.getAssignee(),
+                    instance.getId(), "multi-instance-closed");
         }
 
         // ---- 收口：结束仍停在本节点的其他 token ----
@@ -899,6 +906,9 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             // 流程已经结束了还在响：多半是残留 job（实例被外部直接改库终止、
             // 或清理逻辑漏了）。返回 false 而不是抛异常 ——
             // 抛出去会被执行器算成失败并重试，而重试永远不会有用。
+            // 传 null 定义：流程已终态，定义可能已被删除（definitionOf 会抛），
+            // 而这个分支的全部意义就是"别抛"。钩子拿不到 definitionKey 是这次早退的必然。
+            fireJobExecuted(null, instance.getId(), job, false);
             log.warn("流程 {} 已是终态 {}，却还有 job {} 到期，忽略触发",
                     instance.getId(), instance.getStatus(), job.getId());
             return null;
@@ -913,6 +923,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                 ? persistence.findExecution(job.getExecutionId()) : null;
         if (execution == null || execution.isEnded()
                 || !job.getAttachedToRef().equals(execution.getActivityId())) {
+            fireJobExecuted(definition, instance.getId(), job, false);
             log.info("job {} 触发时 token 已不在宿主节点 {} 上（当前 {}），"
                             + "按已办结处理，不触发边界事件",
                     job.getId(), job.getAttachedToRef(),
@@ -940,6 +951,10 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         engine.startFrom(context, execution);
         persistAll(context);
         resolveCompletion(context);
+        // 通知放在落库之后：钩子实现方常拿 processInstanceId 去查实例与轨迹，
+        // 放在 persistAll 之前它读到的是推进前的旧状态（token 还在宿主节点上、
+        // 历史还没记），于是"这个 job 触发后流程走到哪了"这类统计永远差一步
+        fireJobExecuted(definition, instance.getId(), job, true);
         return instance;
     }
 
@@ -1065,6 +1080,9 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             // 流程已经结束还在续跑：多半是残留 job（清理逻辑漏了）。
             // 返回 false 而不是抛异常 —— 抛出去会被执行器算成失败并重试，
             // 而重试永远不会有用
+            // 传 null 定义的道理同 fireEventBoundary 的终态早退：
+            // 流程已终态，定义可能已删，强行取会抛 —— 而这里正是不该抛的地方
+            fireJobExecuted(null, instance.getId(), job, false);
             log.warn("流程 {} 已是终态 {}，却还有异步 job {} 待续跑，忽略",
                     instance.getId(), instance.getStatus(), job.getId());
             return false;
@@ -1080,6 +1098,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         // token 必须还停在这一步上。早就走了还续跑，等于把流程从别处拽回来 ——
         // 与 fireEventBoundary / completeExternalTask 里的同构闸门是同一个道理。
         if (token == null || token.isEnded() || !job.getElementId().equals(token.getActivityId())) {
+            fireJobExecuted(definition, instance.getId(), job, false);
             log.info("异步 job {} 续跑时 token 已不在节点 {} 上（当前 {}），忽略",
                     job.getId(), job.getElementId(),
                     token == null ? "不存在" : token.getActivityId());
@@ -1100,14 +1119,29 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         }
         persistAll(context);
         resolveCompletion(context);
+        fireJobExecuted(definition, instance.getId(), job, true);
         log.info("流程 {} 的异步{} job {} 已续跑，token 位于 {}",
                 instance.getId(), before ? "前置" : "后置", job.getId(), token.getActivityId());
         return true;
     }
 
+    /**
+     * 建一次推进的上下文，并把钩子分发器挂上去。
+     *
+     * <p><b>必须走这里而不是直接 {@code engine.newContext}</b>：漏掉一处就等于
+     * 那条路径上的流转钩子静默不触发 —— 而"接口在、方法有、就是不响"是最难查的一类。
+     * 新增推进入口时照此调用即可。
+     */
+    private WfContext newContext(WfDefinition definition, WfProcessInstance instance,
+                                 WfExecution execution) {
+        WfContext context = engine.newContext(definition, instance, execution);
+        context.setHookDispatcher(hookDispatcher);
+        return context;
+    }
+
     private WfContext contextForError(WfProcessInstance instance, WfDefinition definition,
                                       WfExecution execution, Map<String, Object> variables) {
-        WfContext context = engine.newContext(definition, instance, execution);
+        WfContext context = newContext(definition, instance, execution);
         context.setSubProcessLauncher(this);
         context.setVariables(variables);
         context.setProcessExecutions(
@@ -1134,6 +1168,10 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             pending.setEndTime(new Date());
             pending.nextRevision();
             persistence.saveTask(pending);
+            // 人是被边界事件打断的，不是办结的：必须发 fireDeleted 而不是
+            // fireAfterComplete，否则审批方收到的是"办结成功"的通知
+            hookDispatcher.fireDeleted(pending.getId(), pending.getAssignee(),
+                    processInstanceId, "boundary-interrupted");
         }
         // 同步撤掉对应的定时器：
         // nodeId 非 null 时流程本身还活着（走补偿分支），只撤这个节点 token 上的表；
@@ -1287,6 +1325,34 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      * 先撤才能保证它不会在同一次推进里既被删又被建回来。
      * 反过来的话，每绕一圈回同一个节点就会多留一只永远不响的旧表。
      */
+    /**
+     * 通知钩子：排上了一个 job。
+     *
+     * <p>从 {@link #persistJobs} 里抽出来是因为除了"本次推进新建的 job"，
+     * 还有别处也会建 job（比如外部任务失败后写 duedate 重建一条重试记录）。
+     */
+    /**
+     * 通知钩子：一个 job 执行完了。
+     *
+     * <p>所有触发路径（定时器/边界事件、消息信号、异步续跑）都走它，
+     * 免得每加一种 job 就得记得补一处 —— 那正是 §3 审计里"实现了但从不触发"的成因。
+     *
+     * @param success true=真的推进了；false=这次没推进（流程已结束、token 已挪走）。
+     *               报成 true 会让"执行成功率"这个指标凭空好看
+     */
+    private void fireJobExecuted(WfDefinition definition, String processInstanceId,
+                                 WfJob job, boolean success) {
+        hookDispatcher.fireJobExecuted(definition == null ? null : definition.getKey(),
+                processInstanceId, job.getId(),
+                job.getType() == null ? null : job.getType().name(), job.getElementId(), success);
+    }
+
+    private void fireJobScheduled(WfDefinition definition, String processInstanceId, WfJob job) {
+        hookDispatcher.fireJobScheduled(definition == null ? null : definition.getKey(),
+                processInstanceId, job.getId(),
+                job.getType() == null ? null : job.getType().name(), job.getElementId());
+    }
+
     private void persistJobs(WfContext context) {
         for (String executionId : context.getJobsToClearByExecution()) {
             persistence.deleteJobsByExecution(executionId);
@@ -1296,6 +1362,9 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                 job.setId(idGenerator.nextJobId());
             }
             persistence.saveJob(job);
+            // 必须在 saveJob 之后触发：钩子实现方常拿 jobId 去查表，
+            // 报一个还不存在的 id 会让"统计 job 排队"这件事第一次就失败
+            fireJobScheduled(context.getDefinition(), context.getProcessInstanceId(), job);
         }
     }
 

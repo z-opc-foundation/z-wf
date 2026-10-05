@@ -53,6 +53,24 @@ public interface WfTaskHook {
     default void onAfterComplete(String taskId, String assignee, String outcome) {
     }
 
+    /**
+     * 任务消失 —— 被边界事件打断作废、流程终止收尾、会签闭合后作废剩余实例。
+     *
+     * <p>与 {@link #onAfterComplete} 是<b>互斥</b>的两条路：办结了走前者，
+     * 没办结就没了走这条。"这单怎么没的"在审批场景里是最常被追问的事，
+     * 而没有这个钩子时唯一的查法是翻轨迹 —— 而轨迹记的是节点不是任务。
+     *
+     * <p><b>撤回不在这里</b>：撤回把任务放回待办（{@code Status.CREATED}），
+     * 任务并没有消失，它走的是 {@link #onAssigneeChanged}。
+     * 把它混进来会让"任务消失"这个统计算上大量正常的退回，指标直接失去意义。
+     *
+     * @param reason 消失的原因（boundary-interrupted / terminated /
+     *               multi-instance-closed）
+     */
+    default void onDeleted(String taskId, String assignee, String processInstanceId,
+                           String reason) {
+    }
+
     default String hookType() {
         return "wf-task";
     }

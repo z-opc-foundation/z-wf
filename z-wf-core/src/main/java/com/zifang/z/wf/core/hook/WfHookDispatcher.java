@@ -122,6 +122,48 @@ public class WfHookDispatcher {
         }
     }
 
+    /**
+     * 流转钩子。
+     *
+     * <p>刻意不提供"能否决"形态：{@code toActivityId} 到触发时已经定了，
+     * 一个能返回 false 的版本只会让人以为能在这里改线或拦停，而实际做不到 ——
+     * 能改线的扩展点是 {@code serviceTask} + delegate。
+     */
+    public void fireTransition(String definitionKey, String processInstanceId,
+                               String fromActivityId, String toActivityId, String flowId) {
+        for (WfProcessHook hook : processHooks) {
+            try {
+                hook.onTransition(definitionKey, processInstanceId,
+                        fromActivityId, toActivityId, flowId);
+            } catch (Exception e) {
+                log.error("流转钩子异常（已忽略）: {}", hook.getClass().getName(), e);
+            }
+        }
+    }
+
+    public void fireJobScheduled(String definitionKey, String processInstanceId,
+                                 String jobId, String jobType, String elementId) {
+        for (WfProcessHook hook : processHooks) {
+            try {
+                hook.onJobScheduled(definitionKey, processInstanceId, jobId, jobType, elementId);
+            } catch (Exception e) {
+                log.error("job 排队钩子异常（已忽略）: {}", hook.getClass().getName(), e);
+            }
+        }
+    }
+
+    public void fireJobExecuted(String definitionKey, String processInstanceId,
+                                String jobId, String jobType, String elementId, boolean success) {
+        for (WfProcessHook hook : processHooks) {
+            try {
+                hook.onJobExecuted(definitionKey, processInstanceId, jobId, jobType,
+                        elementId, success);
+            } catch (Exception e) {
+                log.error("job 执行钩子异常（已忽略）: {}", hook.getClass().getName(), e);
+            }
+        }
+    }
+
     // ==================== 任务钩子 ====================
 
     public boolean fireBeforeCreate(String taskId, String assignee, Map<String, Object> variables) {
@@ -178,6 +220,23 @@ public class WfHookDispatcher {
                 hook.onAfterComplete(taskId, assignee, outcome);
             } catch (Exception e) {
                 log.error("任务完成后钩子异常（已忽略）: {}", hook.getClass().getName(), e);
+            }
+        }
+    }
+
+    /**
+     * 任务消失钩子。
+     *
+     * <p>通知型：钩子抛异常只记日志。任务已经消失了，
+     * 让调用方的"撤回/打断"操作失败毫无意义 —— 而那正是使用方最常接的接口。
+     */
+    public void fireDeleted(String taskId, String assignee, String processInstanceId,
+                            String reason) {
+        for (WfTaskHook hook : taskHooks) {
+            try {
+                hook.onDeleted(taskId, assignee, processInstanceId, reason);
+            } catch (Exception e) {
+                log.error("任务删除钩子异常（已忽略）: {}", hook.getClass().getName(), e);
             }
         }
     }
