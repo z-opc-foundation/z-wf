@@ -501,6 +501,40 @@ class JdbcWorkflowPersistenceTest {
 
     // ==================== Job 存储 ====================
 
+    @Test
+    @DisplayName("待办查询里 assignee 与 owner 是「或」：与内存实现语义必须一致")
+    void assigneeAndOwnerAreOrNotAnd() {
+        // 与 InMemoryWorkflowPersistenceTest 里的同名用例用完全相同的数据与期望。
+        // 放两遍不是冗余：这类"同一条件两套语义"的分歧只有两边都钉住才暴露，
+        // 而开发期默认用内存实现，分歧会一路活到上线才发现
+        persistence.saveTask(taskWithOwnership("t1", "me", null));
+        persistence.saveTask(taskWithOwnership("t2", null, "me"));
+        persistence.saveTask(taskWithOwnership("t3", "other", "me"));
+        persistence.saveTask(taskWithOwnership("t4", "me", "other"));
+
+        WfTaskQuery query = new WfTaskQuery().setAssignee("me").setOwner("me");
+        assertEquals(4, persistence.queryTasks(query.setPageNum(1).setPageSize(50)).size(),
+                "SQL 侧是 (ASSIGNEE=? OR OWNER=?)，内存侧也必须是「或」");
+        assertEquals(4, persistence.countTasks(query));
+
+        assertEquals(2, persistence.countTasks(new WfTaskQuery().setAssignee("me")));
+        assertEquals(2, persistence.countTasks(new WfTaskQuery().setOwner("me")));
+        assertEquals(4, persistence.countTasks(new WfTaskQuery()
+                .setAssignee("me").setOwner("me").setOpenOnly(true)));
+    }
+
+    private WfTask taskWithOwnership(String id, String assignee, String owner) {
+        WfTask t = new WfTask();
+        t.setId(id);
+        t.setAssignee(assignee);
+        t.setOwner(owner);
+        t.setStatus(WfTask.Status.CREATED);
+        t.setPriority(1);
+        t.setCreateTime(new Date(BASE));
+        t.nextRevision();
+        return t;
+    }
+
     private WfJob newJob(String id, String procId, String execId, String element,
                          long dueOffsetMillis) {
         WfJob job = new WfJob();

@@ -666,4 +666,226 @@ public final class WfViews {
             this.suspended = suspended;
         }
     }
+
+    /**
+     * 历史活动实例（审批轨迹的一行）。
+     *
+     * <p>与 {@code toTrail} 拼的 Map 字段一一对应，只是这里有具名字段与类型，
+     * 给"跨流程聚合"的场景用（要排序/筛选/做导出时，Map 不好用）。
+     */
+    public static class ActivityInstanceView implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private String processInstanceId;
+        private String processDefinitionKey;
+        private String activityId;
+        private String activityName;
+        private String activityType;
+        private String assignee;
+        private String outcome;
+        private String detail;
+        private long startTime;
+        private long endTime;
+        private long durationMillis;
+
+        public String getProcessInstanceId() {
+            return processInstanceId;
+        }
+
+        public void setProcessInstanceId(String processInstanceId) {
+            this.processInstanceId = processInstanceId;
+        }
+
+        public String getProcessDefinitionKey() {
+            return processDefinitionKey;
+        }
+
+        public void setProcessDefinitionKey(String processDefinitionKey) {
+            this.processDefinitionKey = processDefinitionKey;
+        }
+
+        public String getActivityId() {
+            return activityId;
+        }
+
+        public void setActivityId(String activityId) {
+            this.activityId = activityId;
+        }
+
+        public String getActivityName() {
+            return activityName;
+        }
+
+        public void setActivityName(String activityName) {
+            this.activityName = activityName;
+        }
+
+        public String getActivityType() {
+            return activityType;
+        }
+
+        public void setActivityType(String activityType) {
+            this.activityType = activityType;
+        }
+
+        public String getAssignee() {
+            return assignee;
+        }
+
+        public void setAssignee(String assignee) {
+            this.assignee = assignee;
+        }
+
+        public String getOutcome() {
+            return outcome;
+        }
+
+        public void setOutcome(String outcome) {
+            this.outcome = outcome;
+        }
+
+        public String getDetail() {
+            return detail;
+        }
+
+        public void setDetail(String detail) {
+            this.detail = detail;
+        }
+
+        public long getStartTime() {
+            return startTime;
+        }
+
+        public void setStartTime(long startTime) {
+            this.startTime = startTime;
+        }
+
+        public long getEndTime() {
+            return endTime;
+        }
+
+        public void setEndTime(long endTime) {
+            this.endTime = endTime;
+        }
+
+        public long getDurationMillis() {
+            return durationMillis;
+        }
+
+        public void setDurationMillis(long durationMillis) {
+            this.durationMillis = durationMillis;
+        }
+    }
+
+    /**
+     * Job（定时器边界事件等"到点要做的事"）。
+     *
+     * <p>时间字段用 epoch 毫秒的 long，与既有 {@code ExecutionView#enteredTime}
+     * 的约定一致：直接序列化 {@code Date} 会让时区与毫秒格式成为对外契约的一部分。
+     */
+    public static class JobView implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private String jobId;
+        private String processInstanceId;
+        private String executionId;
+        private String elementId;
+        private String attachedToRef;
+        private long duedate;
+        private int retries;
+        private boolean retriesExhausted;
+        private String exceptionMessage;
+        private long createTime;
+        private long lastFailureTime;
+
+        public String getJobId() {
+            return jobId;
+        }
+
+        public void setJobId(String jobId) {
+            this.jobId = jobId;
+        }
+
+        public String getProcessInstanceId() {
+            return processInstanceId;
+        }
+
+        public void setProcessInstanceId(String processInstanceId) {
+            this.processInstanceId = processInstanceId;
+        }
+
+        public String getExecutionId() {
+            return executionId;
+        }
+
+        public void setExecutionId(String executionId) {
+            this.executionId = executionId;
+        }
+
+        public String getElementId() {
+            return elementId;
+        }
+
+        public void setElementId(String elementId) {
+            this.elementId = elementId;
+        }
+
+        public String getAttachedToRef() {
+            return attachedToRef;
+        }
+
+        public void setAttachedToRef(String attachedToRef) {
+            this.attachedToRef = attachedToRef;
+        }
+
+        public long getDuedate() {
+            return duedate;
+        }
+
+        public void setDuedate(long duedate) {
+            this.duedate = duedate;
+        }
+
+        public int getRetries() {
+            return retries;
+        }
+
+        public void setRetries(int retries) {
+            this.retries = retries;
+        }
+
+        public boolean isRetriesExhausted() {
+            return retriesExhausted;
+        }
+
+        public void setRetriesExhausted(boolean retriesExhausted) {
+            this.retriesExhausted = retriesExhausted;
+        }
+
+        public String getExceptionMessage() {
+            return exceptionMessage;
+        }
+
+        public void setExceptionMessage(String exceptionMessage) {
+            this.exceptionMessage = exceptionMessage;
+        }
+
+        public long getCreateTime() {
+            return createTime;
+        }
+
+        public void setCreateTime(long createTime) {
+            this.createTime = createTime;
+        }
+
+        public long getLastFailureTime() {
+            return lastFailureTime;
+        }
+
+        public void setLastFailureTime(long lastFailureTime) {
+            this.lastFailureTime = lastFailureTime;
+        }
+    }
 }

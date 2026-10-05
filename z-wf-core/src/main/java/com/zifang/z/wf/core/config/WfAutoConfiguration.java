@@ -30,6 +30,7 @@ import com.zifang.z.wf.core.persistence.JdbcWorkflowPersistence;
 import com.zifang.z.wf.core.persistence.WfPersistence;
 import com.zifang.z.wf.core.service.WfDelegateRegistry;
 import com.zifang.z.wf.core.service.WfHistoryService;
+import com.zifang.z.wf.core.service.WfJobService;
 import com.zifang.z.wf.core.service.WfRepositoryService;
 import com.zifang.z.wf.core.service.WfRuntimeService;
 import com.zifang.z.wf.core.service.WfTaskService;
@@ -188,6 +189,19 @@ public class WfAutoConfiguration {
     public WfVariableService wfVariableService(WfPersistence persistence,
                                                WfIdGenerator idGenerator) {
         return new WfVariableService(persistence, idGenerator);
+    }
+
+    /**
+     * Job 执行器。
+     *
+     * <p>注册成 bean 但<b>不自带任何定时器</b>：扫多频繁是业务决定的事，
+     * 引擎内嵌调度会让"引依赖就跑起来"成为默认行为。宿主用
+     * {@code @Scheduled}、自己的调度中心，或测试里直接调都行。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WfJobService wfJobService(WfPersistence persistence, WfRuntimeService runtimeService) {
+        return new WfJobService(persistence, runtimeService);
     }
 
     /**

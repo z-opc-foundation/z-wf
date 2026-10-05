@@ -13,8 +13,10 @@ import com.zifang.z.wf.core.model.WfTask;
  *
  * <p>待办查询的语义要在实现里保持一致：
  * <ul>
- *   <li>{@link #assignee} 命中"责任人"；委派态额外用 {@link #owner} 匹配
- *       （否则被委派的人在自己的待办里看不到活 —— 这是委派最常见的实现 bug）</li>
+ *   <li>只给 {@link #assignee} 时匹配"责任人"；<b>同时给 {@link #owner} 时是「或」</b>，
+ *       不是「且」—— 委派态下活记在 owner 身上、被委派的人认领后才记在 assignee 身上。
+ *       按「且」过滤的话，被委派的人在自己的待办里一条都看不到，
+ *       而开发期默认用内存实现，这类偏差会一路活到上线</li>
  *   <li>只看 {@link WfTask#isOpen()} 的任务，{@code completedOnly} 时只看已完成的</li>
  *   <li>可按 {@link #candidateUsers} / {@link #candidateGroups} 查"可认领"的任务</li>
  * </ul>

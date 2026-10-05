@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.zifang.z.wf.core.model.WfActivityInstance;
+import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfTask;
@@ -204,6 +205,69 @@ public class WfViewMapper {
         }
         for (com.zifang.z.wf.core.model.WfExecution execution : executions) {
             result.add(toExecutionView(execution));
+        }
+        return result;
+    }
+
+    /**
+     * 历史活动实例 → view。
+     *
+     * <p>与 {@link #toTrail} 的字段完全一致 —— 两处各写一遍的话，
+     * 前端拼出来的表就会因为少一个字段而对不上。
+     */
+    public WfViews.ActivityInstanceView toActivityView(
+            WfActivityInstance activity) {
+        WfViews.ActivityInstanceView view = new WfViews.ActivityInstanceView();
+        view.setProcessInstanceId(activity.getProcessInstanceId());
+        view.setProcessDefinitionKey(activity.getProcessDefinitionKey());
+        view.setActivityId(activity.getActivityId());
+        view.setActivityName(activity.getActivityName());
+        view.setActivityType(activity.getActivityType());
+        view.setAssignee(activity.getAssignee());
+        view.setOutcome(activity.getOutcome());
+        view.setDetail(activity.getDetail());
+        view.setStartTime(time(activity.getStartTime()));
+        view.setEndTime(time(activity.getEndTime()));
+        view.setDurationMillis(activity.getDurationMillis());
+        return view;
+    }
+
+    public List<WfViews.ActivityInstanceView> toActivityViews(
+            List<WfActivityInstance> activities) {
+        List<WfViews.ActivityInstanceView> result = new ArrayList<>();
+        for (WfActivityInstance activity : activities) {
+            result.add(toActivityView(activity));
+        }
+        return result;
+    }
+
+    /**
+     * job → view。
+     *
+     * <p>带出 {@code retriesExhausted} 而不只给 {@code retries}：
+     * 重试次数归零后引擎会把它钉在 -1，只给数字的话
+     * 排障界面得自己判断"0 是什么、-1 又是什么"。
+     */
+    public WfViews.JobView toJobView(WfJob job) {
+        WfViews.JobView view = new WfViews.JobView();
+        view.setJobId(job.getId());
+        view.setProcessInstanceId(job.getProcessInstanceId());
+        view.setExecutionId(job.getExecutionId());
+        view.setElementId(job.getElementId());
+        view.setAttachedToRef(job.getAttachedToRef());
+        view.setDuedate(time(job.getDuedate()));
+        view.setRetries(job.getRetries());
+        view.setRetriesExhausted(job.isRetriesExhausted());
+        view.setExceptionMessage(job.getExceptionMessage());
+        view.setCreateTime(time(job.getCreateTime()));
+        view.setLastFailureTime(time(job.getLastFailureTime()));
+        return view;
+    }
+
+    public List<WfViews.JobView> toJobViews(List<WfJob> jobs) {
+        List<WfViews.JobView> result = new ArrayList<>();
+        for (WfJob job : jobs) {
+            result.add(toJobView(job));
         }
         return result;
     }

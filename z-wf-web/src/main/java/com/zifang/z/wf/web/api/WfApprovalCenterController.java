@@ -98,8 +98,11 @@ public class WfApprovalCenterController {
             @RequestParam(defaultValue = "20") int pageSize) {
 
         List<String> groupList = splitCsv(groups);
-        List<WfTask> all = taskService.getTodoList(userId, groupList, 1, 10000);
-        return Result.success(page(viewMapper.toSummaries(all), pageNum, pageSize));
+        // 分页下推 + 真实 total。此前是"拉 10000 条再在内存里切"，
+        // 后果是待办超过 1 万条时第 2 页起永远拿不到，而页面上的"共 N 条"就是那个 10000
+        List<WfTask> rows = taskService.getTodoList(userId, groupList, pageNum, pageSize);
+        return Result.success(new PageResult<>(viewMapper.toSummaries(rows),
+                taskService.countTodoList(userId, groupList), pageNum, pageSize));
     }
 
     @GetMapping("/tasks/done")
@@ -109,8 +112,9 @@ public class WfApprovalCenterController {
             @RequestParam(defaultValue = "1") int pageNum,
             @RequestParam(defaultValue = "20") int pageSize) {
 
-        List<WfTask> all = taskService.getDoneList(userId, 1, 10000);
-        return Result.success(page(viewMapper.toSummaries(all), pageNum, pageSize));
+        List<WfTask> rows = taskService.getDoneList(userId, pageNum, pageSize);
+        return Result.success(new PageResult<>(viewMapper.toSummaries(rows),
+                taskService.countDoneList(userId), pageNum, pageSize));
     }
 
     @GetMapping("/tasks/get")
@@ -137,8 +141,10 @@ public class WfApprovalCenterController {
             @RequestParam(defaultValue = "1") int pageNum,
             @RequestParam(defaultValue = "20") int pageSize) {
 
-        List<WfTask> all = taskService.getClaimableList(userId, splitCsv(groups), 1, 10000);
-        return Result.success(page(viewMapper.toSummaries(all), pageNum, pageSize));
+        List<String> groupList = splitCsv(groups);
+        List<WfTask> rows = taskService.getClaimableList(userId, groupList, pageNum, pageSize);
+        return Result.success(new PageResult<>(viewMapper.toSummaries(rows),
+                taskService.countClaimableList(groupList), pageNum, pageSize));
     }
 
     // ==================== 3. 流程实例 ====================
@@ -153,13 +159,14 @@ public class WfApprovalCenterController {
 
         WfProcessInstanceQuery query = new WfProcessInstanceQuery()
                 .setStartUserId(userId)
-                .setPageNum(1).setPageSize(10000);
+                .setPageNum(pageNum).setPageSize(pageSize);
         if (status != null && !status.trim().isEmpty()) {
             query.setStatus(WfProcessStatus.valueOf(status.trim()));
         }
         List<WfViews.ProcessInstanceView> views = viewMapper.toProcessViews(
                 runtimeService.queryProcessInstances(query));
-        return Result.success(pageProcesses(views, pageNum, pageSize));
+        return Result.success(new PageResult<>(views,
+                runtimeService.countProcessInstances(query), pageNum, pageSize));
     }
 
     @GetMapping("/processes/get")

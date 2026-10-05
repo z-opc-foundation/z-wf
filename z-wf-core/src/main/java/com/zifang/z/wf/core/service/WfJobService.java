@@ -124,6 +124,22 @@ public class WfJobService {
     }
 
     /**
+     * 按条件查 job（管理端 / REST 列表页用）。
+     *
+     * <p>暴露原始 {@link WfJobQuery} 而不是再包几个固定方法：排障界面要按的组合
+     * （某实例 + 某节点 + 重试耗尽）无法预先枚举，包一层只会让人为了凑合用
+     * 而放弃筛选条件 —— 那是分页列表最常见的死法。
+     */
+    public List<WfJob> listJobs(WfJobQuery query) {
+        return persistence.queryJobs(query);
+    }
+
+    /** 与 {@link #listJobs} 同条件的条数。 */
+    public long countJobs(WfJobQuery query) {
+        return persistence.countJobs(query);
+    }
+
+    /**
      * 边界事件是否还能按预期触发。
      *
      * <p>job 存在但宿主节点上的边界事件没了（定义被替换）是"永远不响的哑表"，

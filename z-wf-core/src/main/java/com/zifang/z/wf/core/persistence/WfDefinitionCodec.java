@@ -135,6 +135,8 @@ public final class WfDefinitionCodec {
         private String loopAssignees;
         private String errorCode;
         private String attachedToRef;
+        private String timerType;
+        private String timerExpression;
         private String calledElementKey;
         private String resultExpression;
         private Map<String, Object> properties = new HashMap<>();
@@ -312,6 +314,28 @@ public final class WfDefinitionCodec {
             this.attachedToRef = attachedToRef;
         }
 
+        /**
+         * 定时器类型存字符串而不是枚举。
+         *
+         * <p>与 {@link #type} 同样处理：DB 里的定义要跨版本可读，
+         * 枚举改名不该让老数据读不出来。
+         */
+        public String getTimerType() {
+            return timerType;
+        }
+
+        public void setTimerType(String timerType) {
+            this.timerType = timerType;
+        }
+
+        public String getTimerExpression() {
+            return timerExpression;
+        }
+
+        public void setTimerExpression(String timerExpression) {
+            this.timerExpression = timerExpression;
+        }
+
         public void setLoopAssignees(String loopAssignees) {
             this.loopAssignees = loopAssignees;
         }
@@ -464,6 +488,8 @@ public final class WfDefinitionCodec {
             gn.setLoopAssignees(node.getLoopAssignees());
             gn.setErrorCode(node.getErrorCode());
             gn.setAttachedToRef(node.getAttachedToRef());
+            gn.setTimerType(node.getTimerType() == null ? null : node.getTimerType().name());
+            gn.setTimerExpression(node.getTimerExpression());
             gn.setCalledElementKey(node.getCalledElementKey());
             gn.setResultExpression(node.getResultExpression());
             gn.setProperties(new HashMap<>(node.getProperties()));
@@ -546,6 +572,17 @@ public final class WfDefinitionCodec {
             node.setLoopAssignees(gn.getLoopAssignees());
             node.setErrorCode(gn.getErrorCode());
             node.setAttachedToRef(gn.getAttachedToRef());
+            // 枚举名不认识时保持 null（= 非定时器边界）而不抛：
+            // 老库里的定义被新版读、或反之，都不该让引擎整体起不来
+            if (gn.getTimerType() != null && !gn.getTimerType().trim().isEmpty()) {
+                try {
+                    node.setTimerType(com.zifang.z.wf.core.definition.WfTimerType
+                            .valueOf(gn.getTimerType().trim()));
+                } catch (IllegalArgumentException e) {
+                    node.setTimerType(null);
+                }
+            }
+            node.setTimerExpression(gn.getTimerExpression());
             node.setCalledElementKey(gn.getCalledElementKey());
             node.setResultExpression(gn.getResultExpression());
             node.setProperties(new HashMap<>(gn.getProperties()));

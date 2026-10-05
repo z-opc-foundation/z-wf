@@ -66,6 +66,9 @@ class WfWebApiTest {
     @Autowired
     private com.zifang.z.wf.core.service.WfTaskService taskService;
 
+    @Autowired
+    private com.zifang.z.wf.core.service.WfRepositoryService repositoryService;
+
     private final ObjectMapper json = new ObjectMapper();
 
     // ==================== 健康检查 ====================
@@ -644,6 +647,222 @@ class WfWebApiTest {
         ResponseEntity<String> response = exchange(HttpMethod.POST, url, request);
         assertEquals(HttpStatus.OK, response.getStatusCode(), "POST " + url + " 失败: " + response.getBody());
         return json.readValue(response.getBody(), Map.class);
+    }
+
+    // ==================== 历史与 Job 端点 ====================
+
+    @Test
+    @DisplayName("历史活动端点：条件可组合，total 是总条数而非当前页")
+    void historyActivitiesOverHttp() throws Exception {
+        String businessKey = "WEB-HIST-" + System.nanoTime();
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("days", 1);
+        vars.put("leaderId", "hist-leader-" + businessKey);
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "leaveProcess", "businessKey", businessKey,
+                        "userId", "hist-owner-" + businessKey, "variables", vars)).get("data");
+
+        // 按流程实例查：在途流程只有起始那一行 ——
+        // 活动历史是"离开节点时"才写的（一次节点访问一条），
+        // 领导审批还在等，自然还没行。这正是上一轮修掉"每步记三条"后的语义
+        Map<String, Object> page = getOk("/api/wf/history/activities?processInstanceId="
+                + processId + "&pageNum=1&pageSize=100");
+        Map<String, Object> data = asMap(page.get("data"));
+        List<Map<String, Object>> rows = asList(data.get("records"));
+        assertFalse(rows.isEmpty(), "至少应有起始那一行");
+        assertTrue(((Number) data.get("total")).longValue() >= 1,
+                "total 应是总条数。实际 total=" + data.get("total"));
+
+        // 按办理人查历史，只能查到**已办结**的步骤 ——
+        // 领导还没批，那一行此刻还不存在。先批了再查。
+        assertTrue(asList(asMap(getOk("/api/wf/history/activities?processDefinitionKey="
+                + "leaveProcess&assignee=" + vars.get("leaderId")
+                + "&pageNum=1&pageSize=100").get("data")).get("records")).isEmpty(),
+                "领导还没批，历史里不该有他");
+
+        completeOne((String) vars.get("leaderId"));
+
+        // 条件可组合：定义 + 办理人同时生效
+        Map<String, Object> filtered = getOk("/api/wf/history/activities"
+                + "?processDefinitionKey=leaveProcess&assignee=" + vars.get("leaderId")
+                + "&pageNum=1&pageSize=100");
+        List<Map<String, Object>> byLeader = asList(asMap(filtered.get("data")).get("records"));
+        assertFalse(byLeader.isEmpty(), "批完之后应能按办理人查到那一步");
+        for (Map<String, Object> row : byLeader) {
+            assertEquals(vars.get("leaderId"), row.get("assignee"),
+                    "AND 语义：两个条件都要成立");
+        }
+
+        // 按活动类型收窄
+        Map<String, Object> byType = getOk("/api/wf/history/activities"
+                + "?processInstanceId=" + processId + "&activityType=userTask&pageSize=100");
+        List<Map<String, Object>> userTasks = asList(asMap(byType.get("data")).get("records"));
+        for (Map<String, Object> row : userTasks) {
+            assertEquals("userTask", row.get("activityType"));
+        }
+    }
+
+    @Test
+    @DisplayName("历史实例端点：已办结的单据查得到，total 是总条数")
+    void historyProcessesOverHttp() throws Exception {
+        String owner = "hist-proc-owner-" + System.nanoTime();
+        String businessKey = "WEB-HP-" + System.nanoTime();
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("days", 1);
+        vars.put("leaderId", "hp-leader-" + businessKey);
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "leaveProcess", "businessKey", businessKey,
+                        "userId", owner, "variables", vars)).get("data");
+
+        // 查已结束：还没办结时应当查不到
+        Map<String, Object> before = getOk("/api/wf/history/processes?businessKey=" + businessKey);
+        assertTrue(asList(asMap(before.get("data")).get("records")).isEmpty(),
+                "在途流程不属于历史");
+
+        // leaveProcess 是多级审批（直属领导 → 天数分支 → HR/CEO），
+        // 只办结一级流程还没结束，所以这里必须**一路办到底**才查得到历史
+        String leaderId = (String) vars.get("leaderId");
+        completeOne(leaderId);
+        Map<String, Object> mid = getOk("/api/wf/history/processes?businessKey=" + businessKey);
+        assertTrue(asList(asMap(mid.get("data")).get("records")).isEmpty(),
+                "只办结一级时流程仍在途，不该出现在历史里");
+
+        completeOne("hr");
+        Map<String, Object> after = getOk("/api/wf/history/processes?businessKey=" + businessKey);
+        Map<String, Object> data = asMap(after.get("data"));
+        assertEquals(1, asList(data.get("records")).size(), "办结后应出现在历史里");
+        assertEquals(1L, ((Number) data.get("total")).longValue());
+        assertEquals(processId, asList(data.get("records")).get(0).get("processInstanceId"));
+    }
+
+    @Test
+    @DisplayName("job 端点：带定时器边界的流程会起表，执行端点能把到点的表消费掉")
+    void jobsOverHttp() throws Exception {
+        deployTimerProcess();
+
+        String businessKey = "WEB-JOB-" + System.nanoTime();
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("sla", "PT30M");
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webTimerProcess", "businessKey", businessKey,
+                        "userId", "job-owner-" + businessKey, "variables", vars)).get("data");
+
+        Map<String, Object> listed = getOk("/api/wf/history/jobs?processInstanceId=" + processId);
+        List<Map<String, Object>> jobs = asList(asMap(listed.get("data")).get("records"));
+        assertEquals(1, jobs.size(), "token 停在审批节点上，应当恰好一只表。实际 " + jobs);
+        Map<String, Object> job = jobs.get(0);
+        assertEquals("webTimeout", job.get("elementId"));
+        assertEquals("webApprove", job.get("attachedToRef"));
+        assertTrue(((Number) job.get("duedate")).longValue() > System.currentTimeMillis(),
+                "还没到点");
+
+        // 未到期不该被消费
+        Map<String, Object> notYet = postOk("/api/wf/history/jobs/execute", null);
+        assertEquals(0, ((Number) notYet.get("data")).intValue(),
+                "没到点时不该触发任何边界事件");
+
+        // 把时钟拨到 1 小时后
+        Map<String, Object> fired = postOk("/api/wf/history/jobs/execute?now="
+                + (System.currentTimeMillis() + 3600_000L), null);
+        assertEquals(1, ((Number) fired.get("data")).intValue(), "到点后应触发一次");
+
+        Map<String, Object> after = getOk("/api/wf/history/jobs?processInstanceId=" + processId);
+        assertTrue(asList(asMap(after.get("data")).get("records")).isEmpty(),
+                "已触发的 job 应当被消费掉");
+    }
+
+    @Test
+    @DisplayName("清理端点：只删已结束流程，在途流程的历史留着")
+    void historyCleanupOverHttp() throws Exception {
+        // 造一条已结束、一条在途
+        String doneKey = "WEB-CLEAN-DONE-" + System.nanoTime();
+        String doneId = startAndComplete("WEB-CLEAN-DONE", doneKey, "clean-done-leader");
+
+        String openKey = "WEB-CLEAN-OPEN-" + System.nanoTime();
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("days", 1);
+        vars.put("leaderId", "clean-open-leader-" + System.nanoTime());
+        String openId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "leaveProcess", "businessKey", openKey,
+                        "userId", "clean-open-owner", "variables", vars)).get("data");
+
+        ResponseEntity<String> removed = exchange(HttpMethod.DELETE,
+                "/api/wf/history/cleanup?before=" + (System.currentTimeMillis() + 60_000L), null);
+        assertEquals(HttpStatus.OK, removed.getStatusCode());
+        // 不断言"删了恰好 1 条"：清理的语义是"删掉所有 endTime 早于该时刻的已结束流程"，
+        // 同一个库里还躺着别的用例留下的已结束流程，数量本就与本用例无关。
+        // 真正该断言的是"我造的两条，一条删掉一条留下"。
+        assertTrue(((Number) json.readValue(removed.getBody(), Map.class)
+                .get("data")).intValue() >= 1,
+                "本用例造的那条已结束流程应当被清掉");
+
+        assertTrue(asList(asMap(getOk("/api/wf/history/activities?processInstanceId="
+                + doneId).get("data")).get("records")).isEmpty(),
+                "已结束流程的历史应被清掉");
+        assertFalse(asList(asMap(getOk("/api/wf/history/activities?processInstanceId="
+                + openId).get("data")).get("records")).isEmpty(),
+                "在途流程的历史删掉之后轨迹会出洞，而单据还在被人办");
+    }
+
+    private String startAndComplete(String tag, String businessKey, String leaderId)
+            throws Exception {
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("days", 1);
+        vars.put("leaderId", leaderId);
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "leaveProcess", "businessKey", businessKey,
+                        "userId", tag + "-owner-" + System.nanoTime(), "variables", vars))
+                .get("data");
+        // 多级审批：一路办到底，否则流程没结束、算"在途"
+        completeOne(leaderId);
+        completeOne("hr");
+        return processId;
+    }
+
+    /** 办掉某人当前的第一条待办。 */
+    private void completeOne(String userId) throws Exception {
+        Map<String, Object> todo = getOk("/api/approval-center/tasks/todo?userId=" + userId);
+        List<Map<String, Object>> records = asList(asMap(todo.get("data")).get("records"));
+        if (records.isEmpty()) {
+            throw new AssertionError(userId + " 名下没有待办可办");
+        }
+        postOk("/api/approval-center/tasks/complete",
+                body("taskId", records.get(0).get("taskId"), "userId", userId,
+                        "comment", "同意"));
+    }
+
+    /**
+     * 部署一个带定时器边界的测试定义。
+     *
+     * <p>不能靠示例流程：starter 里那两个示例都没有 boundaryEvent，
+     * 而 job 端点要有 job 可查，就得有东西能起出 job 来。
+     * 测试自己部署自己的前置条件，比改动示例流程更局部。
+     */
+    private void deployTimerProcess() {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"webTimerProcess\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"ws\"/>\n"
+                + "    <userTask id=\"webApprove\" name=\"超时测试审批\""
+                + " zifang:assignee=\"web-timer-leader\"/>\n"
+                + "    <boundaryEvent id=\"webTimeout\" name=\"超时\""
+                + " attachedToRef=\"webApprove\">\n"
+                + "      <timerEventDefinition>\n"
+                + "        <timeDuration>${sla}</timeDuration>\n"
+                + "      </timerEventDefinition>\n"
+                + "    </boundaryEvent>\n"
+                + "    <userTask id=\"webRemind\" name=\"催办\""
+                + " zifang:assignee=\"web-timer-ceo\"/>\n"
+                + "    <endEvent id=\"we1\"/>\n"
+                + "    <endEvent id=\"we2\"/>\n"
+                + "    <sequenceFlow id=\"wf1\" sourceRef=\"ws\" targetRef=\"webApprove\"/>\n"
+                + "    <sequenceFlow id=\"wf2\" sourceRef=\"webApprove\" targetRef=\"we1\"/>\n"
+                + "    <sequenceFlow id=\"wf3\" sourceRef=\"webTimeout\" targetRef=\"webRemind\"/>\n"
+                + "    <sequenceFlow id=\"wf4\" sourceRef=\"webRemind\" targetRef=\"we2\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        repositoryService.deploy(new com.zifang.z.wf.core.definition.WfXmlParser().parse(xml));
     }
 
     private ResponseEntity<String> exchange(HttpMethod method, String url, Object request) {

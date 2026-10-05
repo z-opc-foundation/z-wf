@@ -353,36 +353,39 @@ public class WfTaskService {
 
     /**
      * 我的待办。
+     *
+     * <p>一次查询就够：{@link WfTaskQuery} 的 assignee + owner 是「或」语义
+     * （委派态下活记在 owner 身上，被委派的人认领后才记在 assignee 身上）。
+     *
+     * <p>此前这里是"查两次 assignee、查两次 owner、内存去重、内存分页"，
+     * 每次各限 1000 条。代价有三个，且都只有跑久了才暴露：
+     * 超过 2000 条的待办被静默截断（分页根本翻不到后面）、
+     * 页面上的"共 N 条"是去重后的条数而非真实总数、
+     * 每翻一页都付两次全量拉取。
+     * 绕路的根因是内存实现把 assignee/owner 当成「且」，
+     * 表达不出「或」—— 那个不一致已修，现在不需要绕了。
      */
     public List<WfTask> getTodoList(String userId, List<String> groups, int pageNum, int pageSize) {
-        List<WfTask> result = new java.util.ArrayList<>();
-        // 待办 = 指派给我的 + 委派给我的
-        result.addAll(persistence.queryTasks(new WfTaskQuery()
-                .setAssignee(userId).setOpenOnly(true)
-                .setPageNum(1).setPageSize(1000)));
-        result.addAll(persistence.queryTasks(new WfTaskQuery()
-                .setOwner(userId).setOpenOnly(true)
-                .setPageNum(1).setPageSize(1000)));
-        // 去重（既是 assignee 又是 owner 的会重复）
-        Map<String, WfTask> dedup = new HashMap<>();
-        for (WfTask task : result) {
-            dedup.put(task.getId(), task);
-        }
-        List<WfTask> all = new java.util.ArrayList<>(dedup.values());
-        all.sort((a, b) -> {
-            if (a.getPriority() != b.getPriority()) {
-                return b.getPriority() - a.getPriority();
-            }
-            Date ca = a.getCreateTime();
-            Date cb = b.getCreateTime();
-            if (ca == null || cb == null) {
-                return 0;
-            }
-            return cb.compareTo(ca);
-        });
-        int from = Math.max(0, (pageNum - 1) * pageSize);
-        int to = Math.min(all.size(), from + pageSize);
-        return from >= all.size() ? new java.util.ArrayList<WfTask>() : all.subList(from, to);
+        return persistence.queryTasks(todoQuery(userId, groups)
+                .setPageNum(pageNum).setPageSize(pageSize));
+    }
+
+    /**
+     * 我的待办条数，与 {@link #getTodoList} 同条件。
+     *
+     * <p>单独给一个 count：端点要拿真实 total，不能靠"拉全量数长度"——
+     * 那既是全表扫描，条数还会因为各处硬编码的上限而失真。
+     */
+    public long countTodoList(String userId, List<String> groups) {
+        return persistence.countTasks(todoQuery(userId, groups));
+    }
+
+    /** 待办条件本身。抽出来是因为列表与计数必须同源，分开写迟早只改一处。 */
+    private WfTaskQuery todoQuery(String userId, List<String> groups) {
+        return new WfTaskQuery()
+                .setAssignee(userId)
+                .setOwner(userId)
+                .setOpenOnly(true);
     }
 
     /**
@@ -394,6 +397,12 @@ public class WfTaskService {
                 .setPageNum(pageNum).setPageSize(pageSize));
     }
 
+    /** 我的已办条数，与 {@link #getDoneList} 同条件。 */
+    public long countDoneList(String userId) {
+        return persistence.countTasks(new WfTaskQuery()
+                .setCompleterId(userId).setCompletedOnly(true));
+    }
+
     /**
      * 可认领任务。
      */
@@ -402,6 +411,13 @@ public class WfTaskService {
                 .setUnassignedOnly(true).setOpenOnly(true)
                 .setCandidateGroups(groups)
                 .setPageNum(pageNum).setPageSize(pageSize));
+    }
+
+    /** 可认领任务条数，与 {@link #getClaimableList} 同条件。 */
+    public long countClaimableList(List<String> groups) {
+        return persistence.countTasks(new WfTaskQuery()
+                .setUnassignedOnly(true).setOpenOnly(true)
+                .setCandidateGroups(groups));
     }
 
     public WfTask getTask(String taskId) {

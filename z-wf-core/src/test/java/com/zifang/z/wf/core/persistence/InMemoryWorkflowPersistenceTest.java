@@ -333,6 +333,43 @@ class InMemoryWorkflowPersistenceTest {
                 .setOpenOnly(true).setPageNum(1).setPageSize(50)).size());
     }
 
+    // ==================== assignee/owner 的「或」语义 ====================
+
+    @Test
+    @DisplayName("待办查询里 assignee 与 owner 是「或」：委派态的活要能被看到")
+    void assigneeAndOwnerAreOrNotAnd() {
+        // 刻意铺四类数据：只有「或」才能全部命中，按「且」只会剩 t1
+        persistence.saveTask(taskWithOwnership("t1", "me", null));
+        persistence.saveTask(taskWithOwnership("t2", null, "me"));
+        persistence.saveTask(taskWithOwnership("t3", "other", "me"));
+        persistence.saveTask(taskWithOwnership("t4", "me", "other"));
+
+        WfTaskQuery query = new WfTaskQuery().setAssignee("me").setOwner("me");
+        assertEquals(4, persistence.queryTasks(query.setPageNum(1).setPageSize(50)).size(),
+                "assignee 是我 或 owner 是我，四条都该命中。"
+                        + "按「且」过滤的话，被委派的人在自己的待办里一条都看不到");
+        assertEquals(4, persistence.countTasks(query));
+
+        // 只给 assignee 时不做 owner 兜底
+        assertEquals(2, persistence.countTasks(new WfTaskQuery().setAssignee("me")));
+        assertEquals(2, persistence.countTasks(new WfTaskQuery().setOwner("me")));
+
+        // 与开放状态叠加：四条全是 CREATED，命中数不变
+        assertEquals(4, persistence.countTasks(new WfTaskQuery()
+                .setAssignee("me").setOwner("me").setOpenOnly(true)));
+    }
+
+    private WfTask taskWithOwnership(String id, String assignee, String owner) {
+        WfTask task = new WfTask();
+        task.setId(id);
+        task.setAssignee(assignee);
+        task.setOwner(owner);
+        task.setStatus(WfTask.Status.CREATED);
+        task.setPriority(1);
+        task.setCreateTime(new Date());
+        return task;
+    }
+
     private WfTask task(String id, String assignee, WfTask.Status status, int priority) {
         WfTask task = new WfTask();
         task.setId(id);

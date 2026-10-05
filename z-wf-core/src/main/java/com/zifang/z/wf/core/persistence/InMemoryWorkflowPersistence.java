@@ -370,11 +370,19 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         if (isNotBlank(query.getDefinitionId()) && !query.getDefinitionId().equals(task.getDefinitionId())) {
             return false;
         }
-        if (isNotBlank(query.getAssignee()) && !query.getAssignee().equals(task.getAssignee())) {
-            return false;
-        }
-        if (isNotBlank(query.getOwner()) && !query.getOwner().equals(task.getOwner())) {
-            return false;
+        // assignee 与 owner 是**或**的关系，不是且：
+        // 委派态下活同时记在 owner（责任人）身上，owner 认领后 assignee 才变成他。
+        // 若按"且"过滤，被委派的人在自己的待办里一条都看不到 ——
+        // 而开发期默认用内存实现，这个 bug 会一路活到上线。
+        // JDBC 侧拼的是 (ASSIGNEE=? OR OWNER=?)，两边必须一致。
+        if (isNotBlank(query.getAssignee()) || isNotBlank(query.getOwner())) {
+            boolean hitAssignee = isNotBlank(query.getAssignee())
+                    && query.getAssignee().equals(task.getAssignee());
+            boolean hitOwner = isNotBlank(query.getOwner())
+                    && query.getOwner().equals(task.getOwner());
+            if (!hitAssignee && !hitOwner) {
+                return false;
+            }
         }
         if (isNotBlank(query.getCompleterId()) && !query.getCompleterId().equals(task.getCompleterId())) {
             return false;

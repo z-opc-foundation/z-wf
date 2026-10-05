@@ -248,8 +248,15 @@ public class WfXmlParser {
         node.setDelegateClass(extension(element, "delegateClass"));
         node.setDelegateExpression(extension(element, "delegateExpression"));
         node.setScript(extension(element, "script"));
+        // 被调流程：标准 BPMN 用**子元素** <calledElement>text</calledElement>，
+        // z-wf 额外认 zifang:calledElementKey 属性。三者都读，扩展属性优先。
+        //
+        // 只读扩展属性的后果不是"少个功能"：任何用 Camunda Modeler / Flowable 导出的
+        // 流程里 calledElement 都是子元素，导入本引擎后 calledElementKey 为 null，
+        // 启动时抛"被调流程不存在" —— 而真正的原因是这一行解析器没读子元素。
         node.setCalledElementKey(firstNonBlank(extension(element, "calledElementKey"),
-                firstNonBlank(extension(element, "calledElement"), null)));
+                firstNonBlank(extension(element, "calledElement"),
+                        childText(element, "calledElement"))));
         node.setResultExpression(extension(element, "resultExpression"));
         node.setResultVariable(extension(element, "resultVariable"));
 
