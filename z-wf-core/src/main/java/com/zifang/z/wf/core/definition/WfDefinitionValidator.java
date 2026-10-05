@@ -320,8 +320,36 @@ public class WfDefinitionValidator {
                     "timerEventDefinition 里同时出现了多个子元素: " + conflict
                             + "。一个边界事件只能挂一种触发条件");
         }
+        Object eventConflict = node.getProperties() == null
+                ? null : node.getProperties().get(WfXmlParser.PROPERTY_EVENT_CONFLICT);
+        if (eventConflict != null) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "边界事件上: " + eventConflict + "。一个边界事件只能挂一种触发条件");
+        }
+        // 非中断型：部署期挡住而不是运行时当成中断型执行。
+        // 静默降级的后果是"任务被打断走了"，而作者写的是"任务照常办、分支并行跑"——
+        // 流程行为与设计永久不一致，且没有任何报错。
+        Object nonInterrupting = node.getProperties() == null
+                ? null : node.getProperties().get(WfXmlParser.PROPERTY_NON_INTERRUPTING);
+        if (nonInterrupting != null) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "非中断型边界事件（cancelActivity=\"false\"）本实现不支持。"
+                            + "非中断要求宿主任务照常办理、补偿分支并行推进，"
+                            + "而 token 离开宿主节点时会把该节点的订阅与待办一起撤掉，"
+                            + "需要另一套状态来保持订阅存活。请改用中断型（默认）");
+        }
+        Object missingRef = node.getProperties() == null
+                ? null : node.getProperties().get(WfXmlParser.PROPERTY_EVENT_MISSING_REF);
+        if (missingRef != null) {
+            String kind = String.valueOf(missingRef);
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    kind + " 缺少 " + (kind.startsWith("message") ? "messageRef" : "signalRef")
+                            + "，这条边界永远不会触发");
+        }
         if (node.isTimerBoundary()) {
             validateTimerBoundary(node);
+        } else if (node.isMessageBoundary() || node.isSignalBoundary()) {
+            // 消息/信号边界本身合法（缺名字的情况上面已单独报过）
         } else if (isBlank(node.getErrorCode())) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
                     "boundaryEvent 既没有 errorCode（errorEventDefinition/@errorRef）"

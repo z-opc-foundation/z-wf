@@ -72,6 +72,14 @@ public class WfNode implements Serializable {
     /** receiveTask：关联的消息名（外部 trigger 时按此匹配）。 */
     private String messageName;
 
+    /**
+     * 信号名。信号边界事件（{@code signalEventDefinition}）专用。
+     *
+     * <p>与 {@link #messageName} 分开而不是共用一个字段：消息是"发给某个实例"的，
+     * 信号是"广播给所有订阅者"的，两者匹配规则不同，共用一个字段迟早写混。
+     */
+    private String signalName;
+
     /** callActivity / subProcess：被引用的流程定义 key。 */
     private String calledElementKey;
 
@@ -150,6 +158,25 @@ public class WfNode implements Serializable {
     /** 这个边界事件是否由定时器触发。 */
     public boolean isTimerBoundary() {
         return timerType != null;
+    }
+
+    /** 消息边界（{@code messageEventDefinition}）。 */
+    public boolean isMessageBoundary() {
+        return signalName == null && !isBlank(messageName);
+    }
+
+    /** 信号边界（{@code signalEventDefinition}）。 */
+    public boolean isSignalBoundary() {
+        return !isBlank(signalName);
+    }
+
+    /** 三种边界里任意一种（都是"宿主停着时可能被外部打断"）。 */
+    public boolean isEventBoundary() {
+        return isTimerBoundary() || isMessageBoundary() || isSignalBoundary();
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.trim().isEmpty();
     }
 
     public String getErrorCode() {
@@ -441,6 +468,14 @@ public class WfNode implements Serializable {
 
     public void setMessageName(String messageName) {
         this.messageName = messageName;
+    }
+
+    public String getSignalName() {
+        return signalName;
+    }
+
+    public void setSignalName(String signalName) {
+        this.signalName = signalName;
     }
 
     public String getCalledElementKey() {

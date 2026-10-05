@@ -109,6 +109,19 @@ public class WfContext {
             job.setAttachedToRef(boundary.getAttachedToRef());
             job.setCreateTime(new Date());
             job.setRetries(WfJob.DEFAULT_RETRIES);
+            if (boundary.isMessageBoundary() || boundary.isSignalBoundary()) {
+                // 订阅型：没有触发时刻，duedate 留空。名字记在 job 的 exceptionMessage 里 ——
+                // 复用一列而不是加新列，是因为"哪条订阅在等什么"只在触发那一刻才需要看，
+                // 而触发时 job 已经被删了，日志与调试输出里能对上名字就够了。
+                job.setType(boundary.isSignalBoundary()
+                        ? com.zifang.z.wf.core.model.WfJobType.SIGNAL
+                        : com.zifang.z.wf.core.model.WfJobType.MESSAGE);
+                job.setDuedate(null);
+                job.setExceptionMessage(boundary.isSignalBoundary()
+                        ? boundary.getSignalName() : boundary.getMessageName());
+                createdJobs.add(job);
+                continue;
+            }
             // 定时器算不出触发时刻就直接抛：建一个永远不响的哑定时器，
             // 比启动失败危险得多 —— 它表现为"超时提醒一直没来"，没人查得到根因。
             // 底层抛 IllegalArgumentException（它是入参问题），这里转成引擎的

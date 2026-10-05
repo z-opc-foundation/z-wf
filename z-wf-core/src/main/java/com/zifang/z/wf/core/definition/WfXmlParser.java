@@ -55,6 +55,15 @@ public class WfXmlParser {
      */
     public static final String PROPERTY_TIMER_CONFLICT = "zifang:timerConflict";
 
+    /** messageEventDefinition 与 signalEventDefinition 同时出现。 */
+    public static final String PROPERTY_EVENT_CONFLICT = "zifang:eventConflict";
+
+    /** cancelActivity="false"（非中断型边界），本实现不支持。 */
+    public static final String PROPERTY_NON_INTERRUPTING = "zifang:nonInterrupting";
+
+    /** 写了 messageEventDefinition / signalEventDefinition 却没给 name/ref。 */
+    public static final String PROPERTY_EVENT_MISSING_REF = "zifang:eventMissingRef";
+
     /** BPMN 2.0 模型命名空间。 */
     private static final String BPMN_NS = "http://www.omg.org/spec/BPMN/20100524/MODEL";
 
@@ -283,6 +292,7 @@ public class WfXmlParser {
             node.setErrorCode(errorDef.getAttribute("errorRef"));
         }
         parseTimerDefinition(element, node);
+        parseEventDefinition(element, node);
 
         node.setDueDateDuration(extension(element, "dueDate"));
 
@@ -300,6 +310,47 @@ public class WfXmlParser {
         node.setRequiredVariables(splitList(extension(element, "requiredVariables")));
 
         return node;
+    }
+
+    /**
+     * 解析 {@code messageEventDefinition} / {@code signalEventDefinition}。
+     *
+     * <p>两者互斥，同时出现时按 properties 记下来交校验器报错 —— 静默挑一个
+     * 会让作者以为自己写的那条生效了。
+     *
+     * <p>{@code cancelActivity="false"}（非中断）本实现不支持：非中断边界要求
+     * "任务照常办、边界分支并行跑起来"，而 token 在离开宿主节点时会把该节点的
+     * 订阅与待办一起撤掉，语义上要另开一套状态。这里在解析层留痕、校验层报错，
+     * 部署期挡住，而不是部署成功却在运行时当成中断型执行。
+     */
+    private void parseEventDefinition(Element element, WfNode node) {
+        Element messageDef = childElement(element, "messageEventDefinition");
+        Element signalDef = childElement(element, "signalEventDefinition");
+        if (messageDef != null) {
+            node.setMessageName(messageDef.getAttribute("messageRef"));
+            if (node.getMessageName() == null || node.getMessageName().trim().isEmpty()) {
+                // 留痕而不是留空：校验期好报"缺 messageRef"。
+                // 只留空值的话节点会被当成"没有触发条件"，报出来的错指向不了
+                // 他真正写错的那一处（author 以为自己写了消息边界）
+                node.getProperties().put(PROPERTY_EVENT_MISSING_REF,
+                        "messageEventDefinition");
+            }
+        }
+        if (signalDef != null) {
+            node.setSignalName(signalDef.getAttribute("signalRef"));
+            if (node.getSignalName() == null || node.getSignalName().trim().isEmpty()) {
+                node.getProperties().put(PROPERTY_EVENT_MISSING_REF,
+                        "signalEventDefinition");
+            }
+        }
+        if (messageDef != null && signalDef != null) {
+            node.getProperties().put(PROPERTY_EVENT_CONFLICT,
+                    "messageEventDefinition 与 signalEventDefinition 同时出现");
+        }
+        String cancelActivity = element.getAttribute("cancelActivity");
+        if (cancelActivity != null && "false".equals(cancelActivity.trim())) {
+            node.getProperties().put(PROPERTY_NON_INTERRUPTING, cancelActivity.trim());
+        }
     }
 
     /**

@@ -35,7 +35,17 @@ public class WfJob implements Serializable {
     /** 宿主节点 id —— 边界事件挂在谁身上。超时是从进入宿主那一刻起算的。 */
     private String attachedToRef;
 
-    /** 到期时刻。扫描器只取 {@code duedate <= now} 的 job。 */
+    /**
+     * job 种类。默认 {@link WfJobType#TIMER} —— 存量数据与既有调用方都按定时器对待。
+     */
+    private WfJobType type = WfJobType.TIMER;
+
+    /**
+     * 到期时刻。扫描器只取 {@code duedate <= now} 的 job。
+     *
+     * <p>消息 / 信号订阅的 duedate 为 {@code null}：它们不由时间触发。
+     * 扫描器还要额外按 {@link #type} 过滤，不能只靠 duedate 为空来区分。
+     */
     private Date duedate;
 
     /**
@@ -132,6 +142,14 @@ public class WfJob implements Serializable {
 
     public void setAttachedToRef(String attachedToRef) {
         this.attachedToRef = attachedToRef;
+    }
+
+    public WfJobType getType() {
+        return type;
+    }
+
+    public void setType(WfJobType type) {
+        this.type = type == null ? WfJobType.TIMER : type;
     }
 
     public Date getDuedate() {

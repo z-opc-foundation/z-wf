@@ -27,6 +27,7 @@ import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfJob;
+import com.zifang.z.wf.core.model.WfJobType;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfProcessStatus;
 import com.zifang.z.wf.core.model.WfTask;
@@ -191,6 +192,10 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 + "EXEC_ID VARCHAR(128),"
                 + "ELEMENT_ID VARCHAR(128),"
                 + "ATTACHED_TO VARCHAR(128),"
+                // 显式记种类。靠 duedate 为空来区分消息/信号订阅是个隐式约定，
+                // 任何人写 saveJob 都可能漏 —— 漏了的消息订阅会被扫描器当成到期 job
+                // 消费掉，表现为"还没发消息流程自己往前走了"
+                + "JOB_TYPE VARCHAR(16) NOT NULL DEFAULT 'TIMER',"
                 + "DUEDATE TIMESTAMP,"
                 + "RETRIES INT,"
                 + "EXCEPTION_MSG VARCHAR(2048),"
@@ -229,6 +234,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             log.info("JDBC 持久化初始化完成（{} 张表）", ddl.size() - 5);
             addDelegateChainColumnIfMissing(connection);
             addTaskSuspendedColumnIfMissing(connection);
+            addJobTypeColumnIfMissing(connection);
             addSuspendedColumnIfMissing(connection);
         } catch (SQLException e) {
             throw new WfPersistenceException("建表失败", e);
@@ -269,6 +275,29 @@ public class JdbcWorkflowPersistence implements WfPersistence {
      * <p>存量行默认 0 = 未挂起，即升级前后行为完全一致 —— 挂起是新增能力，
      * 不该让任何存量待办在升级后突然不能办。
      */
+    private void addJobTypeColumnIfMissing(Connection connection) {
+        Statement statement = null;
+        try {
+            statement = connection.createStatement();
+            statement.execute("ALTER TABLE ZWF_JOB ADD COLUMN JOB_TYPE VARCHAR(16) DEFAULT 'TIMER'");
+            log.info("已为既有 ZWF_JOB 补建 JOB_TYPE 列");
+        } catch (SQLException e) {
+            log.debug("JOB_TYPE 列已存在或无需补建: {}", e.getMessage());
+        } finally {
+            closeQuietly(statement);
+        }
+    }
+
+    /** 库里出现未知类型时退回 TIMER 并留下痕迹，不让一条脏数据让整个 job 扫描炸掉。 */
+    private WfJobType parseJobType(String raw) {
+        try {
+            return WfJobType.valueOf(raw);
+        } catch (RuntimeException e) {
+            log.warn("未知的 job 类型 [{}]，按定时器处理", raw);
+            return WfJobType.TIMER;
+        }
+    }
+
     private void addTaskSuspendedColumnIfMissing(Connection connection) {
         Statement statement = null;
         try {
@@ -1511,9 +1540,13 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         boolean exists = exists("SELECT 1 FROM ZWF_JOB WHERE JOB_ID=?", job.getId());
         if (exists) {
             int affected = update("UPDATE ZWF_JOB SET RETRIES=?, EXCEPTION_MSG=?, LAST_FAIL_TIME=?, "
-                            + "DUEDATE=?, REV=? WHERE JOB_ID=? AND REV=?",
+                            + "DUEDATE=?, JOB_TYPE=?, REV=? WHERE JOB_ID=? AND REV=?",
                     job.getRetries(), job.getExceptionMessage(),
                     timestamp(job.getLastFailureTime()), timestamp(job.getDuedate()),
+                    // 类型必须跟着 UPDATE 走。只写 INSERT 的话，任何对已有 job 的
+                    // 类型调整存回去都会被抹回 TIMER —— 而 job 的类型决定扫描器
+                    // 捞不捞它，抹错的直接后果是"消息订阅被当成到期 job 执行"
+                    job.getType() == null ? "TIMER" : job.getType().name(),
                     job.getRevision(), job.getId(), job.getRevision() - 1);
             if (affected == 0) {
                 throw new WfOptimisticLockException("job", job.getId(), job.getRevision() - 1);
@@ -1525,8 +1558,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             connection = dataSource.getConnection();
             PreparedStatement ps = connection.prepareStatement(
                     "INSERT INTO ZWF_JOB (JOB_ID, PROC_ID, EXEC_ID, ELEMENT_ID, ATTACHED_TO, "
-                            + "DUEDATE, RETRIES, EXCEPTION_MSG, CREATE_TIME, LAST_FAIL_TIME, REV) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+                            + "JOB_TYPE, DUEDATE, RETRIES, EXCEPTION_MSG, CREATE_TIME, LAST_FAIL_TIME, REV) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
             try {
                 int i = 1;
                 ps.setString(i++, job.getId());
@@ -1534,6 +1567,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 ps.setString(i++, job.getExecutionId());
                 ps.setString(i++, job.getElementId());
                 ps.setString(i++, job.getAttachedToRef());
+                ps.setString(i++, job.getType() == null ? "TIMER" : job.getType().name());
                 ps.setTimestamp(i++, timestamp(job.getDuedate()));
                 ps.setInt(i++, job.getRetries());
                 ps.setString(i++, job.getExceptionMessage());
@@ -1615,6 +1649,13 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             parts.add("DUEDATE < ?");
             args.add(timestamp(query.getDueBefore()));
         }
+        if (query.getType() != null) {
+            // 扫描器只捞定时器。消息 / 信号订阅的 duedate 是 null，
+            // SQL 里 NULL 比较恒不成立，本来就捞不到 —— 但显式按类型过滤是第二道保险：
+            // 哪天谁给订阅填了个 duedate，"还没发消息流程自己往前走了"就是这么来的
+            parts.add("JOB_TYPE=?");
+            args.add(query.getType().name());
+        }
         if (query.getRetriesExhausted() != null) {
             if (query.getRetriesExhausted()) {
                 parts.add("RETRIES <= 0");
@@ -1636,6 +1677,11 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             job.setExecutionId(rs.getString("EXEC_ID"));
             job.setElementId(rs.getString("ELEMENT_ID"));
             job.setAttachedToRef(rs.getString("ATTACHED_TO"));
+            String jobType = rs.getString("JOB_TYPE");
+            // 读不到就当定时器：存量行的语义不会变，而误判成订阅会让
+            // 到期定时器永远不被扫描器捞到
+            job.setType(WfJobType.TIMER.name().equals(jobType)
+                    ? WfJobType.TIMER : parseJobType(jobType));
             job.setDuedate(date(rs.getTimestamp("DUEDATE")));
             job.setRetries(rs.getInt("RETRIES"));
             job.setExceptionMessage(rs.getString("EXCEPTION_MSG"));

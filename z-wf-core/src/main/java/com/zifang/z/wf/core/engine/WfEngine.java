@@ -212,7 +212,7 @@ public class WfEngine {
         // 必须在"停留"类节点之前：定时器测的就是这一步停多久。
         // 结束事件不会挂定时器边界（挂上去也没有"停留"可言），
         // 但放在一起读起来更顺 —— 起表与节点是否真的停下无关，交给 job 自己去判断。
-        context.startTimerJobs(definition.timerBoundariesOf(node.getId()));
+        context.startTimerJobs(definition.eventBoundariesOf(node.getId()));
 
         // ---- 结束事件 ----
         if (node.getType() == WfNodeType.END_EVENT) {

@@ -52,7 +52,12 @@ public class WfJobService {
             throw new WfEngineException("执行时刻不能为空：没有时间点就没有到点这个概念，"
                     + "传 null 会在下游变成扫描全部 job");
         }
-        WfJobQuery query = new WfJobQuery().setDueBefore(now).setRetriesExhausted(Boolean.FALSE);
+        // 显式限定 TIMER：消息 / 信号订阅不由时间触发。
+        // 只靠"duedate 为 null 所以 DUEDATE<? 捞不到"是不够的 —— 哪天谁给订阅填了
+        // duedate，"还没发消息流程自己往前走了"就是这么来的
+        WfJobQuery query = new WfJobQuery().setDueBefore(now)
+                .setType(com.zifang.z.wf.core.model.WfJobType.TIMER)
+                .setRetriesExhausted(Boolean.FALSE);
         int executed = 0;
         // 分批取而不是一次全取：job 表在跑了一年的系统里可能堆着几十万条历史残留，
         // 一次性读进内存会把它变成一次 OOM

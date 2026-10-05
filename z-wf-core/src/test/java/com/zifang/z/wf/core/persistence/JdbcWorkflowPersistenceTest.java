@@ -26,6 +26,7 @@ import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfJob;
+import com.zifang.z.wf.core.model.WfJobType;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfProcessStatus;
 import com.zifang.z.wf.core.model.WfTask;
@@ -210,6 +211,50 @@ class JdbcWorkflowPersistenceTest {
         assertTrue(persistence.findTask("t1").isSuspended(),
                 "UPDATE 漏了 SUSPENDED 列：挂起状态在库里被抹回默认");
         assertEquals(2, persistence.countTasks(new WfTaskQuery().setSuspendedOnly(Boolean.TRUE)));
+    }
+
+    @Test
+    @DisplayName("job 类型落库，且按类型过滤与内存实现同口径")
+    void jobTypeIsPersistedAndFiltered() {
+        WfJob timer = newJob("j-timer", "p1", "e1", "b1", 1000L);
+
+        // 类型是改出来的（newJob 建的行默认 TIMER）⇒ 必须走一次 UPDATE 存回去，
+        // 这也正是"UPDATE 漏了 JOB_TYPE 列"的暴露点
+        WfJob message = newJob("j-msg", "p1", "e1", "b2", 0L);
+        message.setType(WfJobType.MESSAGE);
+        message.setDuedate(null);
+        message.setExceptionMessage("cancel");
+        message.nextRevision();
+        persistence.saveJob(message);
+
+        WfJob signal = newJob("j-sig", "p2", "e1", "b3", 0L);
+        signal.setType(WfJobType.SIGNAL);
+        signal.setDuedate(null);
+        signal.nextRevision();
+        persistence.saveJob(signal);
+
+        assertEquals(WfJobType.TIMER, persistence.findJob("j-timer").getType(),
+                "默认应当是定时器，存量行的语义不能变");
+        assertEquals(WfJobType.MESSAGE, persistence.findJob("j-msg").getType());
+        assertEquals(WfJobType.SIGNAL, persistence.findJob("j-sig").getType());
+        assertEquals("cancel", persistence.findJob("j-msg").getExceptionMessage(),
+                "订阅名存在这一列里");
+
+        assertEquals(1, persistence.countJobs(new WfJobQuery().setType(WfJobType.TIMER)));
+        assertEquals(1, persistence.countJobs(new WfJobQuery().setType(WfJobType.MESSAGE)));
+        assertEquals(1, persistence.countJobs(new WfJobQuery().setType(WfJobType.SIGNAL)));
+        assertEquals(3, persistence.countJobs(new WfJobQuery().setType(null)));
+
+        // 带 duedate 的订阅也捞不到：类型闸门是第二道保险，
+        // 消息订阅的 duedate 本来就是 null（SQL 里 NULL < ? 恒不成立），
+        // 但哪天谁给订阅填了 duedate，就靠这条拦住
+        WfJob risky = persistence.findJob("j-msg");
+        risky.setDuedate(new Date(1000L));
+        risky.nextRevision();
+        persistence.saveJob(risky);
+        assertEquals(0, persistence.countJobs(new WfJobQuery()
+                .setType(WfJobType.TIMER).setDueBefore(new Date(5000L))),
+                "扫描器把消息订阅当成到期 job 了：还没发消息，流程自己往前走了");
     }
 
     @Test

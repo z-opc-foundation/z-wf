@@ -165,6 +165,27 @@ public class WfDefinition implements Serializable {
      * （比如"1 小时提醒"和"24 小时升级"），它们各自起表、各自到期。
      * 解析期不限制数量 —— 数量该不该有限制是业务问题，引擎只负责都做对。
      */
+    /**
+     * 挂在某节点上的<b>全部</b>边界事件（定时器 / 消息 / 信号）。
+     *
+     * <p>token 一进入宿主节点就要把三种订阅一起挂上：消息与信号订阅必须早于
+     * 任何外部触发存在，否则"发消息时还没订阅上"会表现为消息被静默丢弃。
+     */
+    public List<WfNode> eventBoundariesOf(String hostNodeId) {
+        List<WfNode> result = new ArrayList<>();
+        if (hostNodeId == null || getNodes() == null) {
+            return result;
+        }
+        for (WfNode candidate : getNodes()) {
+            if (candidate.getType() == WfNodeType.BOUNDARY_EVENT
+                    && candidate.isEventBoundary()
+                    && hostNodeId.equals(candidate.getAttachedToRef())) {
+                result.add(candidate);
+            }
+        }
+        return result;
+    }
+
     public List<WfNode> timerBoundariesOf(String hostNodeId) {
         List<WfNode> result = new ArrayList<>();
         if (hostNodeId == null || getNodes() == null) {

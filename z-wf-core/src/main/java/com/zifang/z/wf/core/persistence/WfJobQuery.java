@@ -19,6 +19,14 @@ public class WfJobQuery {
     /** 只要到期时刻早于（不含）该值的。 */
     private Date dueBefore;
 
+    /**
+     * 按 job 种类过滤。{@code null} = 不限。
+     *
+     * <p>扫描器必须显式传 {@link com.zifang.z.wf.core.model.WfJobType#TIMER}：
+     * 消息 / 信号订阅不由时间触发，被扫描器消费掉的话流程会在还没收到消息时自己往前走。
+     */
+    private com.zifang.z.wf.core.model.WfJobType type;
+
     /** 只要还没把重试次数耗尽的。 */
     private Boolean retriesExhausted;
 
@@ -46,6 +54,15 @@ public class WfJobQuery {
 
     public Date getDueBefore() {
         return dueBefore;
+    }
+
+    public com.zifang.z.wf.core.model.WfJobType getType() {
+        return type;
+    }
+
+    public WfJobQuery setType(com.zifang.z.wf.core.model.WfJobType type) {
+        this.type = type;
+        return this;
     }
 
     public WfJobQuery setDueBefore(Date dueBefore) {

@@ -24,11 +24,13 @@ import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfJob;
+import com.zifang.z.wf.core.model.WfJobType;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfProcessStatus;
 import com.zifang.z.wf.core.model.WfTask;
 import com.zifang.z.wf.core.persistence.WfPersistence;
 import com.zifang.z.wf.core.persistence.WfProcessInstanceQuery;
+import com.zifang.z.wf.core.persistence.WfJobQuery;
 import com.zifang.z.wf.core.persistence.WfTaskQuery;
 
 /**
@@ -504,6 +506,13 @@ public class WfRuntimeService implements WfSubProcessLauncher {
     public WfProcessInstance triggerMessage(String messageName, String processInstanceId,
                                             String userId, Map<String, Object> variables,
                                             String comment) {
+        // 消息边界优先：它会打断在办的流程，而 receiveTask 是"等这条消息来"。
+        // 两者同名时先看有没有订阅 —— 有订阅说明作者写的是打断语义。
+        WfProcessInstance interrupted = fireSubscriptions(WfJobType.MESSAGE, messageName,
+                processInstanceId, userId, comment);
+        if (interrupted != null) {
+            return interrupted;
+        }
         List<WfTask> matched = findWaitingReceiveTasks(messageName, processInstanceId);
         if (matched.isEmpty()) {
             throw new WfEngineException("没有等待消息 [" + messageName + "] 的接收任务"
@@ -535,15 +544,93 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      */
     public List<WfProcessInstance> broadcastSignal(String signalName, String userId,
                                                    Map<String, Object> variables, String comment) {
+        // 信号边界订阅也算订阅者：广播的语义本来就是"叫醒所有在听的"
+        List<WfProcessInstance> interrupted = fireAllSubscriptions(WfJobType.SIGNAL,
+                signalName, userId, comment);
         List<WfTask> matched = findWaitingReceiveTasks(signalName, null);
-        if (matched.isEmpty()) {
-            throw new WfEngineException("没有等待信号 [" + signalName + "] 的接收任务");
+        if (matched.isEmpty() && interrupted.isEmpty()) {
+            throw new WfEngineException("没有等待信号 [" + signalName + "] 的接收任务或信号订阅");
         }
-        List<WfProcessInstance> advanced = new ArrayList<>();
+        List<WfProcessInstance> advanced = new ArrayList<>(interrupted);
         for (WfTask task : matched) {
             advanced.add(completeTask(task.getId(), userId, comment, variables));
         }
-        log.info("广播信号 [{}] 唤醒 {} 个接收任务", signalName, matched.size());
+        log.info("广播信号 [{}] 触发 {} 个信号订阅，唤醒 {} 个接收任务",
+                signalName, interrupted.size(), matched.size());
+        return advanced;
+    }
+
+    /**
+     * 消费一条消息/信号边界订阅。
+     *
+     * <p>与 {@code receiveTask} 的区别是<b>打断</b>：宿主节点上的待办作废、
+     * token 被拉到边界事件上走补偿分支。典型用途是"撤销申请""加急插队"。
+     *
+     * @return 被触发的流程实例；没有匹配订阅时返回 {@code null}
+     */
+    private WfProcessInstance fireSubscriptions(WfJobType type, String eventName,
+                                                String processInstanceId, String userId,
+                                                String comment) {
+        List<WfProcessInstance> fired = fireAllSubscriptions(type, eventName, userId, comment,
+                processInstanceId);
+        if (fired.isEmpty()) {
+            return null;
+        }
+        if (fired.size() > 1) {
+            // 点对点消息必须能决定触发哪一个。匹配到多个说明作者该用信号（广播），
+            // 与 receiveTask 那边同一个理由：宁可报错也别随机挑一个
+            List<String> ids = new ArrayList<>();
+            for (WfProcessInstance instance : fired) {
+                ids.add(instance.getId());
+            }
+            throw new WfEngineException(type.getLabel() + " [" + eventName + "] 匹配到 "
+                    + fired.size() + " 个订阅实例，点对点触发无法决定是哪一个: " + ids
+                    + "。请把名字改得更具体，或改用 broadcastSignal 表达广播语义");
+        }
+        return fired.get(0);
+    }
+
+    private List<WfProcessInstance> fireAllSubscriptions(WfJobType type, String eventName,
+                                                         String userId, String comment) {
+        return fireAllSubscriptions(type, eventName, userId, comment, null);
+    }
+
+    /**
+     * 消费全部匹配订阅。
+     *
+     * <p>订阅的名字存在 job 的 exceptionMessage 里（见 WfContext#startTimerJobs），
+     * SQL 查不出来，只能按类型捞回来在内存里比对。订阅的量级是"在办的单数"，
+     * 审批系统里通常只有同时在办的那几十上百条，够用。
+     */
+    private List<WfProcessInstance> fireAllSubscriptions(WfJobType type, String eventName,
+                                                         String userId, String comment,
+                                                         String processInstanceId) {
+        List<WfProcessInstance> advanced = new ArrayList<>();
+        if (eventName == null || eventName.trim().isEmpty()) {
+            throw new WfEngineException(type.getLabel() + "名不能为空");
+        }
+        String wanted = eventName.trim();
+        WfJobQuery query = new WfJobQuery().setType(type);
+        if (processInstanceId != null) {
+            query.setProcessInstanceId(processInstanceId);
+        }
+        for (WfJob job : persistence.queryJobs(query.setPageNum(1).setPageSize(500))) {
+            if (!wanted.equals(job.getExceptionMessage())) {
+                continue;
+            }
+            // 先删再触发：并发触发器抢同一条订阅时，
+            // 后到的那个会看到任务不在宿主节点上而安全跳过，而不是把补偿分支走两遍
+            persistence.deleteJob(job.getId());
+            WfProcessInstance instance = fireEventBoundary(job, type.outcomePrefix()
+                    + type.getLabel() + " [" + wanted + "]"
+                    + (comment == null ? "" : "：" + comment));
+            if (instance != null) {
+                advanced.add(instance);
+            }
+        }
+        if (!advanced.isEmpty()) {
+            log.info("{} [{}] 触发 {} 个边界订阅", type.getLabel(), wanted, advanced.size());
+        }
         return advanced;
     }
 
@@ -789,6 +876,24 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      * @return 是否真的触发了边界事件
      */
     public boolean fireTimerBoundary(WfJob job) {
+        long waitedMillis = System.currentTimeMillis()
+                - (job.getCreateTime() == null ? System.currentTimeMillis()
+                : job.getCreateTime().getTime());
+        return fireEventBoundary(job, "timer:节点 " + job.getAttachedToRef() + " 停留超时（已等 "
+                + WfTimerSupport.describeDuration(waitedMillis) + "）") != null;
+    }
+
+    /**
+     * 触发任意边界事件（定时器 / 消息 / 信号）。
+     *
+     * <p>三种边界的<b>打断语义完全一样</b>：宿主上的待办作废、token 拉到边界事件上
+     * 走补偿分支。差别只在"什么时刻触发"，所以合并成一个方法，
+     * 免得三份实现各修一次、只修到两处。
+     *
+     * @param reason 写进评论与轨迹的原因，要能让人事后看懂这次为什么被打断
+     * @return 是否真的触发了
+     */
+    public WfProcessInstance fireEventBoundary(WfJob job, String reason) {
         WfProcessInstance instance = requireInstance(job.getProcessInstanceId());
         if (instance.getStatus().isTerminal()) {
             // 流程已经结束了还在响：多半是残留 job（实例被外部直接改库终止、
@@ -796,7 +901,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             // 抛出去会被执行器算成失败并重试，而重试永远不会有用。
             log.warn("流程 {} 已是终态 {}，却还有 job {} 到期，忽略触发",
                     instance.getId(), instance.getStatus(), job.getId());
-            return false;
+            return null;
         }
         WfDefinition definition = definitionOf(instance);
         WfNode boundary = WfJobService.resolveBoundary(definition, job);
@@ -812,21 +917,16 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                             + "按已办结处理，不触发边界事件",
                     job.getId(), job.getAttachedToRef(),
                     execution == null ? "不存在" : execution.getActivityId());
-            return false;
+            return null;
         }
 
-        long waitedMillis = System.currentTimeMillis()
-                - (job.getCreateTime() == null ? System.currentTimeMillis()
-                : job.getCreateTime().getTime());
         persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
                 instance.getId(), "system", "job",
-                "节点 " + job.getAttachedToRef() + " 停留超时（已等 "
-                        + WfTimerSupport.describeDuration(waitedMillis)
-                        + "），触发边界事件 " + boundary.getId()));
-        log.info("流程 {} 节点 {} 超时，触发边界事件 {}",
-                instance.getId(), job.getAttachedToRef(), boundary.getId());
+                reason + "，触发边界事件 " + boundary.getId()));
+        log.info("流程 {} 节点 {} 被 {} 打断，触发边界事件 {}",
+                instance.getId(), job.getAttachedToRef(), reason, boundary.getId());
 
-        // 宿主节点上的待办作废：人已经超时了，待办还挂着只会让人以为还能办
+        // 宿主节点上的待办作废：人已经被打断了，待办还挂着只会让人以为还能办
         cancelOpenTasksOn(instance.getId(), job.getAttachedToRef());
 
         WfContext context = contextForError(instance, definition, execution, null);
@@ -835,12 +935,12 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         execution.setEnteredTime(new Date());
         // 结论交给 leave() 写成唯一那条记录（见 WfContext#pendingActivityOutcome）。
         // 不在这里单独 recordActivity：那会让边界事件在轨迹上出现两行 ——
-        // 一行写 timer:30 分钟，一行写 completed —— 而"一次节点访问一条"是本引擎的硬约定。
-        context.setPendingActivityOutcome("timer:" + WfTimerSupport.describeDuration(waitedMillis));
+        // 一行写打断原因，一行写 completed —— 而"一次节点访问一条"是本引擎的硬约定。
+        context.setPendingActivityOutcome(reason);
         engine.startFrom(context, execution);
         persistAll(context);
         resolveCompletion(context);
-        return true;
+        return instance;
     }
 
     /**

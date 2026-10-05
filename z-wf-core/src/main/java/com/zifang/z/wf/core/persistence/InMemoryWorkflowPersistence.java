@@ -905,6 +905,18 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
                 && (job.getDuedate() == null || !job.getDuedate().before(query.getDueBefore()))) {
             return false;
         }
+        // 与 JdbcWorkflowPersistence 的 appendJobFilters 同口径。
+        // 漏了这个条件两套实现就在"带 duedate 的订阅"上分歧：JDBC 侧捞不到，
+        // 内存侧捞得到 —— 而开发期默认用内存实现，于是问题到生产才暴露，
+        // 现象是"扫描器把消息订阅执行了，流程自己往前走了"
+
+        // 与 JdbcWorkflowPersistence 的 appendJobFilters 同口径。
+        // 漏了这个条件两套实现就在"带 duedate 的订阅"上分歧：JDBC 侧捞不到，
+        // 内存侧捞得到 —— 而开发期默认用内存实现，于是问题到生产才暴露，
+        // 现象是"扫描器把消息订阅执行了，流程自己往前走了"
+        if (query.getType() != null && job.getType() != query.getType()) {
+            return false;
+        }
         if (query.getRetriesExhausted() != null
                 && job.isRetriesExhausted() != query.getRetriesExhausted()) {
             return false;
