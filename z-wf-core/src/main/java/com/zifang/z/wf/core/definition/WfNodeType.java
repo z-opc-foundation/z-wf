@@ -136,13 +136,32 @@ public enum WfNodeType {
         if (raw == null) {
             return null;
         }
-        String normalized = raw.trim().replace("_", "").replace("-", "").toLowerCase();
-        for (WfNodeType type : values()) {
-            if (type.bpmnName.toLowerCase().equals(normalized)) {
-                return type;
-            }
-        }
-        return null;
+        WfNodeType hit = INDEX.get(normalize(raw));
+        return hit;
+    }
+
+    /**
+     * 这个 BPMN 元素名是否被本引擎<b>原生支持</b>。
+     *
+     * <p>存在的理由：{@link #fromBpmn(String)} 对认不出的名字一律退化成
+     * {@link #TASK}，让"能否退化"和"退化得对不对"这两件事无法区分。
+     * 而这两者恰恰是最容易出事的地方 ——
+     * {@code eventBasedGateway}（事件竞速）和 {@code transaction}（事务子流程）
+     * 退化成"人工任务"都不是一个<b>较小</b>的错误，而是一个<b>完全不同</b>的流程：
+     * 作者以为自己写了自动分支，实际部署出去的是"建个任务等人来点"。
+     *
+     * <p>所以解析期用它把"退化出来的 TASK"标记出来，交给校验器报错，
+     * 而不是让退化悄无声息地进入运行态。
+     *
+     * @param bpmnName BPMN 元素名，允许 {@code null}
+     */
+    public static boolean isNative(String bpmnName) {
+        return bpmnName != null && INDEX.containsKey(normalize(bpmnName));
+    }
+
+    /** 归一化：去下划线/连字符并转小写，让 {@code user-task} 与 {@code userTask} 等价。 */
+    private static String normalize(String raw) {
+        return raw.trim().replace("_", "").replace("-", "").toLowerCase();
     }
 
     /** 未识别类型名的登记表，用于诊断信息。 */

@@ -54,9 +54,19 @@ public class WfXmlParser {
     public static final String EXT_PREFIX = "zifang_";
 
     /**
-     * 可执行节点元素名 → 节点类型。
-     * <p>刻意包含 z-util-wf-kernel 也认识但本引擎没有独立语义的元素，
-     * 它们被归一到 {@link WfNodeType#TASK} 而不是报错。
+     * 可执行节点元素名 → 归一后的元素名。
+     *
+     * <p>刻意包含 z-util-wf-kernel 也认识、但本引擎<b>没有独立语义</b>的元素
+     * （{@code eventBasedGateway} / {@code transaction} / {@code adHocSubProcess} /
+     * {@code intermediate*Event}）。它们在这里被归一到通用任务，
+     * 以便"这份 BPMN 我至少读得进来"这件事成立。
+     *
+     * <p><b>但归一不等于放行。</b> 退化出来的节点会被 {@link #parseNode} 打上
+     * {@link WfNode#PROPERTY_UNSUPPORTED_BPMN_ELEMENT} 标记，
+     * 由 {@code WfDefinitionValidator} 报 <b>ERROR</b> 挡住部署。
+     * 之所以必须挡：{@code eventBasedGateway} 退化成人工任务不是"精度下降"，
+     * 是"自动竞速分支"换成了"等人来点"，作者与运行行为之间不再有任何提示。
+     * 解析期宽松、部署期严格，是这里唯一不产生静默错误的组合。
      */
     private static final String[][] NODE_ELEMENTS = {
             {"startEvent", "startEvent"},
@@ -196,13 +206,21 @@ public class WfXmlParser {
     /**
      * 解析单个节点元素。
      *
-     * @param elementTag 该元素在 BPMN 里的名字（用于未识别的中间事件归一）
+     * @param elementTag 该元素在 BPMN 里的名字（用于识别"退化出来的"节点）
      */
     private WfNode parseNode(Element element, String elementTag) {
         WfNode node = new WfNode();
         node.setId(attr(element, "id"));
         node.setName(firstNonBlank(attr(element, "name"), node.getId()));
-        node.setType(resolveType(elementTag, attr(element, "zifang:type")));
+        String overrideName = attr(element, "zifang:type");
+        WfNodeType resolved = resolveType(elementTag, overrideName);
+        node.setType(resolved);
+        // 只有"靠退化才变成 TASK"才需要标记：作者显式写了 zifang:type 覆盖时，
+        // 是他自己拍板的，引擎不该再拦一次。
+        if (resolved == WfNodeType.TASK && !WfNodeType.isNative(elementTag)
+                && (overrideName == null || overrideName.trim().isEmpty())) {
+            node.getProperties().put(WfNode.PROPERTY_UNSUPPORTED_BPMN_ELEMENT, elementTag);
+        }
 
         // ---- 审批扩展（标准 BPMN 没有的位置）----
         node.setCategory(extension(element, "category"));
@@ -283,12 +301,7 @@ public class WfXmlParser {
                 return explicit;
             }
         }
-        WfNodeType type = WfNodeType.fromBpmn(elementTag);
-        if (type == WfNodeType.TASK) {
-            // 未知元素名：记录在 properties 里，便于诊断，但不阻断解析
-            return WfNodeType.TASK;
-        }
-        return type;
+        return WfNodeType.fromBpmn(elementTag);
     }
 
     // ==================== DOM 辅助 ====================

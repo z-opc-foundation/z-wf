@@ -96,6 +96,17 @@ public class WfDefinitionValidator {
                             "receiveTask 没有 messageName，该任务将只能被 force-complete 推进");
                 }
             }
+            // ---- 退化出来的节点：语义已被换掉，必须挡住部署 ----
+            // 这里报 ERROR 而不是 WARN：WARN 只进日志，部署照过，
+            // 于是作者拿到的运行行为（人工任务）与他写的流程（自动分支）永久不一致。
+            String unsupported = node.unsupportedBpmnElement();
+            if (unsupported != null) {
+                add(WfValidationIssue.Severity.ERROR, node.getId(),
+                        "BPMN 元素 <" + unsupported + "> 本引擎尚不支持，已被当作人工任务，"
+                                + "但两者的运行语义不同（该节点会停在等人办理，而不是按 "
+                                + unsupported + " 的规则自动推进）。"
+                                + substitutionHint(unsupported));
+            }
         }
 
         // ---- 连线 ----
@@ -246,6 +257,30 @@ public class WfDefinitionValidator {
 
     private List<WfValidationIssue> result() {
         return new ArrayList<>(issues);
+    }
+
+    /**
+     * 对已知可替代的元素给出"改用哪个"的建议。
+     *
+     * <p>只对<b>真的等价</b>的替代关系给建议。{@code eventBasedGateway} 刻意不给：
+     * 拿 {@code exclusiveGateway} 顶替它不是简化，是把一个"多路事件竞速"换成
+     * "在顺序条件里选一条"，作者照着提示改反而会得到一个更难发现的错误流程。
+     * 没有等价物时如实说"暂无"，比给个像模像样的错答案可靠。
+     */
+    private static String substitutionHint(String elementName) {
+        String key = elementName == null ? "" : elementName.trim();
+        String replacement;
+        if ("intermediateThrowEvent".equals(key)) {
+            replacement = "sendTask";
+        } else if ("intermediateCatchEvent".equals(key)) {
+            replacement = "receiveTask";
+        } else if ("transaction".equals(key) || "adHocSubProcess".equals(key)) {
+            replacement = "subProcess";
+        } else {
+            return " 本引擎暂无等价节点，请改写流程或等待该元素被支持。";
+        }
+        return " 请改用 <" + replacement
+                + ">，或在元素上显式写 zifang:type 声明你真正想要的类型。";
     }
 
     private static boolean isBlank(String s) {

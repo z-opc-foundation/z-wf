@@ -84,6 +84,29 @@ public class WfNode implements Serializable {
     /** 默认优先级。 */
     public static final int DEFAULT_PRIORITY = 50;
 
+    /**
+     * {@link #properties} 里标记"这个 TASK 是从不支持的 BPMN 元素退化来的"的键。
+     *
+     * <p>值为原始 BPMN 元素名（如 {@code eventBasedGateway}）。
+     * 由 {@code WfXmlParser} 在退化时写入，由 {@code WfDefinitionValidator} 读出来报 ERROR。
+     *
+     * <p>为什么需要这个标记：解析器对认不出的元素名会退化成 {@link WfNodeType#TASK}，
+     * 这样设计器导出的扩展类型不会让整份定义解析失败。但"退化成通用任务"对
+     * {@code task} 是合理的，对 {@code eventBasedGateway} 却是把流程语义换掉了。
+     * 光看 type=TASK 无法区分这两者，所以退化时必须留下原名。
+     */
+    public static final String PROPERTY_UNSUPPORTED_BPMN_ELEMENT = "zifang:unsupportedBpmnElement";
+
+    /**
+     * 本节点是否由不支持的 BPMN 元素退化而来。
+     *
+     * @return 退化来源的原始元素名；本就是原生类型则返回 {@code null}
+     */
+    public String unsupportedBpmnElement() {
+        Object value = property(PROPERTY_UNSUPPORTED_BPMN_ELEMENT);
+        return value == null ? null : String.valueOf(value);
+    }
+
     public WfNode() {
     }
 

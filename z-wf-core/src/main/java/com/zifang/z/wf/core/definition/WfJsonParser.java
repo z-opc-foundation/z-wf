@@ -149,7 +149,14 @@ public class WfJsonParser {
             return null;
         }
         node.setName(str(raw.get("name"), node.getId()));
-        node.setType(resolveType(str(raw.get("type"), "task")));
+        String rawType = str(raw.get("type"), "task");
+        node.setType(resolveType(rawType));
+        // 与 WfXmlParser 同一套标记：退化出来的 TASK 必须留下原名，
+        // 否则换一份 JSON 定义就能绕开部署期的那道 ERROR。
+        String effectiveType = effectiveBpmnName(rawType);
+        if (node.getType() == WfNodeType.TASK && !WfNodeType.isNative(effectiveType)) {
+            node.getProperties().put(WfNode.PROPERTY_UNSUPPORTED_BPMN_ELEMENT, effectiveType);
+        }
 
         node.setCategory(str(raw.get("category"), null));
         node.setFormKey(str(raw.get("formKey"), null));
@@ -198,16 +205,27 @@ public class WfJsonParser {
      * 类型名解析：先查 LogicFlow 别名表，再走 BPMN 归一。
      */
     private WfNodeType resolveType(String rawType) {
+        return WfNodeType.fromBpmn(effectiveBpmnName(rawType));
+    }
+
+    /**
+     * 原始类型名 → 别名表归一后的 BPMN 元素名。
+     *
+     * <p>和 {@link #resolveType(String)} 拆成两个方法，是因为"最终按哪个 BPMN 名去查表"
+     * 这件事需要被单独取用一次：既要喂给类型解析，也要拿去判断它是不是本引擎原生支持的
+     * 元素。合成一个方法的话，第二处用途就得靠"把结果再翻译回名字"来凑，那是反向推导。
+     */
+    private String effectiveBpmnName(String rawType) {
         if (rawType == null || rawType.trim().isEmpty()) {
-            return WfNodeType.TASK;
+            return "task";
         }
         String normalized = rawType.trim();
         for (String[] alias : LOGICFLOW_TYPE_ALIASES) {
             if (alias[0].equalsIgnoreCase(normalized)) {
-                return WfNodeType.fromBpmn(alias[1]);
+                return alias[1];
             }
         }
-        return WfNodeType.fromBpmn(normalized);
+        return normalized;
     }
 
     /**
