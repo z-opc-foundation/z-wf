@@ -387,6 +387,18 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         }
 
         log.info("流程终止: {}, 原因={}, 作废任务 {} 个", processInstanceId, reason, cancelled);
+
+        // 终止同样要走收尾钩子。旧实现只改状态、只打日志，一个钩子都不发 ——
+        // 于是"申请人撤回""管理员终止"之后，审批人永远收不到"这单已经作废"，
+        // 待办虽然消失了，但对方并不知道发生了什么，只当是自己被收回了权限。
+        // 对审批系统来说，终止与正常结束一样需要通知到人。
+        hookDispatcher.fireComplete(instance.getDefinitionKey(), processInstanceId, "terminated");
+        hookDispatcher.notifyApprovalResult(processInstanceId, instance.getDefinitionKey(),
+                instance.getStartUserId(), "terminated", reason);
+        for (WfTask task : persistence.queryTasks(new WfTaskQuery()
+                .setProcessInstanceId(processInstanceId).setStatus(WfTask.Status.CANCELLED))) {
+            hookDispatcher.fireAfterComplete(task.getId(), task.getAssignee(), "terminated");
+        }
     }
 
     // ==================== 查询 ====================

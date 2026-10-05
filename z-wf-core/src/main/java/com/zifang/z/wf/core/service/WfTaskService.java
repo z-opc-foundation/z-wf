@@ -97,6 +97,9 @@ public class WfTaskService {
         persistence.saveTask(task);
 
         hookDispatcher.fireAssigneeChanged(taskId, from, userId, "claim");
+        // 指派通知：此前只在建任务时发一次，之后谁接手都没人知道。
+        // 审批系统里"这单到你手上了"正是最该通知的时刻。
+        notifyAssigned(task, userId, from);
         log.info("任务认领: {} → {}", taskId, userId);
         return task;
     }
@@ -146,6 +149,7 @@ public class WfTaskService {
         persistence.saveTask(task);
 
         hookDispatcher.fireAssigneeChanged(taskId, from, toUserId, "transfer");
+        notifyAssigned(task, toUserId, from);
         log.info("任务转办: {} → {} ({})", from, toUserId, taskId);
         return task;
     }
@@ -187,6 +191,8 @@ public class WfTaskService {
         persistence.saveTask(task);
 
         hookDispatcher.fireAssigneeChanged(taskId, from, toUserId, "delegate");
+        // 委派后责任仍在 owner 上，但事情在 toUserId 手上，通知要发给他
+        notifyAssigned(task, toUserId, from);
         log.info("任务委派: {} 委派给 {}（责任人仍为 {}）, taskId={}",
                 from, toUserId, task.getAssignee(), taskId);
         return task;
@@ -210,6 +216,7 @@ public class WfTaskService {
         persistence.saveTask(task);
 
         hookDispatcher.fireAssigneeChanged(taskId, from, task.getAssignee(), "resolve");
+        notifyAssigned(task, task.getAssignee(), from);
         return task;
     }
 
@@ -438,5 +445,24 @@ public class WfTaskService {
             throw new WfEngineException("任务不存在: " + id);
         }
         return task;
+    }
+
+    /**
+     * 发出"任务指派"通知。
+     *
+     * <p>此前 {@code notifyTaskAssigned} 只在建任务时触发一次，
+     * 于是认领 / 转办 / 委派之后接手人都收不到通知 ——
+     * 而"这单到你手上了"恰恰是审批场景里最该通知的时刻。
+     *
+     * <p>processKey 与 variables 要从流程实例反查，因为任务本身不携带这两项。
+     */
+    private void notifyAssigned(WfTask task, String toUserId, String fromUserId) {
+        if (toUserId == null) {
+            return;
+        }
+        WfProcessInstance instance = persistence.findProcessInstance(task.getProcessInstanceId());
+        hookDispatcher.notifyTaskAssigned(task.getId(), task.getProcessInstanceId(), toUserId,
+                instance == null ? null : instance.getDefinitionKey(), fromUserId,
+                instance == null ? null : instance.getVariables());
     }
 }

@@ -157,9 +157,27 @@
 
 ## 3. 扩展点
 
+
+### 3.1 扩展点审计结果（本轮）
+
+对 11 个回调逐个做了行为级验证（`WfHookDispatchAuditTest`），
+找出 **3 处"实现了但从不触发"**——静态检查全看不出来，因为方法存在、
+接口实现完整、编译通过，只有真跑一遍流程才知道：
+
+| 回调 | 问题 | 影响 |
+|---|---|---|
+| `notifyOverdue` | **全仓零调用点**，是死钩子 | 想接超时提醒的团队发现自己的实现永远不会被调，而从代码上看一切齐全 |
+| `notifyTaskAssigned` | 只在建任务时触发一次 | 认领/转办/委派之后接手人收不到通知——而"这单到你手上了"恰恰是审批场景最该通知的时刻 |
+| `onComplete`（终止路径） | `terminate()` 一个钩子都不发 | 流程被终止后审批人永远不知道这单已作废，待办消失但对方只当是自己被收回了权限 |
+
+现在补了 `WfOverdueScanner`（扫描超期待办并触发通知，**刻意不自带定时器**——
+频率是业务决定的，不该由引擎猜）、4 处指派通知、以及终止路径的收尾钩子。
+
+> 这一节的教训与 §4 相同：**"接口存在 + 方法实现完整"不构成"它会触发"。**
+
 | 维度 | Camunda 7 | z-wf |
 |---|---|---|
-| 生命周期监听器 | ExecutionListener / TaskListener，按事件类型注册，几十个事件点 | 3 个 hook 接口（`WfHookDispatcher`） |
+| 生命周期监听器 | ExecutionListener / TaskListener，按事件类型注册，几十个事件点 | 3 个 hook 接口共 11 个回调（`WfHookDispatcher`）。本轮做完行为级审计后修掉 3 处失效回调，详见下文 |
 | 表达式 | JUEL（`${}` / `#{}`） | z-util EL（`${}`） |
 | Java Delegate | `JavaDelegate` / `DelegateExpression` / `ClassDelegate` | `WfJavaDelegate` + `WfDelegateRegistry` |
 | 外部任务 Worker | `ExternalTaskService` | ⛔ 无（用 `serviceTask` + delegate 代替） |

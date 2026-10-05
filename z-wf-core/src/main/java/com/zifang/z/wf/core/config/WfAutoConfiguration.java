@@ -33,6 +33,7 @@ import com.zifang.z.wf.core.service.WfHistoryService;
 import com.zifang.z.wf.core.service.WfRepositoryService;
 import com.zifang.z.wf.core.service.WfRuntimeService;
 import com.zifang.z.wf.core.service.WfTaskService;
+import com.zifang.z.wf.core.service.WfOverdueScanner;
 import com.zifang.z.wf.core.service.WfVariableService;
 
 /**
@@ -187,6 +188,20 @@ public class WfAutoConfiguration {
     public WfVariableService wfVariableService(WfPersistence persistence,
                                                WfIdGenerator idGenerator) {
         return new WfVariableService(persistence, idGenerator);
+    }
+
+    /**
+     * 超期待办扫描器。
+     *
+     * <p>注册成 Bean 但<b>不自带定时器</b>：扫描频率是业务决定的，
+     * 由调用方用 {@code @Scheduled} 或组织自己的调度中心触发。
+     * 引擎内嵌定时器会让"引依赖就跑起来了"变成默认行为，多数部署并不想要。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WfOverdueScanner wfOverdueScanner(WfPersistence persistence,
+                                             WfHookDispatcher hookDispatcher) {
+        return new WfOverdueScanner(persistence, hookDispatcher);
     }
 
     // ==================== 启动部署 ====================

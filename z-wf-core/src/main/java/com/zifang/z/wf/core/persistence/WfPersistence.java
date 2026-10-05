@@ -129,6 +129,18 @@ public interface WfPersistence {
 
     // ==================== 任务 ====================
 
+    /**
+     * 保存任务。
+     *
+     * <p><b>调用前必须先 {@code nextRevision()}。</b> 两个实现都按
+     * "库中 revision + 1 == 传入的 revision"做 CAS，忘记 bump 会被判成冲突。
+     * 这一点没有在接口上写明过，实现者与直接使用 SPI 的人都会踩，
+     * 所以在这里明确：<b>本 SPI 不自动改 revision，改版本号是调用方的责任。</b>
+     *
+     * <p>取出来的对象<b>不要就地改完直接存</b>：查询实现返回的是副本，
+     * 而副本的 revision 可能已经落后于库里（别的请求改过）。
+     * 正确做法是重新查询、确认 revision、再改再存。
+     */
     void saveTask(WfTask task);
 
     void deleteTask(String id);

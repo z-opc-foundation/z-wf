@@ -1,6 +1,7 @@
 package com.zifang.z.wf.core.hook;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -30,6 +31,9 @@ import org.slf4j.LoggerFactory;
 public class WfHookDispatcher {
 
     private static final Logger log = LoggerFactory.getLogger(WfHookDispatcher.class);
+
+    /** 通知载荷里"原办理人"的键名。 */
+    public static final String NOTIFY_FROM_ASSIGNEE = "__wf_notify_from_assignee";
 
     private final List<WfProcessHook> processHooks = new ArrayList<>();
 
@@ -182,9 +186,27 @@ public class WfHookDispatcher {
 
     public void notifyTaskAssigned(String taskId, String processInstanceId, String assignee,
                                    String processKey, Map<String, Object> variables) {
+        notifyTaskAssigned(taskId, processInstanceId, assignee, processKey, null, variables);
+    }
+
+    /**
+     * 带"从谁手里转到谁手里"的指派通知。
+     *
+     * <p>转办/委派场景下"原办理人是谁"是通知正文里最有用的一行 ——
+     * 接手的人需要知道是谁把活转给他的。所以带 from 的重载是主路径，
+     * 不带 from 的保留给建任务时（那时不存在"原办理人"）。
+     */
+    public void notifyTaskAssigned(String taskId, String processInstanceId, String assignee,
+                                   String processKey, String fromAssignee,
+                                   Map<String, Object> variables) {
+        Map<String, Object> payload = variables == null
+                ? new HashMap<String, Object>() : new HashMap<>(variables);
+        if (fromAssignee != null) {
+            payload.put(NOTIFY_FROM_ASSIGNEE, fromAssignee);
+        }
         for (WfNotificationHook hook : notificationHooks) {
             try {
-                hook.notifyTaskAssigned(taskId, processInstanceId, assignee, processKey, variables);
+                hook.notifyTaskAssigned(taskId, processInstanceId, assignee, processKey, payload);
             } catch (Exception e) {
                 log.error("任务分配通知失败（已忽略）: {}", hook.getClass().getName(), e);
             }
