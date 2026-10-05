@@ -302,6 +302,9 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
 
     @Override
     public List<WfTask> queryTasks(WfTaskQuery query) {
+        if (query != null) {
+            query.assertConsistent();
+        }
         List<WfTask> matched = new ArrayList<>();
         for (WfTask task : tasks.values()) {
             if (matches(task, query)) {
@@ -326,6 +329,22 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         int offset = query == null ? 0 : query.getOffset();
         int size = query == null || query.getPageSize() <= 0 ? 20 : query.getPageSize();
         return paginate(matched, offset, size);
+    }
+
+    @Override
+    public long countTasks(WfTaskQuery query) {
+        if (query != null) {
+            query.assertConsistent();
+        }
+        // 过滤逻辑复用 matches —— 与 queryTasks 同一个判定，
+        // 免得 count 与列表在某个条件上分道扬镳，页面上的"共 N 条"就成了假话
+        int total = 0;
+        for (WfTask task : tasks.values()) {
+            if (matches(task, query)) {
+                total++;
+            }
+        }
+        return total;
     }
 
     private boolean matches(WfTask task, WfTaskQuery query) {

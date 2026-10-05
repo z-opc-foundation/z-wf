@@ -732,4 +732,82 @@ class JdbcWorkflowPersistenceTest {
         assertNotNull(persistence.findTask("t2"));
         assertEquals(1, persistence.findComments("p-open").size());
     }
+
+    // ==================== 任务 count 与分页 ====================
+
+    @Test
+    @DisplayName("条件自相矛盾时 JDBC 侧同样直接抛错，不拼恒假 SQL")
+    void contradictoryTaskFlagsAreRejected() {
+        persistence.saveTask(newTask("t1", "u1", WfTask.Status.CREATED, 1000L));
+        persistence.saveTask(newTask("t2", "u1", WfTask.Status.COMPLETED, 2000L));
+
+        // SQL 侧不加检查会变成 STATUS IN (...) AND STATUS='COMPLETED'，
+        // 恒假、零行、零错误 —— 与内存实现同一种歧义，两边都得挡
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> persistence.queryTasks(new WfTaskQuery()
+                        .setOpenOnly(true).setCompletedOnly(true)));
+        assertTrue(ex.getMessage().contains("openOnly"), ex.getMessage());
+        assertThrows(IllegalArgumentException.class,
+                () -> persistence.countTasks(new WfTaskQuery()
+                        .setOpenOnly(true).setCompletedOnly(true)));
+        assertThrows(IllegalArgumentException.class,
+                () -> persistence.queryTasks(new WfTaskQuery()
+                        .setCreateTimeFrom(new Date(2000L)).setCreateTimeTo(new Date(1000L))));
+    }
+
+    @Test
+    @DisplayName("countTasks 与 queryTasks 同口径，分页不影响 total")
+    void countTasksMatchesList() {
+        for (int i = 0; i < 7; i++) {
+            persistence.saveTask(newTask("t" + i, i % 2 == 0 ? "u1" : "u2",
+                    i < 3 ? WfTask.Status.COMPLETED : WfTask.Status.CREATED, 1000L * (i + 1)));
+        }
+        assertEquals(3, persistence.queryTasks(new WfTaskQuery()
+                .setCompletedOnly(true).setPageNum(1).setPageSize(50)).size());
+        assertEquals(3, persistence.countTasks(new WfTaskQuery().setCompletedOnly(true)));
+        assertEquals(7, persistence.countTasks(new WfTaskQuery()));
+        assertEquals(7, persistence.countTasks(new WfTaskQuery().setPageNum(2).setPageSize(3)));
+        // 7 条里 i%2==0 的落在 u1（i=0,2,4,6），其中 i<3 的是已完成，
+        // 所以 u1 的未完成任务是 i=4 与 i=6 两条
+        assertEquals(2, persistence.countTasks(
+                new WfTaskQuery().setAssignee("u1").setOpenOnly(true)));
+    }
+
+    @Test
+    @DisplayName("分页下推到 SQL 后各页不重不漏，越界页为空")
+    void paginationIsPushedDownWithoutGapsOrOverlaps() {
+        for (int i = 0; i < 7; i++) {
+            persistence.saveTask(newTask("t" + i, "u1", WfTask.Status.CREATED, 1000L * (i + 1)));
+        }
+        // 7 条、每页 3 条 ⇒ 第 1/2 页各 3 条，第 3 页只剩 1 条
+        java.util.Set<String> seen = new java.util.LinkedHashSet<String>();
+        for (int page = 1; page <= 2; page++) {
+            List<WfTask> rows = persistence.queryTasks(
+                    new WfTaskQuery().setAssignee("u1").setPageNum(page).setPageSize(3));
+            assertEquals(3, rows.size(), "第 " + page + " 页应满 3 条");
+            for (WfTask t : rows) {
+                assertTrue(seen.add(t.getId()), "第 " + page + " 页出现了重复行 " + t.getId());
+            }
+        }
+        List<WfTask> last = persistence.queryTasks(
+                new WfTaskQuery().setAssignee("u1").setPageNum(3).setPageSize(3));
+        assertEquals(1, last.size(), "最后一页不满时按实际条数返回，不能补行也不能空");
+        for (WfTask t : last) {
+            assertTrue(seen.add(t.getId()), "第 3 页出现了重复行 " + t.getId());
+        }
+        assertEquals(7, seen.size(), "三页合起来必须正好覆盖全部 7 条");
+        assertEquals(0, persistence.queryTasks(
+                new WfTaskQuery().setAssignee("u1").setPageNum(4).setPageSize(3)).size());
+    }
+
+    private WfTask newTask(String id, String assignee, WfTask.Status status, long createTime) {
+        WfTask t = new WfTask();
+        t.setId(id);
+        t.setAssignee(assignee);
+        t.setStatus(status);
+        t.setPriority(1);
+        t.setCreateTime(new Date(createTime));
+        t.nextRevision();
+        return t;
+    }
 }

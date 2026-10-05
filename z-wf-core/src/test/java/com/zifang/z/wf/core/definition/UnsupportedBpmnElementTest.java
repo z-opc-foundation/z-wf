@@ -257,6 +257,11 @@ class UnsupportedBpmnElementTest {
         }
 
         @Override
+        public long countTasks(com.zifang.z.wf.core.persistence.WfTaskQuery q) {
+            return 0L;
+        }
+
+        @Override
         public void saveActivityInstance(com.zifang.z.wf.core.model.WfActivityInstance a) {
         }
 

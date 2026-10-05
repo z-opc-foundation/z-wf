@@ -85,10 +85,10 @@
 | Camunda 能力 | z-wf | 说明 |
 |---|---|---|
 | `createHistoricActivityInstanceQuery` | ✅ | `WfHistoricActivityInstanceQuery`：流程实例 / 定义 key / 活动 id / 活动类型 / 办理人 / 时间区间 / 最短耗时，可组合（AND）、可分页、可按耗时倒序 |
+| `createHistoricTaskInstanceQuery` | ✅ | 复用 `WfTaskQuery` + `WfHistoryService#queryCompletedTasks`（强制只查已办结）。**不另造查询类**：本引擎没有独立历史表，"历史任务"就是 `STATUS=COMPLETED` 的行，字段与运行态查询完全重合。`getDoneList(userId, page)` 作为写死口径的便捷入口保留 |
 | `deleteHistoricProcessInstance` / `deleteHistoricData` | ✅ | `deleteHistoryBefore(Date)`：**只删已结束流程**。时间点为 `null` 直接拒绝，不当"清掉全部" |
 | 环节平均耗时（Camunda 无对应 API，扩展） | ✅ | `getAverageDurationByActivity` |
 | `createHistoricProcessInstanceQuery` | 🟡 | 只有 `getCompletedInstances` / `getCompletedInstancesByUser` 两个写死口径的方法，**没有可组合的查询对象** |
-| `createHistoricTaskInstanceQuery` | 🟡 | 只有 `getDoneList(userId, page)` |
 | `createHistoricVariableInstanceQuery` | ❌ | 变量审计写进了 `WfComment(type=variable)`，但不可查询 |
 | `createHistoricDetailQuery`（变量/字段变更明细） | ❌ | 审计场景常需要"这个变量什么时候被谁改的" |
 | `createHistoricIncidentQuery` | ❌ | |
@@ -247,7 +247,8 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ### P1 —— 引擎成熟度
 
-~~历史查询体系~~（活动 Query + 历史清理已实现；**剩余**：历史任务/流程实例/变量的可组合 Query）·
+~~历史查询体系~~（活动 Query + 历史任务 Query + 历史清理已实现；
+**剩余**：历史流程实例 / 变量的可组合 Query）·
 Repository 完整化（定义挂起/撤销/模型回读）·
 identity link 与任务挂起 · 复杂网关 · Filter
 
@@ -259,7 +260,7 @@ identity link 与任务挂起 · 复杂网关 · Filter
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 210 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 220 个测试兜着
 - 本轮从测试与审计中逼出并修复的**真实缺陷 18 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **扩展面明显比 Camunda 窄**（3 个 hook vs 几十个监听点），这是与 Camunda 差距最大、

@@ -10,6 +10,7 @@ import java.util.Map;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfProcessStatus;
+import com.zifang.z.wf.core.model.WfTask;
 import com.zifang.z.wf.core.persistence.WfPersistence;
 import com.zifang.z.wf.core.persistence.WfHistoricActivityInstanceQuery;
 import com.zifang.z.wf.core.persistence.WfProcessInstanceQuery;
@@ -54,6 +55,63 @@ public class WfHistoryService {
     /** 与 {@link #queryActivities} 同条件的条数。 */
     public long countActivities(WfHistoricActivityInstanceQuery query) {
         return persistence.countActivityInstances(query);
+    }
+
+    /**
+     * 查历史任务（已办结的任务）。
+     *
+     * <p>直接复用 {@link WfTaskQuery} 而不是再造一个
+     * {@code WfHistoricTaskInstanceQuery}：本引擎的"历史任务"就是任务表里
+     * {@code STATUS=COMPLETED} 的行，条件字段与运行态查询完全重合，
+     * 另造一个类只会让两套字段各自演化。Camunda 分成两个类是因为它有独立的
+     * 历史表；本仓没有那张表。
+     *
+     * <p>本方法强制补上 {@code completedOnly}，所以调用方传进来的条件里
+     * <b>不能</b>带 {@code openOnly} —— 那种条件会与"只看已办结"打架，
+     * 静默返回空集。这里直接拒绝。
+     */
+    public List<WfTask> queryCompletedTasks(WfTaskQuery query) {
+        return persistence.queryTasks(asHistoric(query));
+    }
+
+    /** 与 {@link #queryCompletedTasks} 同条件的条数。 */
+    public long countCompletedTasks(WfTaskQuery query) {
+        return persistence.countTasks(asHistoric(query));
+    }
+
+    /**
+     * 把调用方的条件收敛成"只看已办结"。
+     *
+     * <p>不改动调用方传进来的对象：{@code WfTaskQuery} 是可变的链式 builder，
+     * 复用同一个实例改条件会波及调用方手里还在用的那一份。
+     */
+    private WfTaskQuery asHistoric(WfTaskQuery query) {
+        if (query != null && query.isOpenOnly()) {
+            throw new IllegalArgumentException(
+                    "历史任务查询不接受 openOnly：已办结的任务不可能是未完成的。"
+                            + "要查待办请用 WfTaskService / WfTaskQuery#setOpenOnly。");
+        }
+        WfTaskQuery historic = query == null ? new WfTaskQuery() : copyOf(query);
+        return historic.setCompletedOnly(true);
+    }
+
+    private WfTaskQuery copyOf(WfTaskQuery source) {
+        WfTaskQuery copy = new WfTaskQuery();
+        copy.setProcessInstanceId(source.getProcessInstanceId());
+        copy.setDefinitionId(source.getDefinitionId());
+        copy.setAssignee(source.getAssignee());
+        copy.setOwner(source.getOwner());
+        copy.setCompleterId(source.getCompleterId());
+        copy.setCategory(source.getCategory());
+        copy.setCandidateUsers(source.getCandidateUsers());
+        copy.setCandidateGroups(source.getCandidateGroups());
+        copy.setStatus(source.getStatus());
+        copy.setUnassignedOnly(source.isUnassignedOnly());
+        copy.setCreateTimeFrom(source.getCreateTimeFrom());
+        copy.setCreateTimeTo(source.getCreateTimeTo());
+        copy.setPageNum(source.getPageNum());
+        copy.setPageSize(source.getPageSize());
+        return copy;
     }
 
     /**

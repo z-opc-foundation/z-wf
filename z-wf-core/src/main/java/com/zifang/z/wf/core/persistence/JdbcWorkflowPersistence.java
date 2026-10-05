@@ -731,89 +731,113 @@ public class JdbcWorkflowPersistence implements WfPersistence {
     public List<WfTask> queryTasks(WfTaskQuery query) {
         StringBuilder sql = new StringBuilder("SELECT * FROM ZWF_TASK WHERE 1=1");
         List<Object> args = new ArrayList<>();
-        if (query != null) {
-            appendIfNotBlank(sql, args, " AND PROC_ID=?", query.getProcessInstanceId());
-            appendIfNotBlank(sql, args, " AND DEF_ID=?", query.getDefinitionId());
-            appendIfNotBlank(sql, args, " AND COMPLETER_ID=?", query.getCompleterId());
-            appendIfNotBlank(sql, args, " AND CATEGORY=?", query.getCategory());
-            if (query.getAssignee() != null || query.getOwner() != null) {
-                // 待办 = assignee 命中 或 owner 命中（委派态）
-                sql.append(" AND (");
-                boolean first = true;
-                if (query.getAssignee() != null) {
-                    sql.append("ASSIGNEE=?");
-                    args.add(query.getAssignee());
-                    first = false;
-                }
-                if (query.getOwner() != null) {
-                    if (!first) {
-                        sql.append(" OR ");
-                    }
-                    sql.append("OWNER=?");
-                    args.add(query.getOwner());
-                }
-                sql.append(")");
-            }
-            if (query.getStatus() != null) {
-                sql.append(" AND STATUS=?");
-                args.add(query.getStatus().name());
-            }
-            if (query.isOpenOnly()) {
-                sql.append(" AND STATUS IN ('CREATED','ASSIGNED','DELEGATED')");
-            }
-            if (query.isCompletedOnly()) {
-                sql.append(" AND STATUS='COMPLETED'");
-            }
-            if (query.isUnassignedOnly()) {
-                sql.append(" AND (ASSIGNEE IS NULL OR ASSIGNEE='')");
-            }
-            // 候选人过滤：CANDIDATE_* 存的是 JSON 数组文本，用 LIKE 做子串匹配。
-            // 精度有限（"u1" 会命中 "u12"），但审批候选池通常是几十人的量级，
-            // 且"多召回几个再由 service 层用 isClaimableBy 精确判定"比"漏召回"安全 ——
-            // 反过来（SQL 过滤过严导致可认领的人看不到）才是真问题。
-            if (query.getCandidateUsers() != null && !query.getCandidateUsers().isEmpty()) {
-                sql.append(" AND (");
-                for (int i = 0; i < query.getCandidateUsers().size(); i++) {
-                    if (i > 0) {
-                        sql.append(" OR ");
-                    }
-                    sql.append("CANDIDATE_USERS LIKE ?");
-                    args.add("%\"" + query.getCandidateUsers().get(i) + "\"%");
-                }
-                sql.append(")");
-            }
-            if (query.getCandidateGroups() != null && !query.getCandidateGroups().isEmpty()) {
-                sql.append(" AND (");
-                for (int i = 0; i < query.getCandidateGroups().size(); i++) {
-                    if (i > 0) {
-                        sql.append(" OR ");
-                    }
-                    sql.append("CANDIDATE_GROUPS LIKE ?");
-                    args.add("%\"" + query.getCandidateGroups().get(i) + "\"%");
-                }
-                sql.append(")");
-            }
-            if (query.getCreateTimeFrom() != null) {
-                sql.append(" AND CREATE_TIME>=?");
-                args.add(timestamp(query.getCreateTimeFrom()));
-            }
-            if (query.getCreateTimeTo() != null) {
-                sql.append(" AND CREATE_TIME<=?");
-                args.add(timestamp(query.getCreateTimeTo()));
-            }
-        }
-        // 与内存实现同序：未完成优先 → 优先级高优先 → 新建优先
+        appendTaskFilters(sql, args, query);
+        // 与内存实现同序：未完成优先 -> 优先级高优先 -> 新建优先
         sql.append(" ORDER BY CASE STATUS WHEN 'COMPLETED' THEN 1 ELSE 0 END, PRIORITY DESC, CREATE_TIME DESC");
-        List<WfTask> all = queryList(sql.toString(), args.toArray(), new RowMapper<WfTask>() {
+        // 分页下推到 SQL。此前是把全表拉进内存再 subList，
+        // 任务表是审批系统里增长最快的一张（每步一个待办），每翻一页都付一次全表拉取。
+        sql.append(" LIMIT ? OFFSET ?");
+        args.add(query == null || query.getPageSize() <= 0 ? 20 : query.getPageSize());
+        args.add(query == null ? 0 : query.getOffset());
+        return queryList(sql.toString(), args.toArray(), new RowMapper<WfTask>() {
             @Override
             public WfTask map(ResultSet rs) throws SQLException {
                 return mapTask(rs);
             }
         });
-        int from = query == null ? 0 : query.getOffset();
-        int size = query == null || query.getPageSize() <= 0 ? 20 : query.getPageSize();
-        return from >= all.size() ? new ArrayList<WfTask>()
-                : new ArrayList<>(all.subList(from, Math.min(all.size(), from + size)));
+    }
+
+    @Override
+    public long countTasks(WfTaskQuery query) {
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM ZWF_TASK WHERE 1=1");
+        List<Object> args = new ArrayList<>();
+        appendTaskFilters(sql, args, query);
+        Long count = queryOne(sql.toString(), args.toArray(), COUNT_MAPPER);
+        return count == null ? 0L : count;
+    }
+
+    /**
+     * 任务查询的条件拼装；{@link #queryTasks} 与 {@link #countTasks} 共用。
+     *
+     * <p>共用不是为了少写几行：两处各拼一遍条件，迟早有一边漏掉一个过滤项，
+     * 于是列表页显示"共 3 条"而实际列出来 5 条，或者翻到第二页冒出重复的条目。
+     * count 与列表口径必须同源，否则那个"共 N 条"就是在骗人。
+     */
+    private void appendTaskFilters(StringBuilder sql, List<Object> args, WfTaskQuery query) {
+        if (query == null) {
+            return;
+        }
+        // 条件自相矛盾时在这里就抛，而不是拼出恒假的 SQL 返回空集
+        query.assertConsistent();
+        appendIfNotBlank(sql, args, " AND PROC_ID=?", query.getProcessInstanceId());
+        appendIfNotBlank(sql, args, " AND DEF_ID=?", query.getDefinitionId());
+        appendIfNotBlank(sql, args, " AND COMPLETER_ID=?", query.getCompleterId());
+        appendIfNotBlank(sql, args, " AND CATEGORY=?", query.getCategory());
+        if (query.getAssignee() != null || query.getOwner() != null) {
+            // 待办 = assignee 命中 或 owner 命中（委派态）
+            sql.append(" AND (");
+            boolean first = true;
+            if (query.getAssignee() != null) {
+                sql.append("ASSIGNEE=?");
+                args.add(query.getAssignee());
+                first = false;
+            }
+            if (query.getOwner() != null) {
+                if (!first) {
+                    sql.append(" OR ");
+                }
+                sql.append("OWNER=?");
+                args.add(query.getOwner());
+            }
+            sql.append(")");
+        }
+        if (query.getStatus() != null) {
+            sql.append(" AND STATUS=?");
+            args.add(query.getStatus().name());
+        }
+        if (query.isOpenOnly()) {
+            sql.append(" AND STATUS IN ('CREATED','ASSIGNED','DELEGATED')");
+        }
+        if (query.isCompletedOnly()) {
+            sql.append(" AND STATUS='COMPLETED'");
+        }
+        if (query.isUnassignedOnly()) {
+            sql.append(" AND (ASSIGNEE IS NULL OR ASSIGNEE='')");
+        }
+        // 候选人过滤：CANDIDATE_* 存的是 JSON 数组文本，用 LIKE 做子串匹配。
+        // 精度有限（"u1" 会命中 "u12"），但审批候选池通常是几十人的量级，
+        // 且"多召回几个再由 service 层用 isClaimableBy 精确判定"比"漏召回"安全 ——
+        // 反过来（SQL 过滤过严导致可认领的人看不到）才是真问题。
+        if (query.getCandidateUsers() != null && !query.getCandidateUsers().isEmpty()) {
+            sql.append(" AND (");
+            for (int i = 0; i < query.getCandidateUsers().size(); i++) {
+                if (i > 0) {
+                    sql.append(" OR ");
+                }
+                sql.append("CANDIDATE_USERS LIKE ?");
+                args.add("%\"" + query.getCandidateUsers().get(i) + "\"%");
+            }
+            sql.append(")");
+        }
+        if (query.getCandidateGroups() != null && !query.getCandidateGroups().isEmpty()) {
+            sql.append(" AND (");
+            for (int i = 0; i < query.getCandidateGroups().size(); i++) {
+                if (i > 0) {
+                    sql.append(" OR ");
+                }
+                sql.append("CANDIDATE_GROUPS LIKE ?");
+                args.add("%\"" + query.getCandidateGroups().get(i) + "\"%");
+            }
+            sql.append(")");
+        }
+        if (query.getCreateTimeFrom() != null) {
+            sql.append(" AND CREATE_TIME>=?");
+            args.add(timestamp(query.getCreateTimeFrom()));
+        }
+        if (query.getCreateTimeTo() != null) {
+            sql.append(" AND CREATE_TIME<=?");
+            args.add(timestamp(query.getCreateTimeTo()));
+        }
     }
 
     /**

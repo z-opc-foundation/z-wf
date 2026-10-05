@@ -204,4 +204,31 @@ public class WfTaskQuery {
     public int getOffset() {
         return (pageNum - 1) * pageSize;
     }
+
+    /**
+     * 条件自相矛盾时直接拒绝，不让它变成一个空结果。
+     *
+     * <p>{@code openOnly} 与 {@code completedOnly} 同时为真，两套持久化实现都会拼出
+     * 恒假的条件（SQL 侧是 {@code STATUS IN (...) AND STATUS='COMPLETED'}，
+     * 内存侧是两次 if 依次过滤）—— 查询照跑，零错误，零结果。
+     * 调用方看到空列表时分不清是"确实没有"还是"条件打架"，而这种歧义在线上
+     * 通常表现为"待办怎么一条都没有"，排查成本极高。
+     *
+     * <p>所以在进入持久层之前就把它挡下来。同理把 createTimeFrom / createTimeTo
+     * 的倒置也算进去：那会静默返回空集，而写反一个时间下界是极常见的手误。
+     */
+    public void assertConsistent() {
+        if (openOnly && completedOnly) {
+            throw new IllegalArgumentException(
+                    "任务查询条件矛盾：openOnly 与 completedOnly 不能同时为真"
+                            + "（未完成的任务不可能同时是已完成的）。"
+                            + "要查已办请只用 completedOnly，要查待办请只用 openOnly。");
+        }
+        if (createTimeFrom != null && createTimeTo != null
+                && createTimeFrom.after(createTimeTo)) {
+            throw new IllegalArgumentException(
+                    "任务查询条件矛盾：createTimeFrom(" + createTimeFrom
+                            + ") 晚于 createTimeTo(" + createTimeTo + ")。");
+        }
+    }
 }

@@ -373,7 +373,85 @@ class WfHistoryQueryTest {
                 "两个任务节点各一组，实际: " + averages);
     }
 
-    // ==================== 历史清理 ====================
+    // ==================== 历史任务 ====================
+
+    @Test
+    @DisplayName("历史任务查询：只有已办结的，与 count 口径一致")
+    void completedTasksMatchCount() {
+        fresh();
+        String pid = runToCompletion("H-1");
+        // 再起一条不办结，它有一个未完成任务
+        WfDefinition definition = new WfXmlParser().parse(BPMN);
+        new WfRepositoryService(repo).deploy(definition);
+        String running = runtime.startProcessInstance(definition, "H-2", "alice", null,
+                new HashMap<String, Object>());
+
+        List<WfTask> done = history.queryCompletedTasks(
+                new WfTaskQuery().setProcessInstanceId(pid).setPageNum(1).setPageSize(50));
+        assertEquals(2, done.size(), "一条流程办结后产生两个已办结任务");
+        for (WfTask t : done) {
+            assertEquals(WfTask.Status.COMPLETED, t.getStatus());
+        }
+        assertEquals(2, history.countCompletedTasks(
+                new WfTaskQuery().setProcessInstanceId(pid)),
+                "count 必须与列表同口径");
+
+        assertEquals(0, history.queryCompletedTasks(
+                new WfTaskQuery().setProcessInstanceId(running)
+                        .setPageNum(1).setPageSize(50)).size(),
+                "在途流程的任务还没办结，不该出现在已办列表里");
+    }
+
+    @Test
+    @DisplayName("按办理人查已办：'我办过哪些'")
+    void completedTasksByCompleter() {
+        fresh();
+        runToCompletion("H-1");
+        runToCompletion("H-2");
+
+        assertEquals(2, history.queryCompletedTasks(new WfTaskQuery()
+                .setCompleterId("boss").setPageNum(1).setPageSize(50)).size());
+        assertEquals(2, history.queryCompletedTasks(new WfTaskQuery()
+                .setCompleterId("ceo").setPageNum(1).setPageSize(50)).size());
+        assertEquals(0, history.queryCompletedTasks(new WfTaskQuery()
+                .setCompleterId("alice").setPageNum(1).setPageSize(50)).size(),
+                "alice 只是发起人，没有办结任何步骤");
+        assertEquals(2, history.countCompletedTasks(new WfTaskQuery().setCompleterId("boss")));
+    }
+
+    @Test
+    @DisplayName("历史任务查询拒绝 openOnly：条件打架时抛错，不返回空集")
+    void historicTaskQueryRejectsOpenOnly() {
+        fresh();
+        runToCompletion("H-1");
+
+        WfTaskQuery contradictory = new WfTaskQuery().setOpenOnly(true).setPageNum(1).setPageSize(50);
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> history.queryCompletedTasks(contradictory));
+        assertTrue(ex.getMessage().contains("openOnly"), ex.getMessage());
+
+        assertThrows(IllegalArgumentException.class, () -> history.countCompletedTasks(contradictory));
+    }
+
+    @Test
+    @DisplayName("历史任务查询不改调用方的条件对象")
+    void historicTaskQueryDoesNotMutateCallerQuery() {
+        fresh();
+        runToCompletion("H-1");
+
+        WfTaskQuery caller = new WfTaskQuery().setProcessInstanceId(null)
+                .setCompleterId("boss").setPageNum(1).setPageSize(50);
+        int firstPass = history.queryCompletedTasks(caller).size();
+        assertTrue(firstPass > 0, "前置：跑完的那条流程里 boss 确实办结过步骤");
+
+        assertTrue(!caller.isCompletedOnly(),
+                "把调用方传进来的 builder 改了条件，会波及它手里还在用的那一份；"
+                        + "下一次复用同一个对象查待办就会莫名其妙少一条");
+        assertEquals(firstPass, history.queryCompletedTasks(caller).size(),
+                "同一个查询对象连用两次，结果必须一致");
+    }
+
+    // ==================== 清理 ====================
 
     @Test
     @DisplayName("清理只删已结束流程，在途流程的历史完好无损")

@@ -150,8 +150,20 @@ public interface WfPersistence {
 
     /**
      * 查任务列表。
+     *
+     * <p>条件自相矛盾（{@code openOnly} 与 {@code completedOnly} 同时为真、
+     * 创建时间区间倒置）时实现必须抛 {@link IllegalArgumentException}，
+     * 不允许拼出恒假条件后返回一个空列表。
      */
     List<WfTask> queryTasks(WfTaskQuery query);
+
+    /**
+     * 任务条数，与 {@link #queryTasks} 的条件必须一致，<b>忽略分页</b>。
+     *
+     * <p>单独给一个 count 而不是"把 pageSize 设成最大再数长度"：
+     * 后者在 JDBC 上就是一次全表拉取，待办列表页每翻一页都付一次。
+     */
+    long countTasks(WfTaskQuery query);
 
     // ==================== 历史 ====================
 

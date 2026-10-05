@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
@@ -277,6 +278,59 @@ class InMemoryWorkflowPersistenceTest {
         List<WfProcessInstance> found = persistence.findProcessInstancesByBusinessKey("ORDER-1");
         assertEquals(1, found.size());
         assertEquals("p1", found.get(0).getId());
+    }
+
+    // ==================== 查询条件自相矛盾时必须拒绝 ====================
+
+    @Test
+    @DisplayName("openOnly 与 completedOnly 同时为真直接抛错，不返回空列表")
+    void contradictoryTaskFlagsAreRejected() {
+        persistence.saveTask(task("t1", "u1", WfTask.Status.CREATED, 1));
+        persistence.saveTask(task("t2", "u1", WfTask.Status.COMPLETED, 1));
+
+        // 不加检查时，这里会静默返回空集：调用方看到"没有待办"，
+        // 实际是条件打架，线上表现为"待办怎么一条都没有"，排查成本极高
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> persistence.queryTasks(new WfTaskQuery()
+                        .setOpenOnly(true).setCompletedOnly(true)));
+        assertTrue(ex.getMessage().contains("openOnly"), ex.getMessage());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> persistence.countTasks(new WfTaskQuery()
+                        .setOpenOnly(true).setCompletedOnly(true)));
+    }
+
+    @Test
+    @DisplayName("创建时间区间倒置直接抛错")
+    void invertedTimeRangeIsRejected() {
+        persistence.saveTask(task("t1", "u1", WfTask.Status.CREATED, 1));
+        assertThrows(IllegalArgumentException.class,
+                () -> persistence.queryTasks(new WfTaskQuery()
+                        .setCreateTimeFrom(new Date(2000L))
+                        .setCreateTimeTo(new Date(1000L))));
+    }
+
+    @Test
+    @DisplayName("countTasks 与 queryTasks 同口径，且忽略分页")
+    void countTasksMatchesList() {
+        for (int i = 0; i < 7; i++) {
+            persistence.saveTask(task("t" + i, i % 2 == 0 ? "u1" : "u2",
+                    i < 3 ? WfTask.Status.COMPLETED : WfTask.Status.CREATED, 1));
+        }
+        // i=0,1,2 已完成；i=3..6 未完成。i%2==0 的落在 u1（i=0,2,4,6），
+        // 所以 u1 的未完成任务是 i=4 与 i=6 两条
+        assertEquals(3, persistence.queryTasks(new WfTaskQuery()
+                .setCompletedOnly(true).setPageNum(1).setPageSize(50)).size());
+        assertEquals(3, persistence.countTasks(new WfTaskQuery().setCompletedOnly(true)));
+
+        assertEquals(7, persistence.countTasks(new WfTaskQuery()));
+        // 带了分页参数也必须返回全量条数，否则"共 N 条"会随翻页变化
+        assertEquals(7, persistence.countTasks(new WfTaskQuery().setPageNum(2).setPageSize(3)));
+
+        assertEquals(2, persistence.countTasks(new WfTaskQuery().setAssignee("u1")
+                .setOpenOnly(true)));
+        assertEquals(2, persistence.queryTasks(new WfTaskQuery().setAssignee("u1")
+                .setOpenOnly(true).setPageNum(1).setPageSize(50)).size());
     }
 
     private WfTask task(String id, String assignee, WfTask.Status status, int priority) {
