@@ -355,3 +355,65 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 **一条元教训**（这轮踩了两遍）：改完 `-pl <module>` 只装**当前模块**，
 被依赖的兄弟模块跑的是本地仓里的**旧 jar** —— 我的 web 层修复第一次"没生效"就是这么来的。
 验证跨模块改动必须 `mvn -pl <module> -am`（`-am` = 连带构建依赖），或先 `install` 上游模块。
+
+---
+
+## 12. 依赖审计
+
+原则：**领域与工具逻辑全部走自研仓（`io.github.yuku123`）**，第三方只承担平台职责。
+
+### 12.1 自研依赖（直接声明）
+
+| 模块 | 自研依赖 |
+|---|---|
+| `z-wf-core` | `z-util-core`（Result/PageResult）、`z-util-wf-kernel`（协议层）、`z-util-parser-json`（JSON 定义解析）、`z-util-expr-el`（网关条件求值）、`z-util-expr-js`（脚本任务）、`z-util-jdbc`（JDBC 支撑，optional） |
+| `z-wf-web` | `z-wf-core`、`z-util-core` |
+| `z-wf-starter` | `z-wf-web`、`z-config-spring-boot-starter`、`z-rpc-spring-boot-starter` |
+| `z-wf-admin` | `z-wf-starter`/`z-wf-web`/`z-wf-core`、`z-config`/`z-rpc` starter |
+
+**没有** fastjson / gson / dom4j / jdom / javax.el 这类替代品。
+JSON 走 `z-util-parser-json`，条件求值走 `z-util-expr-el`，BPMN 语义与 z-util-wf 共用。
+
+### 12.2 第三方依赖（仅平台职责）
+
+Spring Boot（DI + 自动装配 + Web MVC）、Jackson（经 `z-util-core` 传递）、
+Log4j2（经 `z-util-core` 传递）、Druid（经 `z-util-jdbc` 传递）、
+MySQL 驱动 / H2（admin 运行时）、Knife4j（admin 的接口文档 UI）、
+swagger-annotations（web 层 `provided`，只取注解）。
+
+### 12.3 版本口径：一个必须记住的坑
+
+**只定义 `<z-util.version>` 属性是盖不住 `import` 进来的 BOM 的。**
+
+`z-boot-parent:1.0.21` 引入 `z-boot-fleet:1.0.1`，而 fleet 的 `dependencyManagement` 里写的是
+`${z-util.version}`。**import 进来的 BOM 是用它自己 pom 的属性上下文解析的**
+（fleet 1.0.1 里该属性 = 1.0.14），消费方再定义同名属性不会生效。
+
+实测症状：pom 里属性明明写着 1.0.18，`dependency:tree` 仍然显示 `z-util-core:1.0.14`，
+classpath 上同时存在 `z-util-core 1.0.14` 与 `z-util-wf-kernel 1.0.18` —— 同一个仓两个版本。
+而协议层（kernel）与解析器分属两个版本，正是"同一套 BPMN 语义出现两份实现"的温床。
+
+正确做法是在**本仓 `dependencyManagement`** 里把用到的 z-util 坐标逐个显式钉住
+（本仓的 dependencyManagement 优先级高于 import 的 BOM），**传递依赖也要钉**
+（dependencyManagement 对传递依赖同样生效，否则 z-util-jdbc / z-config / z-rpc
+拖进来的 z-util-aop、z-util-bc、z-util-expr-sql 会停在 1.0.14）。
+本仓已钉 12 个 z-util 坐标，全部解析到 1.0.18。
+
+**已知钉不到的两项**：`z-util-dsl`、`z-util-proxy` 的 1.0.18 **z-util 侧尚未发布**。
+它们只出现在 `z-util-jdbc`（optional）分支下，不影响 z-wf 的核心链路，
+但这是 z-util 的发布缺口，补齐后本仓的钉版列表可再收紧。
+
+### 12.4 XML 解析为什么没用 z-util-parser-xml
+
+`z-util-parser-xml` 的 `XmlUtil` **没有 XXE 防护**（无 DOCTYPE 拒绝、无 `setFeature`、
+无外部实体禁用）。BPMN 定义由业务方上传，是典型的 XXE 攻击面（本地文件读取、
+外部实体 SSRF），因此 `WfXmlParser` 保留了带防护的 DOM 实现，并有一条
+`rejectsDoctype` 测试守着这个安全属性。
+
+**若要改用 z-util 的 XML 解析，建议先给 `z-util-parser-xml` 补上 XXE 硬化**
+（在 z-util 侧改一次、全组织受益），而不是在 z-wf 侧加一层前置 DOCTYPE 拦截 ——
+后者只在 z-wf 生效，其他用 `XmlUtil` 的仓仍然是敞开的。
+
+### 12.5 死依赖
+
+`z-wf-web` 的 `lombok` 已移除：全仓零 `lombok` import，VO 全是手写 getter/setter。
