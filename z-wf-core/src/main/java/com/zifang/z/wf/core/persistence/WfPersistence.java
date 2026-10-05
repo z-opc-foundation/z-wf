@@ -77,6 +77,18 @@ public interface WfPersistence {
     List<WfDefinition> findDefinitionsByCategory(String category);
 
     /**
+     * 物理删除某个版本的定义。
+     *
+     * <p><b>调用方必须先确认没有在跑的实例</b>：本引擎每次推进都按
+     * {@code (definitionKey, version)} 重新载入定义，定义一删，那个实例就再也推不动了
+     * （下一次 completeTask 报"流程定义不存在"，且永远不会自愈）。
+     * 持久层不做这个判断 —— 它没有"实例是否在途"的口径，猜错比不拦更糟。
+     *
+     * @return 是否真的删掉了那一行
+     */
+    boolean deleteDefinition(String key, int version);
+
+    /**
      * 改某个版本的停用状态。
      *
      * <p>不存在时返回 {@code false}，由上层决定报什么错 —— 持久层不猜"是不是 key 拼错了"。

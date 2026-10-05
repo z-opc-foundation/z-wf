@@ -214,6 +214,44 @@ class JdbcWorkflowPersistenceTest {
     }
 
     @Test
+    @DisplayName("物理删除定义：只删指定版本，别的版本不受影响")
+    void definitionDeleteIsPerVersion() {
+        WfDefinition v1 = new WfDefinition("delProc", "删除流程");
+        v1.setVersion(1);
+        WfNodeBundle.of(v1);
+        v1.buildIndex();
+        persistence.saveDefinition(v1);
+
+        WfDefinition v2 = new WfDefinition("delProc", "删除流程");
+        v2.setVersion(2);
+        WfNodeBundle.of(v2);
+        v2.buildIndex();
+        persistence.saveDefinition(v2);
+
+        assertTrue(persistence.deleteDefinition("delProc", 2));
+        assertNull(persistence.findDefinition("delProc", 2), "v2 应当被删掉");
+        assertNotNull(persistence.findDefinition("delProc", 1), "v1 应当还在 —— "
+                + "只删指定版本，别的版本不受影响");
+
+        // 删不存在的返回 false，让上层报"可能已被并发删除"而不是静默成功
+        assertFalse(persistence.deleteDefinition("delProc", 2));
+        assertFalse(persistence.deleteDefinition("noSuchKey", 1));
+
+        // 实例按 key + 版本查
+        WfProcessInstance instance = new WfProcessInstance("p-1", "delProc", "delProc:1");
+        instance.setDefinitionVersion(1);
+        instance.setStatus(WfProcessStatus.ACTIVE);
+        persistence.saveProcessInstance(instance);
+        WfProcessInstanceQuery query = new WfProcessInstanceQuery()
+                .setDefinitionKey("delProc").setDefinitionVersion(1)
+                .setPageNum(1).setPageSize(10);
+        assertEquals(1, persistence.countProcessInstances(query));
+        assertEquals(0, persistence.countProcessInstances(
+                query.setDefinitionVersion(2)),
+                "版本过滤没生效：v2 上并没有实例");
+    }
+
+    @Test
     @DisplayName("job 类型落库，且按类型过滤与内存实现同口径")
     void jobTypeIsPersistedAndFiltered() {
         WfJob timer = newJob("j-timer", "p1", "e1", "b1", 1000L);

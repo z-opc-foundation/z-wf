@@ -7,6 +7,7 @@ import java.util.Map;
 
 import javax.annotation.Resource;
 
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -72,9 +73,15 @@ public class WfDefinitionController {
         return Result.success(repositoryService.getProcessModel(key, version));
     }
 
+    @DeleteMapping("/definition")
+    @Operation(summary = "007_物理删除某个版本（仍有在途实例时拒绝）")
+    public Result<Void> delete(@RequestParam String key, @RequestParam Integer version) {
+        repositoryService.deleteDefinition(key, version);
+        return Result.success();
+    }
+
     @PostMapping("/suspend")
-    @Operation(summary = "004_停用某个版本（不再接新单，在跑的实例不受影响）")
-    public Result<Void> suspend(@RequestParam String key, @RequestParam Integer version) {
+    @Operation(summary = "004_停用某个版本（不再接新单，在跑的实例不受影响）")    public Result<Void> suspend(@RequestParam String key, @RequestParam Integer version) {
         repositoryService.suspendDefinition(key, version);
         return Result.success();
     }

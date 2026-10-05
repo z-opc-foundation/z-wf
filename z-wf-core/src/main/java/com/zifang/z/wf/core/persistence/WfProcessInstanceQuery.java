@@ -26,6 +26,12 @@ public class WfProcessInstanceQuery {
     private WfProcessStatus status;
 
     /**
+     * 定义版本。必须与 {@link #definitionKey} 一起用 ——
+     * 只给版本不给 key 会命中所有流程的同版本号，返回一批毫无关系的实例。
+     */
+    private Integer definitionVersion;
+
+    /**
      * 只要终态实例（COMPLETED / EXTERNALLY_TERMINATED / INTERNALLY_TERMINATED）。
      *
      * <p>单独给一个开关而不是让调用方把三种状态各查一遍再合并：终态有三种，
@@ -61,6 +67,15 @@ public class WfProcessInstanceQuery {
 
     public String getBusinessKey() {
         return businessKey;
+    }
+
+    public Integer getDefinitionVersion() {
+        return definitionVersion;
+    }
+
+    public WfProcessInstanceQuery setDefinitionVersion(Integer definitionVersion) {
+        this.definitionVersion = definitionVersion;
+        return this;
     }
 
     public WfProcessInstanceQuery setBusinessKey(String businessKey) {
@@ -142,6 +157,12 @@ public class WfProcessInstanceQuery {
             throw new IllegalArgumentException(
                     "流程实例查询条件矛盾：unfinishedOnly 只收在途实例（ACTIVE / SUSPENDED），"
                             + "而 status 却是终态 " + status + "。");
+        }
+        if (definitionVersion != null && (definitionKey == null || definitionKey.trim().isEmpty())) {
+            // 静默返回"所有流程的 v3"比不返回更难发现 —— 调用方以为自己问的是某一个流程
+            throw new IllegalArgumentException(
+                    "流程实例查询条件不完整：definitionVersion 必须与 definitionKey 一起给，"
+                            + "只给版本号会命中所有流程的同版本，返回一批无关实例。");
         }
         if (startTimeFrom != null && startTimeTo != null
                 && startTimeFrom.after(startTimeTo)) {

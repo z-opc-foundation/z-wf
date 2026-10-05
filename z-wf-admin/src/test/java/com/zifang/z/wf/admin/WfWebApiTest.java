@@ -321,6 +321,47 @@ class WfWebApiTest {
     }
 
     @Test
+    @DisplayName("删定义端点：有在途实例时拒绝，终止后可删")
+    void deleteDefinitionEndpoint() throws Exception {
+        String key = "restDel-" + (System.nanoTime() % 100000);
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"" + key + "\" name=\"待删流程\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"ds1\"/>\n"
+                + "    <userTask id=\"dapprove\" name=\"审批\" zifang:assignee=\"d-boss\"/>\n"
+                + "    <endEvent id=\"de1\"/>\n"
+                + "    <sequenceFlow id=\"df1\" sourceRef=\"ds1\" targetRef=\"dapprove\"/>\n"
+                + "    <sequenceFlow id=\"df2\" sourceRef=\"dapprove\" targetRef=\"de1\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        postOk("/api/wf/definitions/deploy", body("key", key, "xml", xml));
+
+        Map<String, Object> start = postOk("/api/approval-center/processes/start",
+                body("definitionKey", key, "businessKey", "DEL-BUS-1", "userId", "del-alice"));
+        String processId = (String) start.get("data");
+        assertNotNull(processId);
+
+        // 有在途实例时必须拒绝
+        ResponseEntity<String> refused = exchange(HttpMethod.DELETE,
+                "/api/wf/definitions/definition?key=" + key + "&version=1", null);
+        assertEquals(statusOf("onDefinition"), refused.getStatusCode(),
+                "定义一删在办的实例就推不动了，端点必须拒绝。实际: " + refused.getBody());
+        assertTrue(refused.getBody().contains("在途实例"),
+                "报错要点明挡它的是在途实例。实际: " + refused.getBody());
+
+        // 终止后可以删
+        postOk("/api/wf/process/terminate",
+                body("processInstanceId", processId, "userId", "del-admin", "reason", "作废"));
+        ResponseEntity<String> removed = exchange(HttpMethod.DELETE,
+                "/api/wf/definitions/definition?key=" + key + "&version=1", null);
+        assertEquals(HttpStatus.OK, removed.getStatusCode(),
+                "终止后应当能删。实际: " + removed.getBody());
+        assertTrue(asList(getOk("/api/wf/definitions?keyLike=" + key).get("data")).isEmpty(),
+                "删完不该再查得到这个定义");
+    }
+
+    @Test
     @DisplayName("候选池端点：加人 → 真的能认领 → 移出 → 认领不了")
     void candidatePoolEndpoints() throws Exception {
         String businessKey = "WEB-CAND-" + System.nanoTime();

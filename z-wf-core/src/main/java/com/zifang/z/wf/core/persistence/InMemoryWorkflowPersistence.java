@@ -146,6 +146,12 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
     }
 
     @Override
+    public synchronized boolean deleteDefinition(String key, int version) {
+        Map<Integer, WfDefinition> versions = definitions.get(key);
+        return versions != null && versions.remove(version) != null;
+    }
+
+    @Override
     public synchronized boolean setDefinitionSuspended(String key, int version, boolean suspended) {
         Map<Integer, WfDefinition> versions = definitions.get(key);
         if (versions == null) {
@@ -255,6 +261,12 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
             return true;
         }
         if (isNotBlank(query.getDefinitionKey()) && !query.getDefinitionKey().equals(instance.getDefinitionKey())) {
+            return false;
+        }
+        // 版本必须与 JDBC 侧 appendProcessFilters 同步加，否则"老版本还有没有在跑的单"
+        // 在内存里查、在库里查答案不一样，而删定义前正是靠这个判断挡不挡
+        if (query.getDefinitionVersion() != null
+                && query.getDefinitionVersion().intValue() != instance.getDefinitionVersion()) {
             return false;
         }
         if (isNotBlank(query.getBusinessKey()) && !query.getBusinessKey().equals(instance.getBusinessKey())) {

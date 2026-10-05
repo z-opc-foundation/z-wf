@@ -13,7 +13,9 @@ import com.zifang.z.wf.core.definition.WfDefinitionValidator;
 import com.zifang.z.wf.core.definition.WfJsonParser;
 import com.zifang.z.wf.core.definition.WfValidationIssue;
 import com.zifang.z.wf.core.definition.WfXmlParser;
+import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.persistence.WfPersistence;
+import com.zifang.z.wf.core.persistence.WfProcessInstanceQuery;
 
 /**
  * 流程定义仓库服务 —— 流程定义的部署 / 版本 / 查询。
@@ -184,6 +186,58 @@ public class WfRepositoryService {
     public List<WfDefinition> getDefinitionsByCategory(String category) {
         return persistence.findDefinitionsByCategory(category);
     }
+
+    /**
+     * 物理删除某个版本的流程定义。
+     *
+     * <p>对标 z-camuda 的 {@code deleteDeployment}。本引擎没有独立的"部署"实体 ——
+     * 一次 {@code deployXml} 就是一条 (key, version) 定义记录，所以两者的单位一致。
+     *
+     * <p><b>有在跑的实例时直接拒绝，不做级联删除。</b> 原因是硬约束不是选择：
+     * 每次推进都按 {@code (key, version)} 重新载入定义，定义一删，那个实例就再也
+     * 推不动了 —— 下一次 {@code completeTask} 报"流程定义不存在"，而且永远不会自愈。
+     * 报错里带上在途实例的 businessKey，调用方先 {@code terminate} 再回来删，
+     * 这比"顺手把在办的单一起干掉"安全得多：撤销部署与终止在办的单是两种决策。
+     *
+     * <p>想"下架但保留历史"请用 {@link #suspendDefinition}，它保留在跑的实例。
+     *
+     * @throws WfDefinitionException 定义不存在，或仍有在途实例
+     */
+    public void deleteDefinition(String key, int version) {
+        if (persistence.findDefinition(key, version) == null) {
+            throw new WfDefinitionException("流程定义版本不存在，删除失败: " + key + ":" + version);
+        }
+        WfProcessInstanceQuery running = new WfProcessInstanceQuery()
+                .setDefinitionKey(key)
+                .setDefinitionVersion(version)
+                .setUnfinishedOnly(true)
+                .setPageNum(1).setPageSize(MAX_RUNNING_SAMPLE);
+        List<WfProcessInstance> instances = persistence.queryProcessInstances(running);
+        if (!instances.isEmpty()) {
+            List<String> details = new ArrayList<>();
+            for (WfProcessInstance instance : instances) {
+                details.add(instance.getBusinessKey() == null
+                        ? instance.getId() : instance.getBusinessKey() + "(" + instance.getId() + ")");
+            }
+            boolean truncated = instances.size() >= MAX_RUNNING_SAMPLE;
+            throw new WfDefinitionException("流程定义 [" + key + ":" + version + "] 还有 "
+                    + (truncated ? "至少 " : "") + instances.size() + " 个在途实例，不能删除: "
+                    + details + (truncated ? " …" : "")
+                    + "。定义一删，这些实例就再也推不动了（每次推进都按 key:version 重新载入定义）。"
+                    + "请先调用 WfRuntimeService#terminate 终止它们，或改用 suspendDefinition 下架"
+                    + "（保留在途实例）");
+        }
+        if (!persistence.deleteDefinition(key, version)) {
+            // 上一步刚确认过它在，这一步却说没删掉：并发部署/删除导致的竞态。
+            // 不静默返回 —— 调用方需要知道这次删除没生效
+            throw new WfDefinitionException("删除流程定义失败（可能已被并发删除）: "
+                    + key + ":" + version);
+        }
+        log.info("流程定义已删除: {}:{}", key, version);
+    }
+
+    /** 在途实例报错时最多列出这么多个 —— 报全量会让异常消息长到没人愿意读。 */
+    private static final int MAX_RUNNING_SAMPLE = 10;
 
     /**
      * 停用某个版本：之后不能再启动新实例，<b>已在跑的实例完全不受影响</b>。

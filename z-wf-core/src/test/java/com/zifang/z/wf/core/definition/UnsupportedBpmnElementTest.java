@@ -194,6 +194,11 @@ class UnsupportedBpmnElementTest {
         }
 
         @Override
+        public boolean deleteDefinition(String key, int version) {
+            return false;
+        }
+
+        @Override
         public boolean setDefinitionSuspended(String key, int version, boolean suspended) {
             return false;
         }

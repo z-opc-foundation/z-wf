@@ -486,6 +486,27 @@ public class JdbcWorkflowPersistence implements WfPersistence {
     }
 
     @Override
+    public boolean deleteDefinition(String key, int version) {
+        String sql = "DELETE FROM ZWF_DEFINITION WHERE DEF_KEY=? AND DEF_VERSION=?";
+        Connection connection = null;
+        try {
+            connection = dataSource.getConnection();
+            PreparedStatement ps = connection.prepareStatement(sql);
+            try {
+                ps.setString(1, key);
+                ps.setInt(2, version);
+                return ps.executeUpdate() > 0;
+            } finally {
+                ps.close();
+            }
+        } catch (SQLException e) {
+            throw new WfPersistenceException("删除流程定义失败: " + key + ":" + version, e);
+        } finally {
+            close(connection);
+        }
+    }
+
+    @Override
     public boolean setDefinitionSuspended(String key, int version, boolean suspended) {
         String sql = "UPDATE ZWF_DEFINITION SET SUSPENDED=? WHERE DEF_KEY=? AND DEF_VERSION=?";
         Connection connection = null;
@@ -648,6 +669,11 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         // 条件自相矛盾时在这里就抛，而不是拼出恒假的 SQL 返回空集
         query.assertConsistent();
         appendIfNotBlank(sql, args, " AND DEF_KEY=?", query.getDefinitionKey());
+        if (query.getDefinitionVersion() != null) {
+            // 版本是 Integer，不走 appendIfNotBlank（它只收 String）
+            sql.append(" AND DEF_VERSION=?");
+            args.add(query.getDefinitionVersion());
+        }
         appendIfNotBlank(sql, args, " AND BUSINESS_KEY=?", query.getBusinessKey());
         appendIfNotBlank(sql, args, " AND START_USER_ID=?", query.getStartUserId());
         appendIfNotBlank(sql, args, " AND CATEGORY=?", query.getCategory());
