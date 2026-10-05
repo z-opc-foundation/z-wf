@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xmlns="http://maven.apache.org/POM/4.0.0"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.yuku123</groupId>
+        <artifactId>z-wf</artifactId>
+        <version>${revision}</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>z-wf-web</artifactId>
+    <name>z-wf :: web (REST API: approval center / process ops / task ops / group / health)</name>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-wf-core</artifactId>
+        </dependency>
+
+        <!-- Spring Boot Web（排除默认 logging，由 starter 层换 log4j2） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-starter-logging</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <!-- z-util-core: 对外暴露 Result / PageResult 形状 -->
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-util-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>io.swagger.core.v3</groupId>
+            <artifactId>swagger-annotations</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- lombok 已移除：本模块零 lombok import（VO 全是手写 getter/setter），
+             留着只会让 IDE 提示一堆不存在的生成方法。 -->
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

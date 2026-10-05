@@ -1,0 +1,3 @@
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+com.zifang.z.wf.starter.WfStarterAutoConfiguration,\
+com.zifang.z.wf.starter.WfStarterComponentScan

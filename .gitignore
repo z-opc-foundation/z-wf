@@ -1,0 +1,48 @@
+# ===== Build output =====
+target/
+*.class
+*.jar
+*.war
+
+# flatten-maven-plugin 产物：由 ${revision} 落成的字面量 pom，随 target 一起重建，不入库
+.flattened-pom.xml
+
+# ===== IDE =====
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.classpath
+.project
+.settings/
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== Logs =====
+*.log
+logs/
+
+# ===== Maven =====
+dependency-reduced-pom.xml
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# ===== 本地环境 =====
+# 凭据一律经环境变量注入（见 z-wf-admin/application.properties 的 ${...} 占位）。
+# 任何形如 *.local.properties / .env 的本地覆盖都不入库。
+.env
+.env.*
+*.local.properties
+application-local.properties
+application-h2-test-local.properties
+
+# ===== SQL =====
+*.sql
+
+# ===== 工具 =====
+.claude/
+CLAUDE.md
+.playwright-mcp/

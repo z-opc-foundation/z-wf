@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        z-wf-admin: 独立可启动应用（docker 镜像源 / 本地 java -jar 演示），永不上 Maven Central。
+        对齐 z-camuda-admin 模式：own-parent (spring-boot-starter-parent) + maven.deploy.skip=true。
+        <version> 与依赖的 z-wf-starter 版本必须与 ../pom.xml 的 <revision> 保持一致。
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>2.7.12</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>io.github.yuku123</groupId>
+    <artifactId>z-wf-admin</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+    <name>z-wf :: admin (Standalone App, NOT published to Central)</name>
+    <description>z-wf 独立可启动应用 — 自研流程引擎 + 审批中心 REST。不发 Maven Central。</description>
+
+    <properties>
+        <!-- 与 ../pom.xml <revision> 同步 -->
+        <z-wf.version>1.0.0</z-wf.version>
+        <z-boot-fleet.version>1.0.1</z-boot-fleet.version>
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <java.version>8</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- own-parent 形态下兄弟仓版本只能靠 import fleet 拿权威 -->
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-boot-fleet</artifactId>
+                <version>${z-boot-fleet.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- z-wf 全栈：core (自研引擎) + web (REST) + starter (自动装配)。
+             **三个都要显式列**：starter → web → core 是传递的，但 admin 的测试直接 import
+             com.zifang.z.wf.core.model.* 等类型，靠传递依赖能编译但不稳（core 一旦在 web 里
+             标 optional 就会断）。显式声明让"admin 依赖引擎本体"这件事是 pom 里看得见的。 -->
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-wf-starter</artifactId>
+            <version>${z-wf.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-wf-web</artifactId>
+            <version>${z-wf.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-wf-core</artifactId>
+            <version>${z-wf.version}</version>
+        </dependency>
+
+        <!-- 服务注册 + RPC 暴露（starter 里是 optional 不传递，独立部署必须显式声明） -->
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-config-spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-rpc-spring-boot-starter</artifactId>
+        </dependency>
+
+        <!-- MySQL：z-wf 的 JDBC 持久化落库 -->
+        <dependency>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+            <version>8.0.33</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.alibaba</groupId>
+            <artifactId>druid-spring-boot-starter</artifactId>
+            <version>1.2.18</version>
+        </dependency>
+
+        <!-- H2 内存库：h2-test profile（端到端测试 / 无外部依赖演示） -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.github.xiaoymin</groupId>
+            <artifactId>knife4j-openapi3-spring-boot-starter</artifactId>
+            <version>4.1.0</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-log4j2</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- spring-jdbc：DataSource 自动装配与 DataSourceProperties 初始化要 org.springframework.dao.*。
+             starter 里这条是 optional（库不该强绑 JDBC），但独立部署形态**必须**在这里显式补上 ——
+             缺它的症状极不明显：启动时抛 NoClassDefFoundError: org/springframework/dao/DataAccessException，
+             堆栈一路指到 wfPersistence 的工厂方法，看不出"少了 spring-jdbc"。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>repackage</id>
+                        <goals><goal>repackage</goal></goals>
+                        <configuration>
+                            <classifier>exec</classifier>
+                            <mainClass>com.zifang.z.wf.admin.WfAdminApplication</mainClass>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

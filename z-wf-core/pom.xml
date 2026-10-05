@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xmlns="http://maven.apache.org/POM/4.0.0"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.yuku123</groupId>
+        <artifactId>z-wf</artifactId>
+        <version>${revision}</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>z-wf-core</artifactId>
+    <name>z-wf :: core (self-developed engine: definition + token runtime + services + persistence + hooks/spi)</name>
+
+    <dependencies>
+        <!-- Spring Boot（仅用容器与 @Component，不引 web） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+
+        <!-- z-util-core：Result / PageResult / StatusCode -->
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-util-core</artifactId>
+        </dependency>
+
+        <!-- 协议层：与 z-util-wf 内存引擎共用同一套 BPMN XML 语义（definition 往返契约） -->
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-util-wf-kernel</artifactId>
+        </dependency>
+
+        <!-- JSON 流程定义解析 -->
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-util-parser-json</artifactId>
+        </dependency>
+
+        <!-- 条件表达式求值（网关 condition / 任务完成条件） -->
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-util-expr-el</artifactId>
+        </dependency>
+
+        <!-- 脚本任务：走 z-util 自研 EL，不依赖 javax.script / Nashorn（JDK8+ 已弃用） -->
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-util-expr-js</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- JDBC 持久化实现（DataSource 由业务方提供，本模块只依赖 javax.sql） -->
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-util-jdbc</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- H2：让 JdbcWorkflowPersistence 能在 CI 里被真实验证。
+             没有它，JDBC 实现就是"能编译但从没跑过"的代码 ——
+             而 DDL 方言、乐观锁 UPDATE 的受影响行数、时间类型映射这三处
+             恰恰是只有真跑数据库才会暴露的地方。 -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

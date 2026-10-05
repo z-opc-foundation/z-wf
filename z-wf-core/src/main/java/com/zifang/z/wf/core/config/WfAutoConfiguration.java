@@ -1,0 +1,201 @@
+package com.zifang.z.wf.core.config;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+
+import javax.sql.DataSource;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
+
+import com.zifang.z.wf.core.engine.WfBehaviorRegistry;
+import com.zifang.z.wf.core.engine.WfEngine;
+import com.zifang.z.wf.core.engine.WfIdGenerator;
+import com.zifang.z.wf.core.engine.expression.WfExpressionEvaluator;
+import com.zifang.z.wf.core.hook.WfHookDispatcher;
+import com.zifang.z.wf.core.hook.WfNotificationHook;
+import com.zifang.z.wf.core.hook.WfProcessHook;
+import com.zifang.z.wf.core.hook.WfTaskHook;
+import com.zifang.z.wf.core.persistence.InMemoryWorkflowPersistence;
+import com.zifang.z.wf.core.persistence.JdbcWorkflowPersistence;
+import com.zifang.z.wf.core.persistence.WfPersistence;
+import com.zifang.z.wf.core.service.WfDelegateRegistry;
+import com.zifang.z.wf.core.service.WfHistoryService;
+import com.zifang.z.wf.core.service.WfRepositoryService;
+import com.zifang.z.wf.core.service.WfRuntimeService;
+import com.zifang.z.wf.core.service.WfTaskService;
+
+/**
+ * z-wf 引擎自动装配。
+ *
+ * <p>所有 Bean 都是 {@code @ConditionalOnMissingBean}，
+ * 业务方可以逐个覆盖（例如换掉 {@link WfPersistence} 换自己的存储、
+ * 注册自定义 {@link WfTaskHook}）。<b>引擎不与 Spring 强耦合</b>：
+ * core 里的 engine / service 全是普通对象，不依赖容器也能 new 出来用
+ * （这正是它能被 z-util-wf 那种"纯内存"形态复用或对比的前提）。
+ *
+ * <p>持久化选择：默认 {@code memory}（零依赖，测试与单机小应用直接能跑）；
+ * 配 {@code z.wf.persistence=jdbc} 且容器里有 DataSource 时切到 JDBC。
+ * <b>没有 DataSource 也不报错</b>，而是回落内存实现并打 WARN ——
+ * 让人能在开发期先跑通，而不是启动直接失败。
+ *
+ * @author zifang
+ */
+@Configuration
+@EnableConfigurationProperties(WfProperties.class)
+@ConditionalOnProperty(prefix = "z.wf", name = "enabled", havingValue = "true", matchIfMissing = true)
+public class WfAutoConfiguration {
+
+    private static final Logger log = LoggerFactory.getLogger(WfAutoConfiguration.class);
+
+    // ==================== 持久化 ====================
+
+    @Bean
+    @ConditionalOnMissingBean
+    public WfPersistence wfPersistence(WfProperties properties, ObjectProvider<DataSource> dataSource) {
+        WfPersistence persistence;
+        if ("jdbc".equalsIgnoreCase(properties.getPersistence())) {
+            DataSource ds = dataSource.getIfAvailable();
+            if (ds != null) {
+                persistence = new JdbcWorkflowPersistence(ds);
+                if (properties.isAutoInitializeSchema()) {
+                    persistence.initialize();
+                }
+                log.info("z-wf 使用 JDBC 持久化");
+                return persistence;
+            }
+            log.warn("z.wf.persistence=jdbc 但容器里没有 DataSource，回落到内存实现"
+                    + "（流程数据不会落库，重启即丢）");
+        }
+        persistence = new InMemoryWorkflowPersistence();
+        persistence.initialize();
+        log.info("z-wf 使用内存持久化（z.wf.persistence 可改为 jdbc 落库）");
+        return persistence;
+    }
+
+    // ==================== 引擎 ====================
+
+    @Bean
+    @ConditionalOnMissingBean
+    public WfExpressionEvaluator wfExpressionEvaluator(WfProperties properties) {
+        return new WfExpressionEvaluator(properties.isFailOpen());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public WfBehaviorRegistry wfBehaviorRegistry() {
+        return new WfBehaviorRegistry();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public WfIdGenerator wfIdGenerator() {
+        return new WfIdGenerator.DefaultWfIdGenerator();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public WfDelegateRegistry wfDelegateRegistry() {
+        return new WfDelegateRegistry();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public WfEngine wfEngine(WfBehaviorRegistry behaviorRegistry,
+                             WfExpressionEvaluator expressionEvaluator,
+                             WfIdGenerator idGenerator,
+                             WfDelegateRegistry delegateRegistry) {
+        return new WfEngine(behaviorRegistry, expressionEvaluator, idGenerator, delegateRegistry);
+    }
+
+    // ==================== 钩子 ====================
+
+    /**
+     * 钩子分发器 —— 自动收集容器里所有钩子实现。
+     * <p>用 {@code ObjectProvider.stream()} 而不是 {@code getBeansOfType}，
+     * 是为了在容器还没完全刷新时也能安全取（钩子 Bean 常常带 @DependsOn）。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WfHookDispatcher wfHookDispatcher(ObjectProvider<WfProcessHook> processHooks,
+                                              ObjectProvider<WfTaskHook> taskHooks,
+                                              ObjectProvider<WfNotificationHook> notificationHooks) {
+        WfHookDispatcher dispatcher = new WfHookDispatcher();
+        int count = 0;
+        for (WfProcessHook hook : processHooks.stream().toArray(WfProcessHook[]::new)) {
+            dispatcher.addProcessHook(hook);
+            count++;
+        }
+        for (WfTaskHook hook : taskHooks.stream().toArray(WfTaskHook[]::new)) {
+            dispatcher.addTaskHook(hook);
+            count++;
+        }
+        for (WfNotificationHook hook : notificationHooks.stream().toArray(WfNotificationHook[]::new)) {
+            dispatcher.addNotificationHook(hook);
+            count++;
+        }
+        log.info("z-wf 注册钩子 {} 个", count);
+        return dispatcher;
+    }
+
+    // ==================== 服务 ====================
+
+    @Bean
+    @ConditionalOnMissingBean
+    public WfRepositoryService wfRepositoryService(WfPersistence persistence) {
+        return new WfRepositoryService(persistence);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public WfRuntimeService wfRuntimeService(WfRepositoryService repositoryService,
+                                             WfPersistence persistence,
+                                             WfEngine engine,
+                                             WfHookDispatcher hookDispatcher,
+                                             WfIdGenerator idGenerator) {
+        return new WfRuntimeService(repositoryService, persistence, engine, hookDispatcher,
+                idGenerator);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public WfTaskService wfTaskService(WfRepositoryService repositoryService,
+                                       WfPersistence persistence,
+                                       WfRuntimeService runtimeService,
+                                       WfHookDispatcher hookDispatcher) {
+        return new WfTaskService(repositoryService, persistence, runtimeService, hookDispatcher);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public WfHistoryService wfHistoryService(WfPersistence persistence) {
+        return new WfHistoryService(persistence);
+    }
+
+    // ==================== 启动部署 ====================
+
+    /**
+     * 启动时扫描并部署 classpath 下的流程定义。
+     *
+     * <p>单个定义部署失败<b>不阻断启动</b>：classpath 下常混着别的系统的流程文件，
+     * 引擎应当把能用的都装上、把坏的打出来，而不是让整个服务起不来。
+     */
+    @Bean
+    public WfProcessDeployer wfProcessDeployer(WfRepositoryService repositoryService,
+                                               WfProperties properties) {
+        WfProcessDeployer deployer = new WfProcessDeployer(repositoryService, properties);
+        if (properties.isDeployOnStartup()) {
+            deployer.deployFromClasspath();
+        }
+        return deployer;
+    }
+}

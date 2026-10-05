@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    请假流程示例（z-wf 自研引擎）。
+
+    形态：提交 → 直属领导审批 →（排他网关按请假天数分流）→ HR 备案 / 总经理审批 → 结束
+
+    演示的引擎能力：
+      · userTask 创建待办 + 到期时间（PT24H）
+      · exclusiveGateway 按变量条件分流 + default 流兜底
+      · endEvent 的 resultExpression 决定流程结果
+      · zifang:* 扩展属性承载审批语义（标准 BPMN 里没有这些字段）
+-->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:zifang="http://zifang.com/wf/bpmn/ext"
+             id="leaveProcessDefinitions"
+             targetNamespace="http://zifang.com/wf">
+
+    <process id="leaveProcess" name="请假流程" isExecutable="true"
+             zifang:category="审批">
+
+        <startEvent id="start1" name="提交申请"/>
+
+        <userTask id="taskLeader" name="直属领导审批"
+                  zifang:assignee="${leaderId}"
+                  zifang:formKey="leaveForm"
+                  zifang:category="审批"
+                  zifang:dueDate="PT24H"/>
+
+        <exclusiveGateway id="gwDays" name="请假天数判断"/>
+
+        <userTask id="taskHr" name="HR 备案"
+                  zifang:assignee="hr"
+                  zifang:formKey="leaveForm"
+                  zifang:category="审批"/>
+
+        <userTask id="taskCeo" name="总经理审批"
+                  zifang:assignee="ceo"
+                  zifang:formKey="leaveForm"
+                  zifang:category="审批"
+                  zifang:priority="80"/>
+
+        <endEvent id="end1" name="结束"
+                  zifang:resultExpression="${days &lt;= 3 ? 'approved' : 'approved'}"/>
+
+        <sequenceFlow id="f0" sourceRef="start1" targetRef="taskLeader"/>
+        <sequenceFlow id="f1" sourceRef="taskLeader" targetRef="gwDays"/>
+
+        <sequenceFlow id="f2" sourceRef="gwDays" targetRef="taskHr">
+            <conditionExpression>days &lt;= 3</conditionExpression>
+        </sequenceFlow>
+
+        <sequenceFlow id="f3" sourceRef="gwDays" targetRef="taskCeo">
+            <conditionExpression>days &gt; 3</conditionExpression>
+        </sequenceFlow>
+
+        <!-- default 流：条件写错 / 变量缺失时兜底，避免流程卡死 -->
+        <sequenceFlow id="f4" sourceRef="gwDays" targetRef="taskHr"
+                     zifang:defaultFlow="true"/>
+
+        <sequenceFlow id="f5" sourceRef="taskHr" targetRef="end1"/>
+        <sequenceFlow id="f6" sourceRef="taskCeo" targetRef="end1"/>
+
+    </process>
+</definitions>

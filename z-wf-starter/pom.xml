@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xmlns="http://maven.apache.org/POM/4.0.0"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.yuku123</groupId>
+        <artifactId>z-wf</artifactId>
+        <version>${revision}</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>z-wf-starter</artifactId>
+    <name>z-wf :: starter (autoconfiguration + z-config/z-rpc optional integration + sample processes)</name>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-wf-web</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+
+        <!-- 日志：web 模块排掉了 spring-boot-starter-logging，这里把 slf4j → log4j2 的桥补上。
+             刻意**不引** log4j-to-slf4j：那个包的方向是 log4j2 API → slf4j，
+             与"用 log4j2 做后端"正好相反，两个一起引会形成环，表现为日志静默丢失。
+             版本钉 2.25.4 与父链地板的 log4j2.version 同值（impl 与 core 混版会出事）。 -->
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-slf4j2-impl</artifactId>
+            <version>${log4j2-impl.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-api</artifactId>
+        </dependency>
+
+        <!-- 服务治理：可选。classpath 里没有就不装配（与 z-camuda-starter 同策略）。
+             坐标是 *-spring-boot-starter（不是 z-config / z-rpc 库本体）——
+             fleet 1.0.1 按坐标管的正是这两个 starter 坐标。 -->
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-config-spring-boot-starter</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-rpc-spring-boot-starter</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- JDBC 持久化实现（业务方提供 DataSource） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

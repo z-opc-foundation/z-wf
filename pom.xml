@@ -1,0 +1,226 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xmlns="http://maven.apache.org/POM/4.0.0"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- 消费入口统一走 z-boot-parent（与 z-camuda 同一口径）：一行 parent 白拿
+         ① 第三方地板 z-boot-dependencies:1.0.21（spring-boot / jackson-bom / log4j2 …）
+         ② 兄弟仓版本权威 z-boot-fleet:1.0.1（import 进来，覆盖 z-util 等兄弟仓坐标）
+         ③ Java 8 构建口径（pluginManagement：compiler source/target 8 + -parameters）
+         relativePath 必须留空：parent 不在磁盘上，在 repo1。 -->
+    <parent>
+        <groupId>io.github.yuku123</groupId>
+        <artifactId>z-boot-parent</artifactId>
+        <version>1.0.21</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>io.github.yuku123</groupId>
+    <artifactId>z-wf</artifactId>
+    <version>${revision}</version>
+    <packaging>pom</packaging>
+
+    <name>z-wf (Self-developed Workflow Engine)</name>
+    <description>完全自研的流程引擎 — 流程定义 / 任务管理 / 审批中心。不依赖 Camunda 等任何第三方工作流引擎，
+        定义层协议与 z-util-wf-kernel 共用（同一套 BPMN XML 语义），运行时层自研：token 执行树、网关求值、
+        持久化 SPI、钩子与 SPI 扩展模型。</description>
+
+    <url>https://github.com/yuku123/z-opc-foundation</url>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <id>yuku123</id>
+            <name>zifang</name>
+            <email>yuku123@users.noreply.github.com</email>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:git://github.com/yuku123/z-opc-foundation.git</connection>
+        <developerConnection>scm:git:ssh://github.com:yuku123/z-opc-foundation.git</developerConnection>
+        <url>https://github.com/yuku123/z-opc-foundation/tree/main/z-wf</url>
+    </scm>
+
+    <modules>
+        <module>z-wf-core</module>
+        <module>z-wf-web</module>
+        <module>z-wf-starter</module>
+        <!--
+            z-wf-admin: 独立可启动应用, 留 reactor 享受统一构建, 但 own-parent +
+            maven.deploy.skip=true, 永远不上 Maven Central (对齐 z-camuda-admin).
+        -->
+        <module>z-wf-admin</module>
+    </modules>
+
+    <properties>
+        <revision>1.0.0</revision>
+
+        <!-- z-util 版本口径。
+             坑：<b>只定义 z-util.version 属性是盖不住 import 进来的 BOM 的</b>。
+             z-boot-parent:1.0.21 引入 z-boot-fleet:1.0.1，而 fleet 的 dependencyManagement 里写的是
+             `${z-util.version}` —— import 进来的 BOM 是<b>用它自己 pom 的属性上下文</b>解析的
+             （fleet 1.0.1 里该属性 = 1.0.14），消费方再定义同名属性不会生效。
+             实测：属性写成 1.0.18 而 dependency:tree 仍显示 z-util-core:1.0.14。
+             正确做法是在本仓 dependencyManagement 里把用到的 z-util 坐标逐个显式钉住 ——
+             本仓的 dependencyManagement 优先级高于 import 的 BOM，这才真的生效。
+             理由不只是"整齐"：不同 z-util 版本会同时进 classpath
+             （本仓原本就是 z-util-core 1.0.14 + z-util-wf-kernel 1.0.18 混用），
+             而 kernel 是协议层，必须与 parser 同一版本，否则同一套 BPMN 语义出现两份实现。 -->
+        <z-util.version>1.0.18</z-util.version>
+
+        <!-- z-util-wf-kernel 未被 fleet 按坐标管（fleet 1.0.1 里 z-util-wf 命中 0），
+             版本键与上面这组保持一致。 -->
+        <z-util-wf.version>1.0.18</z-util-wf.version>
+
+        <log4j2-impl.version>2.25.4</log4j2-impl.version>
+
+        <!-- swagger-annotations 未被 z-boot-parent / z-boot-dependencies 按坐标管（两侧命中 0），
+             版本键留本仓。provided 作用域：只取注解，UI 由 z-wf-admin 的 knife4j 提供。 -->
+        <swagger-annotations.version>2.2.8</swagger-annotations.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- z-util：逐个显式钉版本，理由见 properties 里的说明。
+                 新增 z-util 依赖时记得往这里加一行，
+                 否则会悄悄回落到 fleet 1.0.1 的 1.0.14。 -->
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-core</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-parser-json</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-expr-el</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-expr-js</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-jdbc</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <!-- z-util-wf-kernel：协议层。fleet 未按坐标管，版本键独立但取值与上面这组一致。 -->
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-wf-kernel</artifactId>
+                <version>${z-util-wf.version}</version>
+            </dependency>
+            <!-- 传递依赖也一起钉。
+                 dependencyManagement 对传递依赖同样生效，而 fleet 1.0.1 把所有 z-util 坐标
+                 都管在 1.0.14 —— 不显式钉的话，z-util-jdbc / z-config / z-rpc 拖进来的
+                 z-util-aop / bc / expr-sql 等会停在 1.0.14，同一个仓两个版本同时在 classpath 上。
+                 已知钉不到的：z-util-dsl、z-util-proxy —— z-util 侧尚未发布这两个的 1.0.18，
+                 它们只出现在 z-util-jdbc（optional）分支下，详见 README 依赖审计一节。 -->
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-aop</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-bc</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-expr-sql</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-expr-obj</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-dsl-kernel</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-http</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.swagger.core.v3</groupId>
+                <artifactId>swagger-annotations</artifactId>
+                <version>${swagger-annotations.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-wf-core</artifactId>
+                <version>${revision}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-wf-web</artifactId>
+                <version>${revision}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-wf-starter</artifactId>
+                <version>${revision}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <plugins>
+            <!-- flatten-maven-plugin：把 ${revision} 落成字面量后再装/发。
+                 必须本仓自己声明：z-boot-parent 那条 flatten 是 <inherited>false</inherited>
+                 （它自己用 resolveCiFriendliesOnly），不下发给消费仓。
+                 不开这一段的后果：装进本地仓 / 发到 Central 的是"带 ${revision} 的 raw pom"，
+                 消费方解析 z-wf-starter 时会去取父 pom `z-wf:pom:${revision}` —— 字面量版本号，
+                 必然解析失败（实测 z-wf-admin 就是这么炸的）。
+                 flattenMode=oss + updatePomFile：保留 Central 要求的元数据并改写被安装的 pom。
+                 常开、不挂 profile：挂 profile 时不带 -P 的普通 install 会把废 pom 装进仓。 -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+                <version>1.7.3</version>
+                <configuration>
+                    <updatePomFile>true</updatePomFile>
+                    <flattenMode>oss</flattenMode>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>flatten</id>
+                        <phase>process-resources</phase>
+                        <goals><goal>flatten</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>flatten.clean</id>
+                        <phase>clean</phase>
+                        <goals><goal>clean</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <argLine>-Duser.language=en -Duser.region=US -Dfile.encoding=UTF-8</argLine>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

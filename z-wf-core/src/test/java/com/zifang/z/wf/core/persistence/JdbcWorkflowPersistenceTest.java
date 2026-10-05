@@ -1,0 +1,435 @@
+package com.zifang.z.wf.core.persistence;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import javax.sql.DataSource;
+
+import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import com.zifang.z.wf.core.definition.WfDefinition;
+import com.zifang.z.wf.core.model.WfActivityInstance;
+import com.zifang.z.wf.core.model.WfComment;
+import com.zifang.z.wf.core.model.WfExecution;
+import com.zifang.z.wf.core.model.WfProcessInstance;
+import com.zifang.z.wf.core.model.WfProcessStatus;
+import com.zifang.z.wf.core.model.WfTask;
+
+/**
+ * {@link JdbcWorkflowPersistence} 对真实数据库的验证。
+ *
+ * <p><b>为什么必须真跑数据库</b>：JDBC 实现里三处"编译通过≠运行正确"的经典陷阱：
+ * <ol>
+ *   <li><b>DDL 方言</b>：{@code CREATE TABLE IF NOT EXISTS} / {@code TEXT} / {@code CLOB}
+ *       在 MySQL 与 H2 上语义不同，索引 DDL 也可能报语法错</li>
+ *   <li><b>乐观锁的受影响行数</b>：{@code UPDATE ... WHERE id=? AND revision=?} 在 0 行受影响时
+ *       必须抛 {@link WfOptimisticLockException}；用内存 Map 无法验证这一点</li>
+ *   <li><b>时间类型映射</b>：{@link Date} ↔ {@code TIMESTAMP} 往返（这正是内存实现
+ *       踩过 JsonUtil Date 坑的地方，必须在 JDBC 侧确认干净）</li>
+ * </ol>
+ *
+ * @author zifang
+ */
+class JdbcWorkflowPersistenceTest {
+
+    private DataSource dataSource;
+    private JdbcWorkflowPersistence persistence;
+
+    @BeforeEach
+    void setUp() {
+        JdbcDataSource ds = new JdbcDataSource();
+        // 每轮用独立库名，避免表残留影响断言
+        String name = "wf_test_" + (COUNTER.incrementAndGet());
+        ds.setURL("jdbc:h2:mem:" + name + ";DB_CLOSE_DELAY=-1");
+        ds.setUser("sa");
+        ds.setPassword("");
+        this.dataSource = ds;
+        this.persistence = new JdbcWorkflowPersistence(ds);
+        this.persistence.initialize();
+    }
+
+    private static final AtomicInteger COUNTER = new AtomicInteger();
+
+    // ==================== DDL ====================
+
+    @Test
+    @DisplayName("initialize 幂等：重复调用不报错（表已存在）")
+    void initializeIsIdempotent() {
+        persistence.initialize();
+        // 第二次建表若 DDL 不可重复执行，H2 会在此抛 JdbcSQLSyntaxErrorException
+        persistence.initialize();
+        // 幂等之后表仍可用：写入并读回
+        WfProcessInstance instance = new WfProcessInstance("idem", "k", "k:1");
+        persistence.saveProcessInstance(instance);
+        assertNotNull(persistence.findProcessInstance("idem"));
+    }
+
+    // ==================== 定义 ====================
+
+    @Test
+    @DisplayName("定义往返：图结构（节点/连线/类型）落库后不丢失，索引可重建")
+    void definitionRoundTrip() {
+        WfDefinition definition = new WfDefinition("leaveProcess", "请假流程");
+        definition.setCategory("审批");
+        definition.setDescription("带网关的审批");
+        WfNodeBundle bundle = WfNodeBundle.of(definition);
+        definition.buildIndex();
+
+        persistence.saveDefinition(definition);
+
+        WfDefinition loaded = persistence.findLatestDefinition("leaveProcess");
+        assertNotNull(loaded);
+        assertEquals("请假流程", loaded.getName());
+        assertEquals("审批", loaded.getCategory());
+        assertEquals(3, loaded.getNodes().size());
+        assertEquals(2, loaded.getFlows().size());
+        assertEquals(com.zifang.z.wf.core.definition.WfNodeType.USER_TASK,
+                loaded.node("task1").getType());
+        assertEquals("manager", loaded.node("task1").getAssignee());
+        // 索引从库里读回后必须可用
+        assertNotNull(loaded.startNode());
+        assertEquals(1, loaded.outgoingFlows("start1").size());
+        assertNotNull(bundle);
+    }
+
+    @Test
+    @DisplayName("定义版本：latest 取最大版本，versions 倒序，按分类过滤可用")
+    void definitionVersionsAndCategory() {
+        for (int v = 1; v <= 3; v++) {
+            WfDefinition definition = new WfDefinition("k", "n" + v);
+            definition.setVersion(v);
+            definition.setCategory("审批");
+            WfNodeBundle.of(definition);
+            definition.buildIndex();
+            persistence.saveDefinition(definition);
+        }
+        assertEquals(3, persistence.findLatestDefinition("k").getVersion());
+        assertEquals(2, persistence.findDefinition("k", 2).getVersion());
+        assertEquals(3, persistence.findDefinitionVersions("k").size());
+        assertEquals(3, persistence.findDefinitionVersions("k").get(0).getVersion());
+        assertEquals(1, persistence.findAllDefinitions().size(), "每个 key 只取最新版本");
+        assertEquals(1, persistence.findDefinitionsByCategory("审批").size());
+        assertTrue(persistence.findDefinitionsByCategory("不存在").isEmpty());
+    }
+
+    // ==================== 流程实例 ====================
+
+    @Test
+    @DisplayName("实例往返：Time / Map / enum 全部正确（Date 是 JDBC 侧的重点风险）")
+    void processInstanceRoundTrip() {
+        WfProcessInstance instance = new WfProcessInstance("p1", "leaveProcess", "leaveProcess:1");
+        instance.setDefinitionVersion(1);
+        instance.setBusinessKey("ORDER-1");
+        instance.setStartUserId("u1");
+        instance.setStartDeptId("d1");
+        instance.setCategory("审批");
+        instance.setStatus(WfProcessStatus.ACTIVE);
+        instance.setStartTime(new Date(1700000000000L));
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("days", 3);
+        vars.put("reason", "vacation");
+        instance.setVariables(vars);
+        persistence.saveProcessInstance(instance);
+
+        WfProcessInstance loaded = persistence.findProcessInstance("p1");
+        assertNotNull(loaded);
+        assertEquals(WfProcessStatus.ACTIVE, loaded.getStatus());
+        assertEquals("ORDER-1", loaded.getBusinessKey());
+        assertEquals("u1", loaded.getStartUserId());
+        assertNotNull(loaded.getStartTime(), "Date 必须能往返，不能变 null");
+        assertEquals(1700000000000L, loaded.getStartTime().getTime());
+        assertEquals(3, loaded.getVariables().get("days"));
+        assertEquals("vacation", loaded.getVariables().get("reason"));
+        assertEquals(0, loaded.getRevision());
+    }
+
+    @Test
+    @DisplayName("乐观锁：UPDATE 受影响 0 行时抛冲突（内存实现无法覆盖这一点）")
+    void optimisticLockOnUpdate() {
+        WfProcessInstance instance = new WfProcessInstance("p2", "k", "k:1");
+        instance.setStatus(WfProcessStatus.ACTIVE);
+        persistence.saveProcessInstance(instance);
+
+        // 正确的一步
+        WfProcessInstance good = persistence.findProcessInstance("p2");
+        good.setStatus(WfProcessStatus.ACTIVE);
+        good.nextRevision();
+        persistence.saveProcessInstance(good);
+
+        // 拿着旧 revision 再写 ⇒ 必须抛
+        WfProcessInstance stale = persistence.findProcessInstance("p2");
+        stale.setStatus(WfProcessStatus.SUSPENDED);
+        assertThrows(WfOptimisticLockException.class, () -> persistence.saveProcessInstance(stale));
+    }
+
+    @Test
+    @DisplayName("实例查询：按业务键 / 发起人 / 状态过滤 + 排序")
+    void processInstanceQueries() {
+        for (int i = 0; i < 3; i++) {
+            WfProcessInstance instance = new WfProcessInstance("p" + i, "k", "k:1");
+            instance.setBusinessKey("BIZ" + i);
+            instance.setStartUserId(i == 0 ? "alice" : "bob");
+            instance.setStatus(i == 0 ? WfProcessStatus.COMPLETED : WfProcessStatus.ACTIVE);
+            instance.setStartTime(new Date(1000L * i));
+            instance.setResult(i == 0 ? "approved" : null);
+            persistence.saveProcessInstance(instance);
+        }
+        assertEquals(1, persistence.findProcessInstancesByBusinessKey("BIZ1").size());
+        assertEquals(1, persistence.queryProcessInstances(
+                new WfProcessInstanceQuery().setStartUserId("alice")).size());
+        assertEquals(2, persistence.queryProcessInstances(
+                new WfProcessInstanceQuery().setStatus(WfProcessStatus.ACTIVE)).size());
+        assertEquals(1, persistence.queryProcessInstances(
+                new WfProcessInstanceQuery().setResult("approved")).size());
+        // 按 START_TIME 倒序：p2 在最前
+        assertEquals("p2", persistence.queryProcessInstances(new WfProcessInstanceQuery())
+                .get(0).getId());
+        // 分页
+        assertEquals(2, persistence.queryProcessInstances(
+                new WfProcessInstanceQuery().setPageNum(1).setPageSize(2)).size());
+        assertEquals(1, persistence.queryProcessInstances(
+                new WfProcessInstanceQuery().setPageNum(2).setPageSize(2)).size());
+    }
+
+    // ==================== token ====================
+
+    @Test
+    @DisplayName("token 往返：state / arrived 列表 / 父子关系不丢失")
+    void executionRoundTrip() {
+        WfExecution execution = new WfExecution("e1", "p1", "task1");
+        execution.setParentId("e0");
+        execution.setState(WfExecution.State.WAITING);
+        execution.setChild(true);
+        execution.setEnteredTime(new Date(1700000000000L));
+        execution.getVariables().put("amount", 500);
+        execution.arriveAt("gw1");
+        execution.arriveAt("gw2");
+        persistence.saveExecution(execution);
+
+        WfExecution loaded = persistence.findExecution("e1");
+        assertNotNull(loaded);
+        assertEquals("e0", loaded.getParentId());
+        assertEquals(WfExecution.State.WAITING, loaded.getState());
+        assertTrue(loaded.isChild());
+        assertNotNull(loaded.getEnteredTime());
+        assertEquals(2, loaded.getArrivedActivities().size());
+        assertEquals(500, loaded.getVariables().get("amount"));
+
+        assertEquals(1, persistence.findExecutionsByProcessInstance("p1").size());
+        persistence.deleteExecution("e1");
+        assertNull(persistence.findExecution("e1"));
+    }
+
+    @Test
+    @DisplayName("token 更新走 UPDATE 分支（幂等，不报主键冲突）")
+    void executionUpdate() {
+        WfExecution execution = new WfExecution("e2", "p1", "task1");
+        persistence.saveExecution(execution);
+        execution.setActivityId("task2");
+        execution.setState(WfExecution.State.ENDED);
+        persistence.saveExecution(execution);
+        assertEquals("task2", persistence.findExecution("e2").getActivityId());
+        assertEquals(WfExecution.State.ENDED, persistence.findExecution("e2").getState());
+    }
+
+    // ==================== 任务 ====================
+
+    @Test
+    @DisplayName("任务往返：候选项 / Date / 委派字段全部保真")
+    void taskRoundTrip() {
+        WfTask task = new WfTask();
+        task.setId("t1");
+        task.setProcessInstanceId("p1");
+        task.setExecutionId("e1");
+        task.setDefinitionId("task1");
+        task.setName("经理审批");
+        task.setType("userTask");
+        task.setFormKey("leaveForm");
+        task.setCategory("审批");
+        task.setAssignee("manager");
+        task.setOwner("staff");
+        task.setCandidateUsers(java.util.Arrays.asList("u1", "u2"));
+        task.setCandidateGroups(java.util.Arrays.asList("g1"));
+        task.setStatus(WfTask.Status.DELEGATED);
+        task.setPriority(70);
+        task.setCreateTime(new Date(1700000000000L));
+        task.setDueDate(new Date(1700003600000L));
+        task.getVariables().put("k", "v");
+        persistence.saveTask(task);
+
+        WfTask loaded = persistence.findTask("t1");
+        assertNotNull(loaded);
+        assertEquals("经理审批", loaded.getName());
+        assertEquals("leaveForm", loaded.getFormKey());
+        assertEquals("manager", loaded.getAssignee());
+        assertEquals("staff", loaded.getOwner());
+        assertEquals("staff", loaded.effectiveHandler());
+        assertEquals(WfTask.Status.DELEGATED, loaded.getStatus());
+        assertEquals(70, loaded.getPriority());
+        assertEquals(2, loaded.getCandidateUsers().size());
+        assertEquals(1, loaded.getCandidateGroups().size());
+        assertNotNull(loaded.getCreateTime());
+        assertNotNull(loaded.getDueDate());
+        assertEquals("v", loaded.getVariables().get("k"));
+    }
+
+    @Test
+    @DisplayName("任务乐观锁：0 行受影响抛冲突")
+    void taskOptimisticLock() {
+        WfTask task = new WfTask();
+        task.setId("t2");
+        task.setStatus(WfTask.Status.ASSIGNED);
+        persistence.saveTask(task);
+
+        WfTask good = persistence.findTask("t2");
+        good.setStatus(WfTask.Status.COMPLETED);
+        good.nextRevision();
+        persistence.saveTask(good);
+
+        WfTask stale = persistence.findTask("t2");
+        stale.setStatus(WfTask.Status.CANCELLED);
+        assertThrows(WfOptimisticLockException.class, () -> persistence.saveTask(stale));
+    }
+
+    @Test
+    @DisplayName("任务查询：待办（assignee/owner 合并）/ 已办 / 分页 / 排序")
+    void taskQueries() {
+        WfTask t1 = newTask("t-a", "u1", WfTask.Status.ASSIGNED, 30, 1000L);
+        WfTask t2 = newTask("t-b", "u1", WfTask.Status.ASSIGNED, 50, 2000L);
+        WfTask delegated = newTask("t-c", "u1", WfTask.Status.DELEGATED, 50, 3000L);
+        delegated.setOwner("u2");
+        WfTask done = newTask("t-d", "u1", WfTask.Status.COMPLETED, 50, 4000L);
+        done.setCompleterId("u1");
+        for (WfTask t : new WfTask[]{t1, t2, delegated, done}) {
+            persistence.saveTask(t);
+        }
+
+        // 待办：未完成的 3 个，未完成优先 + 优先级高优先
+        List<WfTask> todo = persistence.queryTasks(new WfTaskQuery()
+                .setAssignee("u1").setOpenOnly(true));
+        assertEquals(3, todo.size());
+        // t-b / t-c 优先级都是 50，t-a 是 30 ⇒ 两个 50 的排在前面，但彼此按创建时间倒序
+        // （t-c 建于 3000 > t-b 建于 2000 ⇒ t-c 在前）
+        assertEquals(50, todo.get(0).getPriority());
+        assertEquals(50, todo.get(1).getPriority());
+        assertEquals(30, todo.get(2).getPriority());
+        assertEquals("t-c", todo.get(0).getId());
+        assertEquals("t-b", todo.get(1).getId());
+        assertEquals("t-a", todo.get(2).getId());
+        // 已完成（t-d）必须被 openOnly 排除
+        assertTrue(todo.stream().noneMatch(t -> "t-d".equals(t.getId())));
+
+        // owner 查询命中委派态
+        assertEquals(1, persistence.queryTasks(new WfTaskQuery()
+                .setOwner("u2").setOpenOnly(true)).size());
+
+        // 已办
+        List<WfTask> finished = persistence.queryTasks(new WfTaskQuery()
+                .setCompleterId("u1").setCompletedOnly(true));
+        assertEquals(1, finished.size());
+        assertEquals("t-d", finished.get(0).getId());
+
+        // 分页
+        assertEquals(2, persistence.queryTasks(new WfTaskQuery()
+                .setPageNum(1).setPageSize(2)).size());
+        assertEquals(2, persistence.queryTasks(new WfTaskQuery()
+                .setPageNum(2).setPageSize(2)).size());
+    }
+
+    // ==================== 历史 ====================
+
+    @Test
+    @DisplayName("活动历史与评论：按时间正序返回（轨迹顺序是审批页的核心）")
+    void historyAndComments() {
+        for (int i = 0; i < 3; i++) {
+            WfActivityInstance activity = new WfActivityInstance();
+            activity.setId("a" + i);
+            activity.setProcessInstanceId("p1");
+            activity.setActivityName("节点" + i);
+            // 故意倒着插：1500 / 2000 / 1000 毫秒相对 startTime=0
+            // ⇒ 只有真正按 START_TIME 排序才能拿到 节点0 → 节点2 → 节点1
+            activity.setStartTime(new Date(1000L * (3 - i)));
+            activity.setOutcome("completed");
+            activity.getVariables().put("i", i);
+            persistence.saveActivityInstance(activity);
+        }
+        List<WfActivityInstance> trail = persistence.findActivityInstances("p1");
+        assertEquals(3, trail.size());
+        assertEquals("节点2", trail.get(0).getActivityName(), "必须按时间正序，而非插入序");
+        assertEquals("节点1", trail.get(1).getActivityName());
+        assertEquals("节点0", trail.get(2).getActivityName());
+        assertEquals(0, trail.get(2).getVariables().get("i"));
+
+        persistence.saveComment(new WfComment("c1", "p1", "u1", "comment", "同意"));
+        persistence.saveComment(new WfComment("c2", "p1", "u1", "comment", "已阅"));
+        List<WfComment> comments = persistence.findComments("p1");
+        assertEquals(2, comments.size());
+        // 两条评论时间戳几乎相同（毫秒精度内），顺序不保证，断言集合而非顺序
+        assertTrue(comments.stream().anyMatch(c -> "同意".equals(c.getContent())));
+        assertTrue(comments.stream().anyMatch(c -> "已阅".equals(c.getContent())));
+    }
+
+    @Test
+    @DisplayName("clear 清空全部 6 张表")
+    void clearWipesAll() {
+        WfProcessInstance instance = new WfProcessInstance("p9", "k", "k:1");
+        persistence.saveProcessInstance(instance);
+        persistence.clear();
+        assertNull(persistence.findProcessInstance("p9"));
+        assertTrue(persistence.queryProcessInstances(new WfProcessInstanceQuery()).isEmpty());
+    }
+
+    private WfTask newTask(String id, String assignee, WfTask.Status status, int priority, long time) {
+        WfTask task = new WfTask();
+        task.setId(id);
+        task.setAssignee(assignee);
+        task.setStatus(status);
+        task.setPriority(priority);
+        task.setCreateTime(new Date(time));
+        return task;
+    }
+
+    /**
+     * 最小图：start1 → task1 → end1。
+     */
+    static final class WfNodeBundle {
+        static WfNodeBundle of(WfDefinition definition) {
+            definition.setNodes(new java.util.ArrayList<com.zifang.z.wf.core.definition.WfNode>(
+                    java.util.Arrays.asList(
+                            new com.zifang.z.wf.core.definition.WfNode("start1", "开始",
+                                    com.zifang.z.wf.core.definition.WfNodeType.START_EVENT),
+                            userTask("task1"),
+                            new com.zifang.z.wf.core.definition.WfNode("end1", "结束",
+                                    com.zifang.z.wf.core.definition.WfNodeType.END_EVENT))));
+            com.zifang.z.wf.core.definition.WfFlow f1 =
+                    new com.zifang.z.wf.core.definition.WfFlow("start1", "task1");
+            f1.setId("f1");
+            com.zifang.z.wf.core.definition.WfFlow f2 =
+                    new com.zifang.z.wf.core.definition.WfFlow("task1", "end1");
+            f2.setId("f2");
+            definition.setFlows(new java.util.ArrayList<com.zifang.z.wf.core.definition.WfFlow>(
+                    java.util.Arrays.asList(f1, f2)));
+            return new WfNodeBundle();
+        }
+
+        private static com.zifang.z.wf.core.definition.WfNode userTask(String id) {
+            com.zifang.z.wf.core.definition.WfNode node =
+                    new com.zifang.z.wf.core.definition.WfNode(id, "经理审批",
+                            com.zifang.z.wf.core.definition.WfNodeType.USER_TASK);
+            node.setAssignee("manager");
+            return node;
+        }
+    }
+}
