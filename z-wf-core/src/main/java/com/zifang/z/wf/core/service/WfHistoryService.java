@@ -6,10 +6,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfProcessStatus;
-import com.zifang.z.wf.core.model.WfTask;
 import com.zifang.z.wf.core.persistence.WfPersistence;
 import com.zifang.z.wf.core.persistence.WfProcessInstanceQuery;
 import com.zifang.z.wf.core.persistence.WfTaskQuery;
@@ -68,22 +66,15 @@ public class WfHistoryService {
         return paginate(all, pageNum, pageSize);
     }
 
-    /**
-     * 某用户办结过的任务（已办列表的数据源）。
+    /*
+     * 关于"已办列表"与"审批轨迹"：
+     * 这两件事已有各自唯一的入口，不再在本类重复一份。
+     *   已办列表   -> WfTaskService.getDoneList(userId, pageNum, pageSize)
+     *   审批轨迹   -> WfRuntimeService.getTrail(processInstanceId)
+     * 同一份数据开两条入口，迟早会各自漂移（改了一处忘了另一处），
+     * 而调用方无从判断该信哪个 —— 所以这里只保留本类真正独有的
+     * "已结束实例"与"统计/总览"能力。
      */
-    public List<WfTask> getCompletedTasksByUser(String userId, int pageNum, int pageSize) {
-        return persistence.queryTasks(new WfTaskQuery()
-                .setCompleterId(userId).setCompletedOnly(true)
-                .setPageNum(pageNum).setPageSize(pageSize));
-    }
-
-    /**
-     * 某流程实例的完整审批轨迹。
-     * <p>按时间正序 —— 这就是前端"审批流"页签渲染的数据。
-     */
-    public List<WfActivityInstance> getActivityTrail(String processInstanceId) {
-        return persistence.findActivityInstances(processInstanceId);
-    }
 
     /**
      * 流程统计：按状态分组计数（仪表盘用）。
