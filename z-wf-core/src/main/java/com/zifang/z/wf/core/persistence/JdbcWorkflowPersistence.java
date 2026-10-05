@@ -816,12 +816,18 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             // 乐观锁
             int affected = update("UPDATE ZWF_TASK SET STATUS=?, ASSIGNEE=?, OWNER=?, PRIORITY=?, "
                             + "END_TIME=?, COMPLETER_ID=?, COMMENT_TEXT=?, VARIABLES=?, "
+                            + "CANDIDATE_USERS=?, CANDIDATE_GROUPS=?, "
                             + "DELEGATE_CHAIN=?, SUSPENDED=?, REVISION=? "
                             + "WHERE TASK_ID=? AND REVISION=?",
                     task.getStatus() == null ? null : task.getStatus().name(),
                     task.getAssignee(), task.getOwner(), task.getPriority(),
                     timestamp(task.getEndTime()), task.getCompleterId(), task.getComment(),
                     JsonUtil.toJson(task.getVariables()),
+                    JsonUtil.toJson(task.getCandidateUsers()),
+                    JsonUtil.toJson(task.getCandidateGroups()),
+                    // 候选池必须跟着 UPDATE 走。只在 INSERT 里写的话，
+                    // 任何运行时调整候选人（加派/改派）存回去都不生效 —— 症状是
+                    // addCandidateUser 不报错、内存里也对，但换一次读取就没了。
                     delegateChainJson(task),
                     // 挂起列必须跟着 UPDATE 走：只写进 INSERT 的话，
                     // suspendTask 改了内存对象存回去，挂起状态在库里永远是初始值
@@ -942,8 +948,55 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         appendIfNotBlank(sql, args, " AND DEF_ID=?", query.getDefinitionId());
         appendIfNotBlank(sql, args, " AND COMPLETER_ID=?", query.getCompleterId());
         appendIfNotBlank(sql, args, " AND CATEGORY=?", query.getCategory());
-        if (query.getAssignee() != null || query.getOwner() != null) {
-            // 待办 = assignee 命中 或 owner 命中（委派态）
+        if (query.isCandidateOrAssigned()) {
+            // 待办语义：四种身份关系取或。拆成 AND 的话，
+            // "我是办理人但不在候选池里"的任务会被候选条件过滤掉，
+            // 结果是待办里看不到自己的单
+            sql.append(" AND (");
+            boolean firstOr = true;
+            if (query.getAssignee() != null) {
+                sql.append("ASSIGNEE=?");
+                args.add(query.getAssignee());
+                firstOr = false;
+            }
+            if (query.getOwner() != null) {
+                if (!firstOr) {
+                    sql.append(" OR ");
+                }
+                sql.append("OWNER=?");
+                args.add(query.getOwner());
+                firstOr = false;
+            }
+            if (query.getCandidateUsers() != null) {
+                for (String candidate : query.getCandidateUsers()) {
+                    if (!firstOr) {
+                        sql.append(" OR ");
+                    }
+                    // 存的是 JSON 数组文本，两侧补引号做整项匹配：
+                    // 裸 %u% 会让 "u1" 命中 "u12"
+                    sql.append("CANDIDATE_USERS LIKE ?");
+                    args.add("%\"" + candidate + "\"%");
+                    firstOr = false;
+                }
+            }
+            if (query.getCandidateGroups() != null) {
+                for (String group : query.getCandidateGroups()) {
+                    if (!firstOr) {
+                        sql.append(" OR ");
+                    }
+                    sql.append("CANDIDATE_GROUPS LIKE ?");
+                    args.add("%\"" + group + "\"%");
+                    firstOr = false;
+                }
+            }
+            if (firstOr) {
+                // 一个身份条件都没给：拼出恒假而不是恒真。
+                // 恒真会把整张待办表倒给调用方，恒假则让它去补参数
+                sql.append("1=0");
+            }
+            sql.append(")");
+        } else if (query.getAssignee() != null || query.getOwner() != null) {
+            // 精确筛选语义：待办 = assignee 命中 或 owner 命中（委派态）
             sql.append(" AND (");
             boolean first = true;
             if (query.getAssignee() != null) {
@@ -981,7 +1034,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         // 精度有限（"u1" 会命中 "u12"），但审批候选池通常是几十人的量级，
         // 且"多召回几个再由 service 层用 isClaimableBy 精确判定"比"漏召回"安全 ——
         // 反过来（SQL 过滤过严导致可认领的人看不到）才是真问题。
-        if (query.getCandidateUsers() != null && !query.getCandidateUsers().isEmpty()) {
+        if (!query.isCandidateOrAssigned()
+                && query.getCandidateUsers() != null && !query.getCandidateUsers().isEmpty()) {
             sql.append(" AND (");
             for (int i = 0; i < query.getCandidateUsers().size(); i++) {
                 if (i > 0) {
@@ -992,7 +1046,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             }
             sql.append(")");
         }
-        if (query.getCandidateGroups() != null && !query.getCandidateGroups().isEmpty()) {
+        if (!query.isCandidateOrAssigned()
+                && query.getCandidateGroups() != null && !query.getCandidateGroups().isEmpty()) {
             sql.append(" AND (");
             for (int i = 0; i < query.getCandidateGroups().size(); i++) {
                 if (i > 0) {

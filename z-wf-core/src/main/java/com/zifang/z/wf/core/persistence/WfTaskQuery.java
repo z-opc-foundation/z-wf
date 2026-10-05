@@ -53,6 +53,20 @@ public class WfTaskQuery {
      */
     private Boolean suspendedOnly;
 
+    /**
+     * 待办语义：assignee / owner / 候选用户 / 候选组<b>四者取或</b>
+     * （对应 z-camuda 的 {@code taskCandidateOrAssigned}）。
+     *
+     * <p>为什么必须单开一个模式，不能靠同时设 assignee 与 candidateUsers 表达：
+     * 那几项默认是<b>且</b>（精确筛选语义），"我是办理人但不在候选池里"这种任务
+     * 会被候选条件过滤掉 —— 于是待办里反而看不到自己的单。
+     * 而"谁跟我有关"这个问题本质是或，不是且。
+     *
+     * <p>开启后 assignee / owner / candidateUsers / candidateGroups 四组条件合并成
+     * 一个括号里的 OR；其余条件（流程实例、状态、挂起…）仍照常 AND。
+     */
+    private boolean candidateOrAssigned;
+
     /** 只查已完成任务（已办列表用）。 */
     private boolean completedOnly;
 
@@ -157,6 +171,15 @@ public class WfTaskQuery {
 
     public WfTaskQuery setSuspendedOnly(Boolean suspendedOnly) {
         this.suspendedOnly = suspendedOnly;
+        return this;
+    }
+
+    public boolean isCandidateOrAssigned() {
+        return candidateOrAssigned;
+    }
+
+    public WfTaskQuery setCandidateOrAssigned(boolean candidateOrAssigned) {
+        this.candidateOrAssigned = candidateOrAssigned;
         return this;
     }
 

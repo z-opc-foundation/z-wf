@@ -144,7 +144,7 @@ public class WfApprovalCenterController {
         List<String> groupList = splitCsv(groups);
         List<WfTask> rows = taskService.getClaimableList(userId, groupList, pageNum, pageSize);
         return Result.success(new PageResult<>(viewMapper.toSummaries(rows),
-                taskService.countClaimableList(groupList), pageNum, pageSize));
+                taskService.countClaimableList(userId, groupList), pageNum, pageSize));
     }
 
     // ==================== 3. 流程实例 ====================

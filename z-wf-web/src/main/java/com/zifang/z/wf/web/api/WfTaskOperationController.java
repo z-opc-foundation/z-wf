@@ -45,6 +45,78 @@ public class WfTaskOperationController {
     @Resource
     private WfViewMapper viewMapper;
 
+    /**
+     * 调整候选池。四个动作合在一个端点上，用 {@code type} 区分
+     * （candidateUser/candidateGroup × add/remove）——
+     * 拆成四个端点的话前端要维护四份几乎一样的调用，而它们的入参本来就是同一个。
+     */
+    @PostMapping("/candidate")
+    @Operation(summary = "调整候选池（加/减候选用户或候选组）")
+    public Result<WfViews.TaskSummary> candidate(@RequestBody CandidateRequest request) {
+        if (request == null) {
+            throw new com.zifang.z.wf.core.service.WfEngineException("请求体不能为空");
+        }
+        String type = request.getType() == null ? "" : request.getType().trim();
+        String target = request.getTarget();
+        WfTask task;
+        boolean add = !"remove".equalsIgnoreCase(request.getAction());
+        if ("candidateUser".equals(type)) {
+            task = add ? taskService.addCandidateUser(request.getTaskId(), target)
+                    : taskService.removeCandidateUser(request.getTaskId(), target);
+        } else if ("candidateGroup".equals(type)) {
+            task = add ? taskService.addCandidateGroup(request.getTaskId(), target)
+                    : taskService.removeCandidateGroup(request.getTaskId(), target);
+        } else {
+            // 猜错 type 会改到错误的列表上，而错误本身毫无提示
+            throw new com.zifang.z.wf.core.service.WfEngineException(
+                    "type 只能是 candidateUser 或 candidateGroup，实际: " + type);
+        }
+        return Result.success(viewMapper.toSummary(task));
+    }
+
+    /** 候选池调整请求。 */
+    public static class CandidateRequest {
+        private String taskId;
+        /** candidateUser / candidateGroup */
+        private String type;
+        /** 目标用户 id 或组 id */
+        private String target;
+        /** add / remove，缺省按 add 处理 */
+        private String action;
+
+        public String getTaskId() {
+            return taskId;
+        }
+
+        public void setTaskId(String taskId) {
+            this.taskId = taskId;
+        }
+
+        public String getType() {
+            return type;
+        }
+
+        public void setType(String type) {
+            this.type = type;
+        }
+
+        public String getTarget() {
+            return target;
+        }
+
+        public void setTarget(String target) {
+            this.target = target;
+        }
+
+        public String getAction() {
+            return action;
+        }
+
+        public void setAction(String action) {
+            this.action = action;
+        }
+    }
+
     @PostMapping("/suspend")
     @Operation(summary = "挂起待办（等条件成立；挂起期间仍可见但不能办理）")
     public Result<WfViews.TaskSummary> suspend(@RequestBody WfRequests.TaskOperation request) {

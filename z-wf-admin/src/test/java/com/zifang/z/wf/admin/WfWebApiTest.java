@@ -321,6 +321,63 @@ class WfWebApiTest {
     }
 
     @Test
+    @DisplayName("候选池端点：加人 → 真的能认领 → 移出 → 认领不了")
+    void candidatePoolEndpoints() throws Exception {
+        String businessKey = "WEB-CAND-" + System.nanoTime();
+        Map<String, Object> vars = new HashMap<String, Object>();
+        vars.put("days", 1);
+        vars.put("leaderId", "cand-leader");
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "leaveProcess", "businessKey", businessKey,
+                        "userId", "cand-alice", "variables", vars)).get("data");
+
+        List<Map<String, Object>> todos = asList(asMap(
+                getOk("/api/approval-center/tasks/todo?userId=cand-leader")
+                        .get("data")).get("records"));
+        assertEquals(1, todos.size(), "应恰好一张待办。实际 " + todos);
+        String taskId = (String) todos.get(0).get("taskId");
+
+        // 加一个候选人。leaveProcess 的审批节点带 ${leaderId} 表达式，
+        // 运行时再加一个人属于典型的"领导休假要加派"
+        postOk("/api/wf/task/candidate", body("taskId", taskId,
+                "type", "candidateUser", "target", "cand-relief", "action", "add"));
+
+        // 判据是行为：这个人应当真的能看到待办、并且真的能认领
+        Map<String, Object> reliefPage = asMap(
+                getOk("/api/approval-center/tasks/todo?userId=cand-relief").get("data"));
+        assertEquals(1, asList(reliefPage.get("records")).size(),
+                "加了候选却还是看不到待办，等于加人没生效。实际: " + reliefPage.get("records"));
+
+        // 这里刻意不断言可认领列表：leaveProcess 的审批节点用 ${leaderId} 直接指派了
+        // 办理人，任务已分配，而可认领列表按定义只含未分配的任务 ——
+        // 那是正确行为，不是缺陷。可认领逻辑的覆盖在 WfCandidatePoolTest 里用
+        // 真正未分配的任务做。
+        // 移出候选人 —— 必须在转办之前验：待办语义是"或"，
+        // 一旦他成了 assignee，再移出候选也照样能看到（那是正确的）
+        postOk("/api/wf/task/candidate", body("taskId", taskId,
+                "type", "candidateUser", "target", "cand-relief", "action", "remove"));
+        assertTrue(asList(asMap(getOk("/api/approval-center/tasks/todo?userId=cand-relief")
+                .get("data")).get("records")).isEmpty(),
+                "移出候选人后待办里不该还有这张单");
+
+        // 加回来，然后转办：leaveProcess 的节点已指派给 leader，
+        // 所以"换人"走转办而不是认领
+        postOk("/api/wf/task/candidate", body("taskId", taskId,
+                "type", "candidateUser", "target", "cand-relief", "action", "add"));
+        Map<String, Object> transferred = postOk("/api/wf/task/transfer",
+                body("taskId", taskId, "userId", "cand-leader",
+                        "targetUserId", "cand-relief", "comment", "领导休假，加派人接手"));
+        assertEquals("cand-relief", asMap(transferred.get("data")).get("assignee"),
+                "加派的候选人应当能从原办理人手里把单转过来");
+
+        // type 写错要报出来，不能猜
+        ResponseEntity<String> badType = exchange(HttpMethod.POST, "/api/wf/task/candidate",
+                body("taskId", taskId, "type", "candidateUsers", "target", "x"));
+        assertEquals(statusOf("onEngine"), badType.getStatusCode(),
+                "type 拼错应当报错而不是改错列表。实际: " + badType.getBody());
+    }
+
+    @Test
     @DisplayName("任务挂起端点：挂起 → 办结被拒 → 待办仍可见 → 恢复 → 办结成功")
     void taskSuspensionEndpoints() throws Exception {
         String businessKey = "WEB-SUSP-" + System.nanoTime();

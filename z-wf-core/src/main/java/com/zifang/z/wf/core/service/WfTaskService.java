@@ -119,6 +119,84 @@ public class WfTaskService {
         return task;
     }
 
+    // ==================== 候选池（运行时增删） ====================
+
+    /**
+     * 加一个候选人 —— 对应 z-camuda 的 {@code addCandidateUser}。
+     *
+     * <p>BPMN 里写的候选池是"流程画好时定的人",而现实里"这个单该谁批"经常要临时调：
+     * 领导休假要加派、金额超了要加个 CFO、原本画错的候选要撤掉。只靠 BPMN 就只能改流程定义。
+     *
+     * <p><b>挂起的任务也允许改</b>：挂起是"等条件成立"，而换人正是等待期间最常见的处置。
+     * 七个"办理类"闸门拦的是<b>把单办了</b>，候选池调整不是办理，不该被同一把锁挡住。
+     * 已结束的任务则拒绝 —— 那时候改候选毫无意义。
+     *
+     * <p>重复加同一个人是幂等的（不报错、不产生重复项）。
+     */
+    public WfTask addCandidateUser(String taskId, String userId) {
+        return addCandidate(taskId, userId, true, true);
+    }
+
+    /** 移出一个候选人。移除一个本来就不在池子里的人同样幂等。 */
+    public WfTask removeCandidateUser(String taskId, String userId) {
+        return addCandidate(taskId, userId, true, false);
+    }
+
+    /** 加一个候选组（对标 {@code addCandidateGroup}）。 */
+    public WfTask addCandidateGroup(String taskId, String groupId) {
+        return addCandidate(taskId, groupId, false, true);
+    }
+
+    /** 移出一个候选组。 */
+    public WfTask removeCandidateGroup(String taskId, String groupId) {
+        return addCandidate(taskId, groupId, false, false);
+    }
+
+    /**
+     * 候选池增删的实现，用户与组共用。
+     *
+     * @param userScope {@code true} 动用户列表，{@code false} 动组列表
+     * @param add       {@code true} 加入，{@code false} 移出
+     */
+    private WfTask addCandidate(String taskId, String value, boolean userScope, boolean add) {
+        WfTask task = requireTask(taskId);
+        if (!task.isOpen()) {
+            throw new WfEngineException("任务已结束，无法调整候选池: " + taskId);
+        }
+        if (value == null || value.trim().isEmpty()) {
+            // 空值静默忽略的话，调用方会以为加成功了，
+            // 然后花很久去查"为什么这个人还是认领不了"
+            throw new WfEngineException((userScope ? "候选人用户" : "候选组")
+                    + "不能为空: task=" + taskId);
+        }
+        String id = value.trim();
+        List<String> list = userScope ? task.getCandidateUsers() : task.getCandidateGroups();
+        // 判断与执行必须分开写。曾经写成
+        //     boolean changed = add ? !list.contains(id) : list.remove(id);
+        // 三元里 add 分支只做了 contains 判断、从来没调 list.add(id) ——
+        // 于是"加入候选人"是个空操作：不报错、幂等返回、看起来一切正常，
+        // 但下一个候选人永远认领不了。探针实测才发现（保存前候选列表原封不动）。
+        boolean changed;
+        if (add) {
+            // contains 判重：重复加不产生重复项
+            changed = !list.contains(id);
+            if (changed) {
+                list.add(id);
+            }
+        } else {
+            // 移一个本来就不在池子里的人是幂等的，不报错
+            changed = list.remove(id);
+        }
+        if (!changed) {
+            return task;
+        }
+        task.nextRevision();
+        persistence.saveTask(task);
+        log.info("任务 {} 候选池调整: {} {} {}", taskId,
+                userScope ? "用户" : "组", add ? "加入" : "移出", id);
+        return task;
+    }
+
     // ==================== 认领 ====================
 
     /**
@@ -420,11 +498,30 @@ public class WfTaskService {
     }
 
     /** 待办条件本身。抽出来是因为列表与计数必须同源，分开写迟早只改一处。 */
+    /**
+     * 待办查询：<b>办理人 / 责任人 / 候选用户 / 候选组，四者取或</b>。
+     *
+     * <p>以前这里只设了 assignee 与 owner，而 {@code groups} 参数接进来就被丢弃 ——
+     * 结果是"我是候选人也看不到这张单"。候选池在 BPMN 里配得再对也没用，
+     * 因为待办列表根本不查它：症状是流程配置无误、候选人却不出现，
+     * 而开发期用的往往全是带 assignee 的流程，这条路径没人踩到。
+     *
+     * <p>四者必须是或：assignee/owner 与候选条件默认是且（精确筛选语义），
+     * 直接一起设会把"我是办理人但不在候选池里"的任务过滤掉。
+     */
     private WfTaskQuery todoQuery(String userId, List<String> groups) {
-        return new WfTaskQuery()
-                .setAssignee(userId)
-                .setOwner(userId)
+        WfTaskQuery query = new WfTaskQuery()
+                .setCandidateOrAssigned(true)
                 .setOpenOnly(true);
+        if (userId != null && !userId.trim().isEmpty()) {
+            query.setAssignee(userId);
+            query.setOwner(userId);
+            query.setCandidateUsers(java.util.Collections.singletonList(userId));
+        }
+        if (groups != null && !groups.isEmpty()) {
+            query.setCandidateGroups(groups);
+        }
+        return query;
     }
 
     /**
@@ -445,19 +542,44 @@ public class WfTaskService {
     /**
      * 可认领任务。
      */
+    /**
+     * 可认领列表：未分配、开放，且我在候选池里（按用户或按组）。
+     *
+     * <p>以前这里<b>只按候选组过滤、把 userId 丢掉了</b>：于是
+     * ① 用 {@code candidateUsers} 配的流程谁也认领不了；
+     * ② 每个人的可认领列表完全一样（实际是"全组可认领"的并集）。
+     * 症状很隐蔽 —— 接口正常返回 200、列表也不空，只是内容不对。
+     */
     public List<WfTask> getClaimableList(String userId, List<String> groups, int pageNum, int pageSize) {
-        return persistence.queryTasks(new WfTaskQuery()
-                .setUnassignedOnly(true).setOpenOnly(true)
-                .setCandidateGroups(groups)
+        return persistence.queryTasks(claimableQuery(userId, groups)
                 .setPageNum(pageNum).setPageSize(pageSize));
     }
 
-    /** 可认领任务条数，与 {@link #getClaimableList} 同条件。 */
-    public long countClaimableList(List<String> groups) {
-        return persistence.countTasks(new WfTaskQuery()
-                .setUnassignedOnly(true).setOpenOnly(true)
-                .setCandidateGroups(groups));
+    /**
+     * 可认领总数。必须与 {@link #getClaimableList} 同条件，且**必须带 userId** ——
+     * 旧签名只有 groups，导致不同用户的 total 相同，前端翻页时对不上。
+     */
+    public long countClaimableList(String userId, List<String> groups) {
+        return persistence.countTasks(claimableQuery(userId, groups));
     }
+
+    private WfTaskQuery claimableQuery(String userId, List<String> groups) {
+        WfTaskQuery query = new WfTaskQuery()
+                .setUnassignedOnly(true)
+                .setOpenOnly(true)
+                .setCandidateOrAssigned(true);
+        if (userId != null && !userId.trim().isEmpty()) {
+            query.setAssignee(userId);
+            query.setCandidateUsers(java.util.Collections.singletonList(userId));
+        }
+        if (groups != null && !groups.isEmpty()) {
+            query.setCandidateGroups(groups);
+        }
+        return query;
+    }
+
+    /** 可认领任务条数，与 {@link #getClaimableList} 同条件。 */
+
 
     public WfTask getTask(String taskId) {
         return requireTask(taskId);

@@ -512,7 +512,11 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         // 若按"且"过滤，被委派的人在自己的待办里一条都看不到 ——
         // 而开发期默认用内存实现，这个 bug 会一路活到上线。
         // JDBC 侧拼的是 (ASSIGNEE=? OR OWNER=?)，两边必须一致。
-        if (isNotBlank(query.getAssignee()) || isNotBlank(query.getOwner())) {
+        // candidateOrAssigned 模式下这段整段跳过：assignee/owner 被折进下面的或组，
+        // 在这里先按"且"判一次的话，候选人（assignee 与 owner 都为空）的任务会被直接淘汰，
+        // 待办列表里一条都不剩 —— 而两边都看不到症状。
+        if (!query.isCandidateOrAssigned()
+                && (isNotBlank(query.getAssignee()) || isNotBlank(query.getOwner()))) {
             boolean hitAssignee = isNotBlank(query.getAssignee())
                     && query.getAssignee().equals(task.getAssignee());
             boolean hitOwner = isNotBlank(query.getOwner())
@@ -539,30 +543,64 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         if (query.isUnassignedOnly() && isNotBlank(task.getAssignee())) {
             return false;
         }
-        if (query.getCandidateUsers() != null && !query.getCandidateUsers().isEmpty()
-                && !task.getCandidateUsers().containsAll(query.getCandidateUsers())) {
-            // 任一候选人命中即可
-            boolean hit = false;
-            for (String user : query.getCandidateUsers()) {
-                if (task.getCandidateUsers().contains(user)) {
-                    hit = true;
-                    break;
+        // 待办语义：assignee / owner / 候选用户 / 候选组取或。
+        // 与 JdbcWorkflowPersistence 的 candidateOrAssigned 分支逐条对应 ——
+        // 两边必须一致，否则会出现"内存里看得到待办、库里查不到"。
+        if (query.isCandidateOrAssigned()) {
+            boolean related = false;
+            if (isNotBlank(query.getAssignee())
+                    && query.getAssignee().equals(task.getAssignee())) {
+                related = true;
+            }
+            if (!related && isNotBlank(query.getOwner())
+                    && query.getOwner().equals(task.getOwner())) {
+                related = true;
+            }
+            if (!related && query.getCandidateUsers() != null) {
+                for (String user : query.getCandidateUsers()) {
+                    if (task.getCandidateUsers().contains(user)) {
+                        related = true;
+                        break;
+                    }
                 }
             }
-            if (!hit) {
-                return false;
-            }
-        }
-        if (query.getCandidateGroups() != null && !query.getCandidateGroups().isEmpty()) {
-            boolean hit = false;
-            for (String group : query.getCandidateGroups()) {
-                if (task.getCandidateGroups().contains(group)) {
-                    hit = true;
-                    break;
+            if (!related && query.getCandidateGroups() != null) {
+                for (String group : query.getCandidateGroups()) {
+                    if (task.getCandidateGroups().contains(group)) {
+                        related = true;
+                        break;
+                    }
                 }
             }
-            if (!hit) {
+            if (!related) {
                 return false;
+            }
+        } else {
+            if (query.getCandidateUsers() != null && !query.getCandidateUsers().isEmpty()
+                    && !task.getCandidateUsers().containsAll(query.getCandidateUsers())) {
+                // 任一候选人命中即可
+                boolean hit = false;
+                for (String user : query.getCandidateUsers()) {
+                    if (task.getCandidateUsers().contains(user)) {
+                        hit = true;
+                        break;
+                    }
+                }
+                if (!hit) {
+                    return false;
+                }
+            }
+            if (query.getCandidateGroups() != null && !query.getCandidateGroups().isEmpty()) {
+                boolean hit = false;
+                for (String group : query.getCandidateGroups()) {
+                    if (task.getCandidateGroups().contains(group)) {
+                        hit = true;
+                        break;
+                    }
+                }
+                if (!hit) {
+                    return false;
+                }
             }
         }
         Date create = task.getCreateTime();

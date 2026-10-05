@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -209,6 +210,90 @@ class JdbcWorkflowPersistenceTest {
         assertTrue(persistence.findTask("t1").isSuspended(),
                 "UPDATE 漏了 SUSPENDED 列：挂起状态在库里被抹回默认");
         assertEquals(2, persistence.countTasks(new WfTaskQuery().setSuspendedOnly(Boolean.TRUE)));
+    }
+
+    @Test
+    @DisplayName("候选池跟着 UPDATE 走：只写 INSERT 的话运行时加人就静默失效")
+    void candidatePoolSurvivesUpdate() {
+        WfTask task = newTask("c1", null, WfTask.Status.CREATED, 1, 1000L);
+        task.setCandidateUsers(new ArrayList<String>(java.util.Arrays.asList("alice")));
+        persistence.saveTask(task);
+
+        // 运行时加派：BPMN 里画的候选池是部署时定的，现实里经常要临时加人
+        WfTask loaded = persistence.findTask("c1");
+        loaded.getCandidateUsers().add("carol");
+        loaded.getCandidateGroups().add("finance");
+        loaded.nextRevision();
+        persistence.saveTask(loaded);
+
+        WfTask after = persistence.findTask("c1");
+        assertTrue(after.getCandidateUsers().contains("carol"),
+                "候选列表存回去了却读不回来：UPDATE 漏了 CANDIDATE_USERS 列。"
+                        + "症状是加人不报错、内存里也对，但换一次读取就消失");
+        assertTrue(after.getCandidateGroups().contains("finance"), "同样漏了 CANDIDATE_GROUPS 列");
+        assertTrue(after.getCandidateUsers().contains("alice"), "原有的候选不能被覆盖掉");
+
+        // 移出也要落库
+        after.getCandidateUsers().remove("alice");
+        after.nextRevision();
+        persistence.saveTask(after);
+        assertFalse(persistence.findTask("c1").getCandidateUsers().contains("alice"));
+
+        // 候选查询能按新候选人查到
+        assertEquals(1, persistence.countTasks(new WfTaskQuery()
+                .setCandidateUsers(java.util.Arrays.asList("carol"))));
+    }
+
+    @Test
+    @DisplayName("待办语义：办理人/责任人/候选用户/候选组取或，不是且")
+    void candidateOrAssignedIsDisjunctive() {
+        WfTask byCandidate = newTask("x1", null, WfTask.Status.CREATED, 1, 1000L);
+        byCandidate.setCandidateUsers(new ArrayList<String>(java.util.Arrays.asList("carol")));
+        persistence.saveTask(byCandidate);
+
+        WfTask byGroup = newTask("x2", null, WfTask.Status.CREATED, 1, 2000L);
+        byGroup.setCandidateGroups(new ArrayList<String>(java.util.Arrays.asList("finance")));
+        persistence.saveTask(byGroup);
+
+        WfTask byAssignee = newTask("x3", "dave", WfTask.Status.ASSIGNED, 1, 3000L);
+        byAssignee.setCandidateUsers(new ArrayList<String>(java.util.Arrays.asList("erin")));
+        persistence.saveTask(byAssignee);
+
+        WfTask unrelated = newTask("x4", null, WfTask.Status.CREATED, 1, 4000L);
+        persistence.saveTask(unrelated);
+
+        // 候选用户命中
+        assertEquals(1, persistence.countTasks(new WfTaskQuery()
+                .setCandidateOrAssigned(true).setAssignee("carol")
+                .setCandidateUsers(java.util.Arrays.asList("carol"))
+                .setOpenOnly(true)));
+        // 候选组命中
+        assertEquals(1, persistence.countTasks(new WfTaskQuery()
+                .setCandidateOrAssigned(true)
+                .setCandidateGroups(java.util.Arrays.asList("finance"))
+                .setOpenOnly(true)));
+        // 办理人命中 —— 关键：dave 不是任何一张单的候选人，
+        // 若把身份条件写成"且"，他这条会被候选条件过滤掉，待办里看不到自己的单
+        assertEquals(1, persistence.countTasks(new WfTaskQuery()
+                .setCandidateOrAssigned(true).setAssignee("dave")
+                .setCandidateUsers(java.util.Arrays.asList("dave"))
+                .setOpenOnly(true)));
+        // 无关的人一条都看不到
+        assertEquals(0, persistence.countTasks(new WfTaskQuery()
+                .setCandidateOrAssigned(true).setAssignee("zoe")
+                .setCandidateUsers(java.util.Arrays.asList("zoe"))
+                .setCandidateGroups(java.util.Arrays.asList("nobody"))
+                .setOpenOnly(true)));
+
+        // 一个身份条件都不给：恒假而不是恒真。恒真会把整张待办表倒出去
+        assertEquals(0, persistence.countTasks(new WfTaskQuery()
+                .setCandidateOrAssigned(true).setOpenOnly(true)));
+
+        // 精确筛选语义不受影响：默认仍是"且"
+        assertEquals(1, persistence.countTasks(new WfTaskQuery()
+                .setAssignee("dave").setCandidateUsers(java.util.Arrays.asList("erin"))));
+        assertEquals(0, persistence.countTasks(new WfTaskQuery()
+                .setAssignee("dave").setCandidateUsers(java.util.Arrays.asList("carol"))));
     }
 
     @Test
