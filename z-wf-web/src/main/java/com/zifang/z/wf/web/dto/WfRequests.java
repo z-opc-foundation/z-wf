@@ -1,6 +1,7 @@
 package com.zifang.z.wf.web.dto;
 
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -143,8 +144,66 @@ public final class WfRequests {
     /**
      * 任务流转操作（转办 / 委派 / 认领 / 撤回 / 跳转 / 强制完成 共用）。
      */
-    public static class TaskOperation implements Serializable {
+    /**
+     * 变量变更请求。
+     *
+     * <p>{@code remove} 为 true 时忽略 {@code values}，只删 {@code names} 里的变量。
+     * 删除单独走一个字段而不是约定"值为 null 即删除"，是因为后者一旦被调用方
+     * 误用，赋值会静默变成删除，而被删掉的变量会让引用它的条件表达式
+     * 走 fail-closed 分支改变流程走向。
+     */
+    public static class VariableOperation implements Serializable {
 
+        private static final long serialVersionUID = 1L;
+
+        private String processInstanceId;
+        private String userId;
+        private Map<String, Object> values = new HashMap<>();
+        private List<String> names = new ArrayList<>();
+        private boolean remove;
+
+        public String getProcessInstanceId() {
+            return processInstanceId;
+        }
+
+        public void setProcessInstanceId(String processInstanceId) {
+            this.processInstanceId = processInstanceId;
+        }
+
+        public String getUserId() {
+            return userId;
+        }
+
+        public void setUserId(String userId) {
+            this.userId = userId;
+        }
+
+        public Map<String, Object> getValues() {
+            return values;
+        }
+
+        public void setValues(Map<String, Object> values) {
+            this.values = values;
+        }
+
+        public List<String> getNames() {
+            return names;
+        }
+
+        public void setNames(List<String> names) {
+            this.names = names;
+        }
+
+        public boolean isRemove() {
+            return remove;
+        }
+
+        public void setRemove(boolean remove) {
+            this.remove = remove;
+        }
+    }
+
+    public static class TaskOperation implements Serializable {
         private static final long serialVersionUID = 1L;
 
         private String taskId;

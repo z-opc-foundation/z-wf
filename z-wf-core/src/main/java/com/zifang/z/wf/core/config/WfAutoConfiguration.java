@@ -33,6 +33,7 @@ import com.zifang.z.wf.core.service.WfHistoryService;
 import com.zifang.z.wf.core.service.WfRepositoryService;
 import com.zifang.z.wf.core.service.WfRuntimeService;
 import com.zifang.z.wf.core.service.WfTaskService;
+import com.zifang.z.wf.core.service.WfVariableService;
 
 /**
  * z-wf 引擎自动装配。
@@ -179,6 +180,13 @@ public class WfAutoConfiguration {
     @ConditionalOnMissingBean
     public WfHistoryService wfHistoryService(WfPersistence persistence) {
         return new WfHistoryService(persistence);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public WfVariableService wfVariableService(WfPersistence persistence,
+                                               WfIdGenerator idGenerator) {
+        return new WfVariableService(persistence, idGenerator);
     }
 
     // ==================== 启动部署 ====================

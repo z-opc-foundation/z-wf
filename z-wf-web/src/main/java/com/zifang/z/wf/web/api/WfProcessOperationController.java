@@ -18,6 +18,7 @@ import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.service.WfHistoryService;
 import com.zifang.z.wf.core.service.WfRepositoryService;
 import com.zifang.z.wf.core.service.WfRuntimeService;
+import com.zifang.z.wf.core.service.WfVariableService;
 import com.zifang.z.wf.web.dto.WfRequests;
 import com.zifang.z.wf.web.dto.WfViews;
 import com.zifang.z.wf.web.mapper.WfViewMapper;
@@ -48,6 +49,9 @@ public class WfProcessOperationController {
 
     @Resource
     private WfViewMapper viewMapper;
+
+    @Resource
+    private WfVariableService variableService;
 
     @PostMapping("/suspend")
     @Operation(summary = "001_挂起流程实例")
@@ -118,5 +122,31 @@ public class WfProcessOperationController {
             @RequestBody(required = false) Map<String, Object> variables) {
         WfProcessInstance instance = runtimeService.advance(processInstanceId, variables);
         return Result.success(viewMapper.toProcessView(instance));
+    }
+
+    @GetMapping("/variables")
+    @Operation(summary = "010_读取流程变量")
+    public Result<Map<String, Object>> variables(@RequestParam String processInstanceId) {
+        return Result.success(variableService.getVariables(processInstanceId));
+    }
+
+    @PostMapping("/variables")
+    @Operation(summary = "011_修改变量（整批只落一次库，并留审计记录）")
+    public Result<WfViews.ProcessInstanceView> updateVariables(
+            @RequestBody WfRequests.VariableOperation request) {
+        // 删除与赋值走两个分支而不是"值为 null 即删除"：
+        // 后者一旦被误用，赋值会静默变成删除，删掉的变量又会让引用它的
+        // 条件表达式走 fail-closed 分支，把流程带向另一条路。
+        if (request.isRemove()) {
+            for (String name : request.getNames()) {
+                variableService.removeVariable(
+                        request.getProcessInstanceId(), name, request.getUserId());
+            }
+        } else {
+            variableService.setVariables(request.getProcessInstanceId(),
+                    request.getValues(), request.getUserId());
+        }
+        return Result.success(viewMapper.toProcessView(
+                runtimeService.getProcessInstance(request.getProcessInstanceId())));
     }
 }

@@ -53,7 +53,7 @@
 | `startProcessInstanceByKey` / `ById` | ✅ | 三个重载（key / key+version / 定义对象） |
 | `startProcessInstanceByMessage` | ❌ | 消息启动流程 |
 | `suspend` / `activate` / `delete` 实例 | ✅ | `terminate` 对应 delete |
-| **变量服务** `getVariable(s)` / `setVariable(s)` / `getVariableLocal` / `setVariableLocal` | ❌ | **P0 缺口。** 变量确实存了（`WfProcessInstance.variables` / `WfTask.variables`），但**没有任何服务 API 去读写它**。调用方只能自己 `findProcessInstance` 再改 map，改完还得记得 `saveProcessInstance`，而那会踩乐观锁。Camunda 里最常用的运行时 API 在这里是缺的 |
+| **变量服务** `getVariable(s)` / `setVariable(s)` / `getVariableLocal` / `setVariableLocal` | ✅ | **本轮补上** `WfVariableService`：流程级 get/set/remove/has + 任务级 get/set/remove，批量整批只落一次库，变更留审计 |
 | `createProcessInstanceQuery` 流畅查询 | 🟡 | `WfProcessInstanceQuery` 有 10 个条件，但没有 `variableValueEquals`（按变量值查实例，审批系统常用） |
 | `createExecutionQuery` | 🟡 | 只有 `getExecutions(processInstanceId)` 列举，没有按条件查 |
 | `createVariableInstanceQuery` | ❌ | |
@@ -76,7 +76,7 @@
 | **`handleBpmnError`** | ❌ | **P0 缺口。** 没有 BPMN 错误事件，`serviceTask` 抛异常只能整体失败，无法路由到补偿分支 |
 | `handleEscalation` | ❌ | |
 | **`move` / `moveTaskState`**（流程实例迁移） | ❌ | Camunda 7.15+ 的实例迁移。审批系统改流程时要迁移在途实例，目前只能 `jump` 单个任务 |
-| 任务级变量 `setVariableLocal` / `getVariablesLocal` | ❌ | 见 §1.2 变量服务 |
+| 任务级变量 `setVariableLocal` / `getVariablesLocal` | 🟡 | 本轮已由 `WfVariableService` 覆盖读写，但**没有变量作用域链**：Camunda 的 Local 变量只在当前 execution 可见，z-wf 的任务级变量随任务走、不会下传给子流程 token |
 | 任务挂起（suspension state） | ❌ | |
 | `withdraw` | ✅ | z-wf 扩展，比 Camunda 多 |
 
@@ -217,7 +217,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 | # | 项目 | 理由 |
 |---|---|---|
 | 1 | **多实例（会签/或签/计数）** | 审批系统默认需求 |
-| 2 | **变量服务** | Camunda 最常用的运行时 API；变量已存但无 API 读写，调用方只能绕过乐观锁直接改实体 |
+| 2 | ~~**变量服务**~~ | ✅ 本轮已补（`WfVariableService` + REST `GET/POST /api/wf/process/variables`）。剩余缺口：变量实例查询、类型化变量、变量作用域链（execution 级） |
 | 3 | **BPMN 错误事件 + `handleBpmnError`** | `serviceTask` 失败目前只能整体崩，无法走补偿分支 |
 | 4 | **边界事件 + 定时器 + Job 执行器** | 缺一整条机制：超时提醒/超时升级/异步调用都做不了 |
 

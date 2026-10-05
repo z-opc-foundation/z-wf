@@ -271,6 +271,87 @@ class WfWebApiTest {
         assertNotNull(getOk("/api/wf/process/executions?processInstanceId=" + processId));
     }
 
+    // ==================== 变量 ====================
+
+    @Test
+    @DisplayName("变量端点：读 → 批量写 → 删除，全程留审计")
+    void variableEndpoints() throws Exception {
+        String businessKey = "WEB-VAR-" + System.nanoTime();
+        Map<String, Object> vars = new HashMap<String, Object>();
+        vars.put("days", 1);
+        vars.put("leaderId", "var-leader");
+        Map<String, Object> start = postOk("/api/approval-center/processes/start",
+                body("definitionKey", "leaveProcess", "businessKey", businessKey,
+                        "userId", "var-alice", "variables", vars));
+        String processId = (String) start.get("data");
+
+        // 启动时写入的变量读得到
+        Map<String, Object> before = getOk("/api/wf/process/variables?processInstanceId=" + processId);
+        assertEquals(1, asMap(before.get("data")).get("days"));
+
+        // 批量写
+        Map<String, Object> values = new LinkedHashMap<String, Object>();
+        values.put("days", 5);
+        values.put("amount", 3000);
+        Map<String, Object> updated = postOk("/api/wf/process/variables",
+                body("processInstanceId", processId, "userId", "var-admin",
+                        "values", values));
+        assertEquals("ACTIVE", asMap(updated.get("data")).get("status"));
+
+        Map<String, Object> after = asMap(
+                getOk("/api/wf/process/variables?processInstanceId=" + processId).get("data"));
+        assertEquals(5, after.get("days"));
+        assertEquals(3000, after.get("amount"));
+
+        // 变量变更必须能从评论里查到（审计留痕）
+        List<Map<String, Object>> comments = asList(
+                getOk("/api/wf/process/comments?processInstanceId=" + processId).get("data"));
+        boolean sawVariableAudit = false;
+        for (Map<String, Object> comment : comments) {
+            if ("variable".equals(comment.get("type"))) {
+                sawVariableAudit = true;
+                assertEquals("var-admin", comment.get("userId"),
+                        "变量变更必须留下操作人，否则无法回答'谁改的'");
+                assertTrue(String.valueOf(comment.get("content")).contains("amount"),
+                        "审计内容应点名变量：" + comment.get("content"));
+            }
+        }
+        assertTrue(sawVariableAudit, "变量变更应当留下审计记录，评论列表: " + comments);
+
+        // 删除走独立分支，不靠"值为 null"
+        postOk("/api/wf/process/variables",
+                body("processInstanceId", processId, "userId", "var-admin",
+                        "names", java.util.Arrays.asList("amount"), "remove", true));
+        Map<String, Object> deleted = asMap(
+                getOk("/api/wf/process/variables?processInstanceId=" + processId).get("data"));
+        assertFalse(deleted.containsKey("amount"), "amount 应已被删除");
+        assertTrue(deleted.containsKey("days"), "days 不该被动到");
+    }
+
+    @Test
+    @DisplayName("变量值传 null 被拒：400 且不静默变成删除")
+    void nullVariableValueRejected() throws Exception {
+        String businessKey = "WEB-VARNULL-" + System.nanoTime();
+        Map<String, Object> vars = new HashMap<String, Object>();
+        vars.put("days", 1);
+        vars.put("leaderId", "varnull-leader");
+        Map<String, Object> start = postOk("/api/approval-center/processes/start",
+                body("definitionKey", "leaveProcess", "businessKey", businessKey,
+                        "userId", "varnull-alice", "variables", vars));
+        String processId = (String) start.get("data");
+
+        Map<String, Object> values = new LinkedHashMap<String, Object>();
+        values.put("days", null);
+        ResponseEntity<String> response = exchange(HttpMethod.POST, "/api/wf/process/variables",
+                body("processInstanceId", processId, "userId", "var-admin", "values", values));
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode(),
+                "null 赋值应当 400，而不是变成一次静默删除: " + response.getBody());
+
+        Map<String, Object> after = asMap(
+                getOk("/api/wf/process/variables?processInstanceId=" + processId).get("data"));
+        assertEquals(1, after.get("days"), "被拒绝的写入不能有任何效果");
+    }
+
     // ==================== 流程定义 / 分组 ====================
 
     @Test

@@ -1,0 +1,291 @@
+package com.zifang.z.wf.core.service;
+
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.zifang.z.wf.core.engine.WfIdGenerator;
+import com.zifang.z.wf.core.model.WfComment;
+import com.zifang.z.wf.core.model.WfProcessInstance;
+import com.zifang.z.wf.core.model.WfTask;
+import com.zifang.z.wf.core.persistence.WfPersistence;
+
+/**
+ * 变量服务 —— 流程级与任务级的变量读写。
+ *
+ * <p>变量一直存着（{@link WfProcessInstance#getVariables()} 与
+ * {@link WfTask#getVariables()} 两处），但此前<b>没有任何服务 API 去读写它们</b>：
+ * 调用方只能自己 {@code findProcessInstance} 拿到实体、直接改 map、再
+ * {@code saveProcessInstance}。这条路能跑通，但有两个绕不开的问题：
+ * <ul>
+ *   <li>绕过了本层的所有前置校验（终态实例、可空的实例 id…）</li>
+ *   <li>改完 map 之后如果忘了 {@code nextRevision()}，乐观锁形同虚设 ——
+ *       而乐观锁正是并发改同一个审批单时唯一的保护</li>
+ * </ul>
+ * 这个服务把这条路径收回来。
+ *
+ * <h3>为什么改变量要留审计痕迹</h3>
+ * 审批系统里"提交后有人把金额从 1000 改成 500"是必须能回答的问题。
+ * 变量本身不带修改人也不带时间，而 {@link WfComment} 已经是一条现成的、
+ * 有操作人有时间戳、并且已经能从 {@code GET /comments} 查到的记录。
+ * 所以每次变更都落一条 comment，而不是新造一套审计表 ——
+ * 新造一套的结果是"审计表和评论表内容重复，但只有一套有人查"。
+ *
+ * <h3>null 的语义</h3>
+ * 本仓<b>不存在"变量值为 null"这个状态</b>：{@code WfContext#setVariable(name, null)}
+ * 的行为是<b>删除</b>该变量。因此 {@link #setVariable} 显式拒绝 null，
+ * 逼调用方改用 {@link #removeVariable} —— 否则"给变量赋个 null"会静默
+ * 变成"把变量删了"，而条件表达式里引用一个被删掉的变量会走 fail-closed
+ * 分支改变流程走向。
+ *
+ * @author zifang
+ */
+public class WfVariableService {
+
+    private static final Logger log = LoggerFactory.getLogger(WfVariableService.class);
+
+    /** 变更记录使用的 comment type。前端可据此把变量变更与人工评论区分渲染。 */
+    public static final String COMMENT_TYPE_VARIABLE = "variable";
+
+    private final WfPersistence persistence;
+    private final WfIdGenerator idGenerator;
+
+    public WfVariableService(WfPersistence persistence, WfIdGenerator idGenerator) {
+        this.persistence = persistence;
+        this.idGenerator = idGenerator;
+    }
+
+    // ==================== 读取 ====================
+
+    /**
+     * 读单个流程级变量。
+     *
+     * @return 不存在时返回 {@code null}（区分不了"值为 null"和"不存在"，
+     *         因为本仓没有 null 值——见类注释）
+     */
+    public Object getVariable(String processInstanceId, String name) {
+        return requireInstance(processInstanceId).getVariables().get(name);
+    }
+
+    /** 流程级变量的可修改副本。 */
+    public Map<String, Object> getVariables(String processInstanceId) {
+        return new LinkedHashMap<>(requireInstance(processInstanceId).getVariables());
+    }
+
+    /**
+     * 变量是否存在。
+     *
+     * <p>这个方法存在的意义不只是方便：条件表达式求值要区分
+     * "变量没定义"和"变量定义成 0"，而 fail-closed 判定依赖的正是这个区别。
+     */
+    public boolean hasVariable(String processInstanceId, String name) {
+        return requireInstance(processInstanceId).getVariables().containsKey(name);
+    }
+
+    /** 读单个任务级变量。 */
+    public Object getTaskVariable(String taskId, String name) {
+        return requireTask(taskId).getVariables().get(name);
+    }
+
+    /** 任务级变量的可修改副本。 */
+    public Map<String, Object> getTaskVariables(String taskId) {
+        return new LinkedHashMap<>(requireTask(taskId).getVariables());
+    }
+
+    // ==================== 写入 ====================
+
+    /**
+     * 写单个流程级变量。
+     *
+     * @return 变更后的实例（含新的 revision）
+     * @throws WfEngineException 实例不存在、已结束，或值为 {@code null}
+     */
+    public WfProcessInstance setVariable(String processInstanceId, String name,
+                                         Object value, String operatorId) {
+        Map<String, Object> one = new HashMap<>();
+        one.put(name, value);
+        return setVariables(processInstanceId, one, operatorId);
+    }
+
+    /**
+     * 批量写流程级变量。
+     *
+     * <p><b>整批只落一次库、只 bump 一次 revision。</b> 逐个保存看着自然，
+     * 但那样会出现"前三个已写、第四个冲突"——实例停在部分更新的状态，
+     * 而调用方拿到的是一个异常，无从知道已经改了哪几个。
+     * 一次 CAS 要么全成、要么全不成，这才是批量该有的语义。
+     *
+     * @throws WfEngineException 实例已结束，或 map 里含 {@code null} 值
+     */
+    public WfProcessInstance setVariables(String processInstanceId,
+                                          Map<String, Object> values, String operatorId) {
+        WfProcessInstance instance = requireInstance(processInstanceId);
+        requireMutable(instance);
+        if (values == null || values.isEmpty()) {
+            return instance;
+        }
+        for (Map.Entry<String, Object> entry : values.entrySet()) {
+            requireName(entry.getKey());
+            if (entry.getValue() == null) {
+                throw new WfEngineException("变量 [" + entry.getKey() + "] 的值为 null。"
+                        + "本仓没有'值为 null'这个状态，写 null 等于删除该变量；"
+                        + "请改用 removeVariable，避免把赋值静默变成删除");
+            }
+        }
+
+        StringBuilder trace = new StringBuilder();
+        for (Map.Entry<String, Object> entry : values.entrySet()) {
+            Object before = instance.getVariables().get(entry.getKey());
+            instance.getVariables().put(entry.getKey(), entry.getValue());
+            appendChange(trace, entry.getKey(), before, entry.getValue());
+        }
+        persistWithAudit(instance, operatorId, trace.toString());
+        return instance;
+    }
+
+    /**
+     * 删除一个流程级变量。
+     *
+     * <p>删不存在的变量<b>不报错</b>：删除操作的语义是"保证它不存在"，
+     * 而非"它必须本来存在"。让重复删除失败会让重试逻辑变得很难写。
+     */
+    public WfProcessInstance removeVariable(String processInstanceId, String name,
+                                            String operatorId) {
+        WfProcessInstance instance = requireInstance(processInstanceId);
+        requireMutable(instance);
+        requireName(name);
+        if (!instance.getVariables().containsKey(name)) {
+            return instance;
+        }
+        Object before = instance.getVariables().remove(name);
+        persistWithAudit(instance, operatorId, "remove " + name + ": " + render(before) + " -> (已删除)");
+        return instance;
+    }
+
+    // ==================== 任务级 ====================
+
+    /**
+     * 写任务级变量。
+     *
+     * <p>任务级变量只随这条任务走，不进流程级命名空间，因此<b>不会被后续
+     * 条件表达式当作流程变量读到</b>。要影响流程走向请用
+     * {@link #setVariable}。
+     */
+    public WfTask setTaskVariable(String taskId, String name, Object value, String operatorId) {
+        requireName(name);
+        if (value == null) {
+            throw new WfEngineException("变量 [" + name + "] 的值为 null，请改用 removeTaskVariable");
+        }
+        WfTask task = requireTask(taskId);
+        if (!task.isOpen()) {
+            throw new WfEngineException("任务已办结或已作废，不能再改它的变量: " + taskId);
+        }
+        Object before = task.getVariables().put(name, value);
+        task.nextRevision();
+        persistence.saveTask(task);
+        recordTaskAudit(task, operatorId,
+                "set " + name + ": " + render(before) + " -> " + render(value));
+        return task;
+    }
+
+    /** 删除任务级变量。 */
+    public WfTask removeTaskVariable(String taskId, String name, String operatorId) {
+        requireName(name);
+        WfTask task = requireTask(taskId);
+        if (!task.isOpen()) {
+            throw new WfEngineException("任务已办结或已作废，不能再改它的变量: " + taskId);
+        }
+        if (!task.getVariables().containsKey(name)) {
+            return task;
+        }
+        Object before = task.getVariables().remove(name);
+        task.nextRevision();
+        persistence.saveTask(task);
+        recordTaskAudit(task, operatorId,
+                "remove " + name + ": " + render(before) + " -> (已删除)");
+        return task;
+    }
+
+    // ==================== 内部 ====================
+
+    /**
+     * 落库 + 记审计。
+     *
+     * <p>顺序是"先记审计、后落实例"还是反过来，取决于失败时哪个状态更可接受。
+     * 这里选<b>先落实例</b>：乐观锁冲突时实例没变，如果审计先落，
+     * 就会留下一条"某某改了变量"的记录而实际没改成 ——
+     * 审计记录说谎比少一条记录危险得多。
+     * 代价是实例落库后、写审计前崩溃会丢一条审计记录，
+     * 这种情况由 comment 里的时间戳与实例 revision 变化对不上体现出来。
+     */
+    private void persistWithAudit(WfProcessInstance instance, String operatorId, String trace) {
+        instance.nextRevision();
+        persistence.saveProcessInstance(instance);
+        if (trace != null && !trace.isEmpty()) {
+            persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                    instance.getId(), operatorId, COMMENT_TYPE_VARIABLE, trace));
+        }
+        log.info("流程 {} 变量变更 by {}: {}", instance.getId(), operatorId, trace);
+    }
+
+    private void recordTaskAudit(WfTask task, String operatorId, String trace) {
+        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                task.getProcessInstanceId(), operatorId, COMMENT_TYPE_VARIABLE,
+                "任务 " + task.getName() + "(" + task.getId() + ") " + trace));
+        log.info("任务 {} 变量变更 by {}: {}", task.getId(), operatorId, trace);
+    }
+
+    private void appendChange(StringBuilder trace, String name, Object before, Object after) {
+        if (trace.length() > 0) {
+            trace.append("; ");
+        }
+        trace.append(name).append(": ").append(render(before)).append(" -> ").append(render(after));
+    }
+
+    /** 变量不存在时渲染成 {@code (未设置)}，而不是和 null 值混淆。 */
+    private String render(Object value) {
+        if (value == null) {
+            return "(未设置)";
+        }
+        String text = String.valueOf(value);
+        return text.length() > 200 ? text.substring(0, 200) + "…(已截断)" : text;
+    }
+
+    private void requireName(String name) {
+        if (name == null || name.trim().isEmpty()) {
+            throw new WfEngineException("变量名不能为空");
+        }
+    }
+
+    /**
+     * 终态实例不允许改变量。
+     *
+     * <p>流程结束之后再改变量，审批轨迹上会出现"已归档的单据金额被调整"，
+     * 而且没有任何节点会再用到这个值——改它是纯粹的伪造记录。
+     */
+    private void requireMutable(WfProcessInstance instance) {
+        if (instance.getStatus().isTerminal()) {
+            throw new WfEngineException("流程实例已结束（" + instance.getStatus()
+                    + "），不允许再修改变量: " + instance.getId());
+        }
+    }
+
+    private WfProcessInstance requireInstance(String id) {
+        WfProcessInstance instance = persistence.findProcessInstance(id);
+        if (instance == null) {
+            throw new WfEngineException("流程实例不存在: " + id);
+        }
+        return instance;
+    }
+
+    private WfTask requireTask(String id) {
+        WfTask task = persistence.findTask(id);
+        if (task == null) {
+            throw new WfEngineException("任务不存在: " + id);
+        }
+        return task;
+    }
+}
