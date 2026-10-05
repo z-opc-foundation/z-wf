@@ -275,6 +275,18 @@ class UnsupportedBpmnElementTest {
         }
 
         @Override
+        public List<com.zifang.z.wf.core.model.WfComment> queryVariableAudits(
+                com.zifang.z.wf.core.persistence.WfVariableAuditQuery q) {
+            return null;
+        }
+
+        @Override
+        public long countVariableAudits(
+                com.zifang.z.wf.core.persistence.WfVariableAuditQuery q) {
+            return 0L;
+        }
+
+        @Override
         public java.util.List<com.zifang.z.wf.core.model.WfJob> queryJobs(
                 com.zifang.z.wf.core.persistence.WfJobQuery q) {
             return null;

@@ -663,6 +663,146 @@ class JdbcWorkflowPersistenceTest {
         assertEquals(1, persistence.countJobs(new WfJobQuery()));
     }
 
+    // ==================== 变量变更审计 ====================
+
+    private WfComment variableAudit(String id, String procId, String userId, String content) {
+        WfComment comment = new WfComment(id, procId, userId, "variable", content);
+        persistence.saveComment(comment);
+        return comment;
+    }
+
+    /**
+     * 时间区间断言必须能卡住边界，而 {@link WfComment} 的五参构造器把 time 设成
+     * {@code new Date()}（毫秒精度）—— 连着建三条几乎必然落在同一毫秒，
+     * 于是 oldest == newest，"含 changedFrom / 不含 changedTo" 这两条断言
+     * 无论实现对错都不成立。所以需要卡边界的地方一律显式给时间。
+     */
+    private WfComment variableAuditAt(String id, String procId, String userId, String content, long time) {
+        WfComment comment = new WfComment(id, procId, userId, "variable", content);
+        comment.setTime(new Date(time));
+        persistence.saveComment(comment);
+        return comment;
+    }
+
+    @Test
+    @DisplayName("变量名走前缀匹配：amount 不该命中 discount_amount")
+    void variableAuditMatchesByPrefix() {
+        variableAudit("v1", "p1", "admin-1", "amount: (未设置) -> 1000");
+        variableAudit("v2", "p1", "admin-1", "discount_amount: (未设置) -> 50");
+        variableAudit("v3", "p1", "admin-2", "amount: 1000 -> 500");
+
+        assertEquals(2, persistence.countVariableAudits(new WfVariableAuditQuery()
+                .setProcessInstanceId("p1").setVariableName("amount")),
+                "子串匹配会把 discount_amount 带进来，而审计给出错的行比不给行更糟");
+
+        List<WfComment> rows = persistence.queryVariableAudits(new WfVariableAuditQuery()
+                .setProcessInstanceId("p1").setVariableName("amount")
+                .setPageNum(1).setPageSize(10));
+        assertEquals(2, rows.size());
+        for (WfComment c : rows) {
+            assertTrue(c.getContent().startsWith("amount:"),
+                    "实际取到: " + c.getContent());
+        }
+        // 倒序：v3 是最后一次变更，应排第一
+        assertEquals("v3", rows.get(0).getId());
+
+        assertEquals(1, persistence.countVariableAudits(new WfVariableAuditQuery()
+                .setVariableName("discount_amount")));
+        assertEquals(0, persistence.countVariableAudits(new WfVariableAuditQuery()
+                .setVariableName("amountt")), "不该做前缀之外的部分匹配");
+    }
+
+    @Test
+    @DisplayName("变量名里的 _ 与 % 不当通配符：查 a_b 只该命中 a_b")
+    void variableAuditEscapesLikeWildcards() {
+        // 取名有个坑：_ 只匹配"一个字符"，所以反例必须与查询名<b>等长</b>才撞得上。
+        // 早先写成 disc_ount(9) / discount(8)，长度对不上，不转义也命中不了，
+        // 于是这条用例看着在测转义、实际对转义没有区分力。
+        variableAudit("v1", "p1", "admin-1", "a_b: 1 -> 2");
+        variableAudit("v2", "p1", "admin-1", "axb: 1 -> 2");
+        variableAudit("v3", "p1", "admin-1", "a%b: 1 -> 2");
+        variableAudit("v4", "p1", "admin-1", "axyzb: 1 -> 2");
+
+        // 不转义时 _ 匹配任意单字符，a_b 会把 axb 一并带出来
+        assertEquals(1, persistence.countVariableAudits(new WfVariableAuditQuery()
+                .setVariableName("a_b")), "下划线被当通配符了");
+        assertEquals(1, persistence.countVariableAudits(new WfVariableAuditQuery()
+                .setVariableName("axb")), "这条是给 a_b 当反例的，不该被自己命中");
+
+        // % 同理：不转义时 a%b 会匹配 axyzb
+        assertEquals(1, persistence.countVariableAudits(new WfVariableAuditQuery()
+                .setVariableName("a%b")), "百分号被当通配符了");
+    }
+
+    @Test
+    @DisplayName("审计查询只认 variable 类型，人工评论不混进来")
+    void variableAuditExcludesOtherTypes() {
+        variableAudit("v1", "p1", "admin-1", "amount: 1 -> 2");
+        persistence.saveComment(new WfComment("c1", "p1", "boss", "comment", "同意"));
+        persistence.saveComment(new WfComment("c2", "p1", "system", "job", "停留超时"));
+
+        List<WfComment> audits = persistence.queryVariableAudits(new WfVariableAuditQuery()
+                .setPageNum(1).setPageSize(10));
+        assertEquals(1, audits.size(), "只该返回 variable 类型的");
+        assertEquals("v1", audits.get(0).getId());
+    }
+
+    @Test
+    @DisplayName("按操作人与时间区间筛审计，count 与列表同口径")
+    void variableAuditFiltersAndCount() {
+        long t0 = 1700000000000L;
+        variableAuditAt("v1", "p1", "admin-1", "amount: 1 -> 2", t0);
+        variableAuditAt("v2", "p1", "admin-2", "amount: 2 -> 3", t0 + 1000L);
+        variableAuditAt("v3", "p2", "admin-1", "amount: 3 -> 4", t0 + 2000L);
+
+        assertEquals(2, persistence.countVariableAudits(new WfVariableAuditQuery()
+                .setChangedBy("admin-1")));
+        assertEquals(2, persistence.queryVariableAudits(new WfVariableAuditQuery()
+                .setChangedBy("admin-1").setPageNum(1).setPageSize(10)).size());
+        assertEquals(1, persistence.countVariableAudits(new WfVariableAuditQuery()
+                .setProcessInstanceId("p1").setChangedBy("admin-1")));
+        assertEquals(1, persistence.countVariableAudits(new WfVariableAuditQuery()
+                .setProcessInstanceId("p1").setChangedBy("admin-1")
+                .setVariableName("amount")));
+
+        // 时间区间卡边界：changedFrom 含、changedTo 不含。行在 t0 / t0+1s / t0+2s
+        assertEquals(2, persistence.countVariableAudits(new WfVariableAuditQuery()
+                .setChangedFrom(new Date(t0 + 1000L))), "changedFrom 含边界");
+        assertEquals(1, persistence.countVariableAudits(new WfVariableAuditQuery()
+                .setChangedTo(new Date(t0 + 1000L))), "changedTo 不含边界");
+        assertEquals(1, persistence.countVariableAudits(new WfVariableAuditQuery()
+                .setChangedFrom(new Date(t0 + 1000L)).setChangedTo(new Date(t0 + 2000L))),
+                "[t0+1s, t0+2s) 只该有 v2 一条");
+    }
+
+    @Test
+    @DisplayName("审计查询分页不重不漏")
+    void variableAuditPaginates() {
+        for (int i = 0; i < 7; i++) {
+            variableAudit("v" + i, "p1", "admin", "amount: " + i + " -> " + (i + 1));
+        }
+        WfVariableAuditQuery query = new WfVariableAuditQuery().setProcessInstanceId("p1");
+        assertEquals(7, persistence.countVariableAudits(query));
+        // count 不该被分页参数影响：否则前端翻页会看到 total 越翻越小
+        assertEquals(7, persistence.countVariableAudits(query.setPageNum(2).setPageSize(3)));
+
+        java.util.Set<String> seen = new java.util.LinkedHashSet<String>();
+        // 7 条按 3 条一页翻三遍：每页 3/3/1 —— 末页只有 1 条是必然的，
+        // 写死"每页都该有 3 条"是把页大小当成了行数
+        int[] expectPerPage = {3, 3, 1};
+        for (int page = 1; page <= expectPerPage.length; page++) {
+            List<WfComment> rows = persistence.queryVariableAudits(
+                    query.setPageNum(page).setPageSize(3));
+            assertEquals(expectPerPage[page - 1], rows.size(), "第 " + page + " 页行数不对");
+            for (WfComment c : rows) {
+                assertTrue(seen.add(c.getId()), "第 " + page + " 页出现重复行 " + c.getId());
+            }
+        }
+        assertEquals(7, seen.size(), "三页并起来必须正好是 7 条，不重不漏");
+        assertEquals(0, persistence.queryVariableAudits(
+                query.setPageNum(4).setPageSize(3)).size());
+    }
+
     private WfTask newTask(String id, String assignee, WfTask.Status status, int priority, long time) {
         WfTask task = new WfTask();
         task.setId(id);

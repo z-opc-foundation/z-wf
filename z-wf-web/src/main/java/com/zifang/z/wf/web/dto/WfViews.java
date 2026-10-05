@@ -888,4 +888,93 @@ public final class WfViews {
             this.lastFailureTime = lastFailureTime;
         }
     }
+
+    /**
+     * 变量变更审计的一条记录。
+     *
+     * <p>只解析引擎自己保证的那一段：审计内容由引擎写成 {@code 变量名: 变更描述}，
+     * 所以冒号前是变量名、后面原样是变更描述。
+     *
+     * <p><b>不拆 oldValue / newValue</b>：变更描述里的 {@code " -> "} 是分隔符，
+     * 而变量的值本身完全可能含这个串（remark = "紧急 -> 明天"）。按分隔符硬拆就会
+     * 悄悄切错值 —— 审计给出错的值比不给值更糟。要自己拆的调用方拿 {@link #content} 去拆，
+     * 引擎不替它猜。
+     */
+    public static class VariableChangeView implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private String auditId;
+        private String processInstanceId;
+        private String taskId;
+        private String changedBy;
+        private String variableName;
+        private String change;
+        private String content;
+        private long time;
+
+        public String getAuditId() {
+            return auditId;
+        }
+
+        public void setAuditId(String auditId) {
+            this.auditId = auditId;
+        }
+
+        public String getProcessInstanceId() {
+            return processInstanceId;
+        }
+
+        public void setProcessInstanceId(String processInstanceId) {
+            this.processInstanceId = processInstanceId;
+        }
+
+        public String getTaskId() {
+            return taskId;
+        }
+
+        public void setTaskId(String taskId) {
+            this.taskId = taskId;
+        }
+
+        public String getChangedBy() {
+            return changedBy;
+        }
+
+        public void setChangedBy(String changedBy) {
+            this.changedBy = changedBy;
+        }
+
+        public String getVariableName() {
+            return variableName;
+        }
+
+        public void setVariableName(String variableName) {
+            this.variableName = variableName;
+        }
+
+        public String getChange() {
+            return change;
+        }
+
+        public void setChange(String change) {
+            this.change = change;
+        }
+
+        public String getContent() {
+            return content;
+        }
+
+        public void setContent(String content) {
+            this.content = content;
+        }
+
+        public long getTime() {
+            return time;
+        }
+
+        public void setTime(long time) {
+            this.time = time;
+        }
+    }
 }

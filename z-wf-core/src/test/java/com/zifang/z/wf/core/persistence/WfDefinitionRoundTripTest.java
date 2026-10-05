@@ -15,6 +15,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import com.zifang.z.wf.core.definition.WfDefinition;
+import com.zifang.z.wf.core.definition.WfFlow;
 import com.zifang.z.wf.core.definition.WfNode;
 import com.zifang.z.wf.core.definition.WfNodeType;
 import com.zifang.z.wf.core.definition.WfTimerType;
@@ -181,5 +182,51 @@ class WfDefinitionRoundTripTest {
             assertNull(call.getTimerType(), "普通任务节点不该带定时器类型");
             assertTrue(!call.isTimerBoundary());
         }
+    }
+
+    // ==================== 结构级：防止下次再漏字段 ====================
+
+    /**
+     * 实体加了字段、codec 没跟上时，这个用例会红。
+     *
+     * <p>上面那些"逐字段断言"只能守住<b>当前</b>的字段集合：将来给 {@link WfNode}
+     * 加一个字段、忘了加进 {@code GraphNode}，没有任何一个既有用例会红 ——
+     * 因为它们断言的是各自认识的那几个字段。
+     *
+     * <p>所以再加这一条按<b>字段名反射比对</b>的：新字段没进 codec 立刻暴露。
+     * 类型不要求一致（{@code type} 实体是枚举、codec 存字符串，是有意的转换）。
+     */
+    @Test
+    @DisplayName("codec 覆盖实体的全部字段：加字段忘了同步会被这里抓住")
+    void codecCoversEveryEntityField() {
+        assertNoFieldMissing(WfNode.class, WfDefinitionCodec.GraphNode.class);
+        assertNoFieldMissing(WfFlow.class, WfDefinitionCodec.GraphFlow.class);
+    }
+
+    private void assertNoFieldMissing(Class<?> entity, Class<?> codec) {
+        java.util.Set<String> inEntity = businessFieldNames(entity);
+        java.util.Set<String> inCodec = businessFieldNames(codec);
+        java.util.Set<String> missing = new java.util.LinkedHashSet<String>(inEntity);
+        missing.removeAll(inCodec);
+        assertTrue(missing.isEmpty(),
+                entity.getSimpleName() + " 有这些字段而 " + codec.getSimpleName()
+                        + " 没有对应字段。加字段时必须两边都加，"
+                        + "否则该字段在内存里活着、在库里静默消失。"
+                        + "缺失字段: " + missing);
+    }
+
+    private java.util.Set<String> businessFieldNames(Class<?> type) {
+        java.util.Set<String> names = new java.util.LinkedHashSet<String>();
+        for (java.lang.reflect.Field field : type.getDeclaredFields()) {
+            if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                // serialVersionUID 与计数器之类的静态量不在往返范围内
+                continue;
+            }
+            if (field.isSynthetic()) {
+                continue;
+            }
+            names.add(field.getName());
+        }
+        return names;
     }
 }

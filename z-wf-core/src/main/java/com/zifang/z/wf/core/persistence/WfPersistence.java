@@ -199,6 +199,19 @@ public interface WfPersistence {
 
     List<WfComment> findComments(String processInstanceId);
 
+    /**
+     * 按条件查<b>变量变更</b>审计（{@code WfComment.type = "variable"}）。
+     *
+     * <p>单列一个方法而不是让调用方拿 {@code findComments} 自己过滤：
+     * 过滤要按"内容以变量名开头"来做（不是子串匹配），还要按操作人、
+     * 时间区间筛，最后按时间倒序 —— 这些规则写在两套实现里各一遍必然漂移，
+     * 而漂移的表现是"审计少了一条"，那种漏检最难被发现。
+     */
+    List<WfComment> queryVariableAudits(WfVariableAuditQuery query);
+
+    /** 变更条数，与 {@link #queryVariableAudits} 的条件必须一致。 */
+    long countVariableAudits(WfVariableAuditQuery query);
+
     // ==================== Job ====================
 
     /**

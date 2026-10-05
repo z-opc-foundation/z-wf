@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.zifang.util.core.meta.Result;
 import com.zifang.util.core.meta.page.PageResult;
 import com.zifang.z.wf.core.model.WfActivityInstance;
+import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfTask;
@@ -22,6 +23,7 @@ import com.zifang.z.wf.core.persistence.WfHistoricActivityInstanceQuery;
 import com.zifang.z.wf.core.persistence.WfJobQuery;
 import com.zifang.z.wf.core.persistence.WfProcessInstanceQuery;
 import com.zifang.z.wf.core.persistence.WfTaskQuery;
+import com.zifang.z.wf.core.persistence.WfVariableAuditQuery;
 import com.zifang.z.wf.core.service.WfEngineException;
 import com.zifang.z.wf.core.service.WfHistoryService;
 import com.zifang.z.wf.core.service.WfJobService;
@@ -211,5 +213,34 @@ public class WfHistoryController {
     public Result<Integer> executeJobs(@RequestParam(required = false) Long now) {
         return Result.success(jobService.executeDueJobs(
                 now == null ? new Date() : new Date(now)));
+    }
+
+    // ==================== 变量变更审计 ====================
+
+    @GetMapping("/variable-changes")
+    @Operation(summary = "009_查变量变更审计（这个变量什么时候被谁改的）")
+    public Result<PageResult<WfViews.VariableChangeView>> variableChanges(
+            @RequestParam(required = false) String processInstanceId,
+            @RequestParam(required = false) String variableName,
+            @RequestParam(required = false) String changedBy,
+            @RequestParam(required = false) Long changedFrom,
+            @RequestParam(required = false) Long changedTo,
+            @RequestParam(defaultValue = "1") int pageNum,
+            @RequestParam(defaultValue = "20") int pageSize) {
+
+        WfVariableAuditQuery query = new WfVariableAuditQuery()
+                .setProcessInstanceId(processInstanceId)
+                .setVariableName(variableName)
+                .setChangedBy(changedBy)
+                .setPageNum(pageNum).setPageSize(pageSize);
+        if (changedFrom != null) {
+            query.setChangedFrom(new Date(changedFrom));
+        }
+        if (changedTo != null) {
+            query.setChangedTo(new Date(changedTo));
+        }
+        List<WfComment> rows = historyService.queryVariableChanges(query);
+        return Result.success(new PageResult<>(viewMapper.toVariableChangeViews(rows),
+                historyService.countVariableChanges(query), pageNum, pageSize));
     }
 }

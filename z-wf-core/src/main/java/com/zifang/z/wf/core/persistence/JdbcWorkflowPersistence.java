@@ -1145,6 +1145,104 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         }
     }
 
+    // ==================== 变量变更审计 ====================
+
+    @Override
+    public List<WfComment> queryVariableAudits(WfVariableAuditQuery query) {
+        StringBuilder sql = new StringBuilder("SELECT * FROM ZWF_COMMENT");
+        List<Object> args = new ArrayList<>();
+        appendAuditFilters(sql, args, query);
+        // 时间倒序 + id 兜底：审计是"越新越先看"；同一毫秒的多条要有稳定顺序，
+        // 否则同一页两次查询会给出不同的行
+        sql.append(" ORDER BY CMT_TIME DESC, CMT_ID DESC LIMIT ? OFFSET ?");
+        args.add(query == null || query.getPageSize() <= 0 ? 50 : query.getPageSize());
+        args.add(query == null ? 0 : query.getOffset());
+        return queryList(sql.toString(), args.toArray(), new RowMapper<WfComment>() {
+            @Override
+            public WfComment map(ResultSet rs) throws SQLException {
+                return mapComment(rs);
+            }
+        });
+    }
+
+    @Override
+    public long countVariableAudits(WfVariableAuditQuery query) {
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM ZWF_COMMENT");
+        List<Object> args = new ArrayList<>();
+        appendAuditFilters(sql, args, query);
+        Long count = queryOne(sql.toString(), args.toArray(), COUNT_MAPPER);
+        return count == null ? 0L : count;
+    }
+
+    /**
+     * 变量审计的 WHERE；列表与计数共用，条件拼两遍必然漂移。
+     *
+     * <p>变量名走 {@code CONTENT LIKE 'name:%'}：内容形如 {@code "amount: 1000 -> 500"}，
+     * 冒号后面的 {@code %} 是给"旧值 -> 新值"那段留的通配。
+     * 用子串匹配（{@code '%name%'}）的话，查 {@code amount} 会把
+     * {@code discount_amount} 的记录也带出来 —— 审计给出错的行比不给行更糟。
+     */
+    private void appendAuditFilters(StringBuilder sql, List<Object> args,
+                                    WfVariableAuditQuery query) {
+        List<String> parts = new ArrayList<>();
+        parts.add("CMT_TYPE=?");
+        args.add(com.zifang.z.wf.core.service.WfVariableService.COMMENT_TYPE_VARIABLE);
+        if (query != null) {
+            if (query.getProcessInstanceId() != null) {
+                parts.add("PROC_ID=?");
+                args.add(query.getProcessInstanceId());
+            }
+            if (query.getVariableName() != null && !query.getVariableName().trim().isEmpty()) {
+                // ESCAPE 是必须的：变量名由用户给，"disc_ount" 里的 _ 会被当成单字符通配，
+                // 于是查 disc_ount 顺带命中 discount —— 本过滤对外承诺的就是精确匹配，
+                // 且没有 service 层二次判定兜底，多召回的行会直接进审计结果。
+                parts.add("CONTENT LIKE ? ESCAPE '\\'");
+                args.add(escapeLike(query.getVariableName().trim()) + ":%");
+            }
+            if (query.getChangedBy() != null && !query.getChangedBy().trim().isEmpty()) {
+                parts.add("USER_ID=?");
+                args.add(query.getChangedBy());
+            }
+            if (query.getChangedFrom() != null) {
+                parts.add("CMT_TIME>=?");
+                args.add(timestamp(query.getChangedFrom()));
+            }
+            if (query.getChangedTo() != null) {
+                parts.add("CMT_TIME<?");
+                args.add(timestamp(query.getChangedTo()));
+            }
+        }
+        sql.append(" WHERE ").append(join(parts, " AND "));
+    }
+
+    /**
+     * 转义 LIKE 模式里的通配符。用户给的变量名里出现 {@code %} / {@code _} 时不转义，
+     * 一次精确查询会静默变成模糊查询。
+     */
+    private static String escapeLike(String raw) {
+        StringBuilder sb = new StringBuilder(raw.length() + 4);
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (c == '%' || c == '_' || c == '\\') {
+                sb.append('\\');
+            }
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    private WfComment mapComment(ResultSet rs) throws SQLException {
+        WfComment comment = new WfComment();
+        comment.setId(rs.getString("CMT_ID"));
+        comment.setProcessInstanceId(rs.getString("PROC_ID"));
+        comment.setTaskId(rs.getString("TASK_ID"));
+        comment.setUserId(rs.getString("USER_ID"));
+        comment.setType(rs.getString("CMT_TYPE"));
+        comment.setContent(rs.getString("CONTENT"));
+        comment.setTime(date(rs.getTimestamp("CMT_TIME")));
+        return comment;
+    }
+
     @Override
     public List<WfComment> findComments(String processInstanceId) {
         return queryList("SELECT * FROM ZWF_COMMENT WHERE PROC_ID=? ORDER BY CMT_TIME ASC",

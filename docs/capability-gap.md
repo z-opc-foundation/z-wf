@@ -89,8 +89,8 @@
 | `deleteHistoricProcessInstance` / `deleteHistoricData` | ✅ | `deleteHistoryBefore(Date)`：**只删已结束流程**。时间点为 `null` 直接拒绝，不当"清掉全部" |
 | 环节平均耗时（Camunda 无对应 API，扩展） | ✅ | `getAverageDurationByActivity` |
 | `createHistoricProcessInstanceQuery` | ✅ | 复用 `WfProcessInstanceQuery` + `WfHistoryService#queryFinishedProcesses`。新增 `finishedOnly` / `unfinishedOnly` 开关 —— 终态有三种（正常完成/外部终止/内部终止），单个 `status` 字段表达不了"已结束"；写死成 `COMPLETED` 会让被终止的单子从历史里消失，而"这单怎么没的"恰恰是事后最常被问的问题。旧的 `getCompletedInstances` / `getCompletedInstancesByUser`（零调用方、全量拉取、只认 COMPLETED）已删除 |
-| `createHistoricVariableInstanceQuery` | ❌ | 变量审计写进了 `WfComment(type=variable)`，但不可查询 |
-| `createHistoricDetailQuery`（变量/字段变更明细） | ❌ | 审计场景常需要"这个变量什么时候被谁改的" |
+| `createHistoricVariableInstanceQuery` | ⚠️ 部分 | 能查**变量最终值**（`WfRuntimeService#getVariables` + 历史流程实例组合），但没有 Camunda 那种"历史变量实例"独立实体。本引擎变量是存在流程实例上的 KV，Camunda 的 HistoricVariableInstance 语义（每变量一行、有独立生命周期）没有一一对应物，**刻意不硬造** |
+| `createHistoricDetailQuery`（变量/字段变更明细） | ✅ | `WfVariableAuditQuery` + `WfHistoryService#queryVariableChanges` / `countVariableChanges`，REST `GET /api/wf/history/variable-changes`。条件：流程实例 / 变量名 / 操作人 / 时间区间，可组合 + 真实分页。**批量写是「一个变量一条」审计**而不是整批拼一条 —— 拼一起就没法按变量名精确查（查 `amount` 会顺带命中 `discount_amount`），变量名按 `LIKE 'name:%'` 前缀匹配且对 `%` / `_` 转义（对外承诺精确匹配，且无二次判定兜底，通配符会直接进审计结果）。倒序返回（与轨迹正序相反），同毫秒由 id 兜底；id 序号**定长补零**以保证字典序 == 插入序 |
 | `createHistoricIncidentQuery` | ❌ | |
 
 ### 1.5 ManagementService
@@ -249,8 +249,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ### P1 —— 引擎成熟度
 
-~~历史查询体系~~（活动 / 任务 / 流程实例三个 Query + 历史清理已实现；
-**剩余**：历史变量 Query 与变更明细）·
+历史查询体系（活动 / 任务 / 流程实例 / **变量变更审计** + 历史清理已实现）·
 Repository 完整化（定义挂起/撤销/模型回读）·
 identity link 与任务挂起 · 复杂网关 · Filter
 
@@ -262,7 +261,7 @@ identity link 与任务挂起 · 复杂网关 · Filter
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 261 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 278 个测试兜着
 - 本轮从测试与审计中逼出并修复的**真实缺陷 18 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **扩展面明显比 Camunda 窄**（3 个 hook vs 几十个监听点），这是与 Camunda 差距最大、

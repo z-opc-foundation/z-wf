@@ -24,6 +24,7 @@ import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfTask;
+import com.zifang.z.wf.core.service.WfVariableService;
 
 /**
  * 内存持久化实现 —— 零依赖默认实现。
@@ -341,6 +342,93 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         int offset = query == null ? 0 : query.getOffset();
         int size = query == null || query.getPageSize() <= 0 ? 20 : query.getPageSize();
         return paginate(matched, offset, size);
+    }
+
+    // ==================== 变量变更审计 ====================
+
+    @Override
+    public List<WfComment> queryVariableAudits(WfVariableAuditQuery query) {
+        List<WfComment> matched = new ArrayList<>();
+        for (Map.Entry<String, List<WfComment>> entry : comments.entrySet()) {
+            for (WfComment comment : entry.getValue()) {
+                if (matchesAudit(comment, query)) {
+                    matched.add(copy(comment));
+                }
+            }
+        }
+        // 时间倒序：审计是"越新越先看"，与 findComments 的正序（轨迹是"从前往后"）相反。
+        // 同毫秒用 id 倒序兜底：WfIdGenerator 的序号已补零到定长，字典序 == 插入序，
+        // 所以"id 大"就是"写入晚"。兜底必须与 JdbcWorkflowPersistence 的
+        // ORDER BY CMT_TIME DESC, CMT_ID DESC 完全一致，否则同一批数据两套实现给出不同顺序。
+        matched.sort((a, b) -> {
+            Date ta = a.getTime();
+            Date tb = b.getTime();
+            if (ta == null || tb == null) {
+                return 0;
+            }
+            int cmp = tb.compareTo(ta);
+            return cmp != 0 ? cmp : safeId(b).compareTo(safeId(a));
+        });
+        int offset = query == null ? 0 : query.getOffset();
+        int size = query == null || query.getPageSize() <= 0 ? 50 : query.getPageSize();
+        return paginate(matched, offset, size);
+    }
+
+    @Override
+    public long countVariableAudits(WfVariableAuditQuery query) {
+        int total = 0;
+        for (Map.Entry<String, List<WfComment>> entry : comments.entrySet()) {
+            for (WfComment comment : entry.getValue()) {
+                if (matchesAudit(comment, query)) {
+                    total++;
+                }
+            }
+        }
+        return total;
+    }
+
+    /**
+     * 变量审计的过滤。与 {@link #queryVariableAudits} / {@link #countVariableAudits} 共用。
+     *
+     * <p>变量名按<b>前缀</b>匹配：审计内容形如 {@code "amount: 1000 -> 500"}，
+     * 前缀 {@code "amount: "} 才精确命中这一条。若用子串匹配，
+     * 查 {@code amount} 会把 {@code discount_amount} 的记录也带出来 ——
+     * 审计给出错的行比不给行更糟。
+     */
+    private boolean matchesAudit(WfComment comment, WfVariableAuditQuery query) {
+        if (comment == null || !WfVariableService.COMMENT_TYPE_VARIABLE.equals(comment.getType())) {
+            return false;
+        }
+        if (query == null) {
+            return true;
+        }
+        if (isNotBlank(query.getProcessInstanceId())
+                && !query.getProcessInstanceId().equals(comment.getProcessInstanceId())) {
+            return false;
+        }
+        if (isNotBlank(query.getVariableName())) {
+            String prefix = query.getVariableName().trim() + ":";
+            if (comment.getContent() == null || !comment.getContent().startsWith(prefix)) {
+                return false;
+            }
+        }
+        if (isNotBlank(query.getChangedBy())
+                && !query.getChangedBy().equals(comment.getUserId())) {
+            return false;
+        }
+        if (query.getChangedFrom() != null
+                && (comment.getTime() == null || comment.getTime().before(query.getChangedFrom()))) {
+            return false;
+        }
+        if (query.getChangedTo() != null
+                && (comment.getTime() == null || !comment.getTime().before(query.getChangedTo()))) {
+            return false;
+        }
+        return true;
+    }
+
+    private static String safeId(WfComment comment) {
+        return comment.getId() == null ? "" : comment.getId();
     }
 
     @Override

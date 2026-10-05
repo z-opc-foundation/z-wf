@@ -22,6 +22,7 @@ import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfTask;
 import com.zifang.z.wf.core.persistence.InMemoryWorkflowPersistence;
+import com.zifang.z.wf.core.persistence.WfVariableAuditQuery;
 import com.zifang.z.wf.core.persistence.WfTaskQuery;
 
 /**
@@ -50,6 +51,7 @@ class WfVariableServiceTest {
     private WfRepositoryService repository;
     private WfRuntimeService runtime;
     private WfVariableService variables;
+    private WfHistoryService history;
     private String processInstanceId;
 
     @BeforeEach
@@ -60,6 +62,7 @@ class WfVariableServiceTest {
                 new com.zifang.z.wf.core.engine.WfEngine(),
                 new com.zifang.z.wf.core.hook.WfHookDispatcher());
         variables = new WfVariableService(repo, new WfIdGenerator.DefaultWfIdGenerator());
+        history = new WfHistoryService(repo);
 
         WfDefinition definition = repository.deploy(new WfXmlParser().parse(LEAVE_BPMN));
         Map<String, Object> initial = new HashMap<>();
@@ -119,6 +122,149 @@ class WfVariableServiceTest {
                 "第二条应记录前后值：" + variableComments.get(1).getContent());
         assertTrue(variableComments.get(2).getContent().contains("已删除"),
                 "删除应有明确标记，不能只写个 null：" + variableComments.get(2).getContent());
+    }
+
+    // ==================== 变更查询 ====================
+
+    @Test
+    @DisplayName("按变量名查变更：前缀精确匹配，amount 不该命中 discount_amount")
+    void queryChangesByVariableName() {
+        variables.setVariable(processInstanceId, "amount", 1000, "admin-1");
+        variables.setVariable(processInstanceId, "discount_amount", 50, "admin-1");
+        variables.setVariable(processInstanceId, "amount", 500, "admin-2");
+
+        List<WfComment> amountChanges = history.queryVariableChanges(
+                new WfVariableAuditQuery().setProcessInstanceId(processInstanceId)
+                        .setVariableName("amount").setPageNum(1).setPageSize(50));
+
+        assertEquals(2, amountChanges.size(),
+                "只该返回 amount 自己的两条。子串匹配会把 discount_amount 带进来，"
+                        + "而审计给出错的行比不给行更糟");
+        for (WfComment c : amountChanges) {
+            assertTrue(c.getContent().startsWith("amount:"),
+                    "每条都应精确以 amount: 开头，实际: " + c.getContent());
+        }
+        assertEquals(2, history.countVariableChanges(
+                new WfVariableAuditQuery().setProcessInstanceId(processInstanceId)
+                        .setVariableName("amount")));
+
+        assertEquals(1, history.queryVariableChanges(
+                new WfVariableAuditQuery().setProcessInstanceId(processInstanceId)
+                        .setVariableName("discount_amount").setPageNum(1).setPageSize(50))
+                .size());
+    }
+
+    @Test
+    @DisplayName("按操作人查变更 + 倒序返回")
+    void queryChangesByOperatorAndOrder() {
+        variables.setVariable(processInstanceId, "amount", 1000, "admin-1");
+        variables.setVariable(processInstanceId, "amount", 800, "admin-2");
+        variables.setVariable(processInstanceId, "level", 3, "admin-1");
+
+        List<WfComment> byAdmin1 = history.queryVariableChanges(
+                new WfVariableAuditQuery().setProcessInstanceId(processInstanceId)
+                        .setChangedBy("admin-1").setPageNum(1).setPageSize(50));
+        assertEquals(2, byAdmin1.size());
+        for (WfComment c : byAdmin1) {
+            assertEquals("admin-1", c.getUserId());
+        }
+        // 倒序：最后写入的排在最前
+        assertTrue(byAdmin1.get(0).getContent().contains("level"),
+                "审计是『越新越先看』，与轨迹的正序相反。实际首条: "
+                        + byAdmin1.get(0).getContent());
+        assertEquals(2, history.countVariableChanges(
+                new WfVariableAuditQuery().setProcessInstanceId(processInstanceId)
+                        .setChangedBy("admin-1")));
+    }
+
+    @Test
+    @DisplayName("批量写入：每个变量一条审计，不拼成一整段文本")
+    void batchWriteLeavesOneAuditPerVariable() {
+        Map<String, Object> batch = new LinkedHashMap<String, Object>();
+        batch.put("amount", 1000);
+        batch.put("level", 3);
+        batch.put("remark", "加急");
+        variables.setVariables(processInstanceId, batch, "admin-batch");
+
+        List<WfComment> all = history.queryVariableChanges(
+                new WfVariableAuditQuery().setProcessInstanceId(processInstanceId)
+                        .setPageNum(1).setPageSize(50));
+        assertEquals(3, all.size(),
+                "三个变量三条审计。拼成一条的话，按变量名查就只能拿 LIKE 猜，"
+                        + "而 amount 会命中 discount_amount。实际: " + all.size() + " " + all);
+        for (String name : new String[]{"amount", "level", "remark"}) {
+            assertEquals(1, history.queryVariableChanges(
+                    new WfVariableAuditQuery().setProcessInstanceId(processInstanceId)
+                            .setVariableName(name).setPageNum(1).setPageSize(50)).size(),
+                    "变量 " + name + " 应当恰好有一条审计");
+        }
+    }
+
+    @Test
+    @DisplayName("批量写入跨过两位数时，倒序仍然按真实写入顺序")
+    void batchWriteAcrossDigitBoundaryKeepsOrder() {
+        // 这一条盯的是 WfIdGenerator：审计在同一毫秒内只能靠 id 兜底排序，
+        // 而未补零的 "cmt-x-9" 在字符串比较里大于 "cmt-x-10"（'9' > '1'），
+        // 于是批量写 10 个以上变量时，"越新越先看"会在第 9/10 条之间整个翻掉。
+        // 12 个变量确保一定跨过这条边界（10 个时 id 只到两位，测不出来）。
+        Map<String, Object> batch = new LinkedHashMap<String, Object>();
+        for (int i = 0; i < 12; i++) {
+            batch.put("v" + i, i);
+        }
+        variables.setVariables(processInstanceId, batch, "admin-batch");
+
+        List<WfComment> rows = history.queryVariableChanges(
+                new WfVariableAuditQuery().setProcessInstanceId(processInstanceId)
+                        .setPageNum(1).setPageSize(50));
+        assertEquals(12, rows.size());
+
+        // 倒序 = 写入顺序的严格逆序：v11 在最前，v0 在最后
+        for (int i = 0; i < 12; i++) {
+            String expected = "v" + (11 - i) + ":";
+            assertTrue(rows.get(i).getContent().startsWith(expected),
+                    "第 " + i + " 条应为 " + expected + "（写入顺序的逆序），实际: "
+                            + rows.get(i).getContent());
+        }
+    }
+
+    @Test
+    @DisplayName("变更查询只看变量审计，人工评论不会混进来")
+    void queryChangesExcludesHumanComments() {
+        variables.setVariable(processInstanceId, "amount", 1000, "admin-1");
+        runtime.addComment(processInstanceId, null, "boss", "comment", "同意，走加急");
+
+        List<WfComment> changes = history.queryVariableChanges(
+                new WfVariableAuditQuery().setProcessInstanceId(processInstanceId)
+                        .setPageNum(1).setPageSize(50));
+        assertEquals(1, changes.size(), "人工评论不该被当成变量变更");
+        assertEquals(WfVariableService.COMMENT_TYPE_VARIABLE, changes.get(0).getType());
+    }
+
+    @Test
+    @DisplayName("分页：total 是全量条数，且各页不重不漏")
+    void queryChangesPaginates() {
+        for (int i = 0; i < 7; i++) {
+            variables.setVariable(processInstanceId, "amount", 1000 + i, "admin-" + i);
+        }
+        WfVariableAuditQuery query = new WfVariableAuditQuery()
+                .setProcessInstanceId(processInstanceId).setVariableName("amount");
+        assertEquals(7, history.countVariableChanges(query));
+        assertEquals(7, history.countVariableChanges(query.setPageNum(2).setPageSize(3)),
+                "带分页参数也必须返回全量");
+
+        java.util.Set<String> seen = new java.util.LinkedHashSet<String>();
+        int total = 0;
+        for (int page = 1; page <= 3; page++) {
+            List<WfComment> rows = history.queryVariableChanges(
+                    query.setPageNum(page).setPageSize(3));
+            for (WfComment c : rows) {
+                assertTrue(seen.add(c.getId()), "第 " + page + " 页出现重复行");
+            }
+            total += rows.size();
+        }
+        assertEquals(7, total, "三页合起来正好覆盖 7 条，最后一页按实际条数返回");
+        assertTrue(history.queryVariableChanges(
+                query.setPageNum(4).setPageSize(3)).isEmpty(), "越界页为空");
     }
 
     @Test

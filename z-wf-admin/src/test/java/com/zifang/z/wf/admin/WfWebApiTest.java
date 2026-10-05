@@ -277,6 +277,50 @@ class WfWebApiTest {
     // ==================== 变量 ====================
 
     @Test
+    @DisplayName("变量变更审计端点：按流程实例+变量名查，且不把值里的 '-> ' 当分隔符")
+    void variableChangeAuditEndpoint() throws Exception {
+        String businessKey = "WEB-AUDIT-" + System.nanoTime();
+        Map<String, Object> vars = new HashMap<String, Object>();
+        vars.put("days", 1);
+        vars.put("leaderId", "audit-leader");
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "leaveProcess", "businessKey", businessKey,
+                        "userId", "audit-alice", "variables", vars)).get("data");
+
+        Map<String, Object> values = new LinkedHashMap<String, Object>();
+        values.put("days", 5);
+        // 值里带 "->"：审计描述用 " -> " 分隔新旧值，引擎不该把它拆成两个字段
+        values.put("remark", "紧急 -> 明天再办");
+        postOk("/api/wf/process/variables",
+                body("processInstanceId", processId, "userId", "audit-admin",
+                        "values", values));
+
+        Map<String, Object> listed = getOk("/api/wf/history/variable-changes"
+                + "?processInstanceId=" + processId + "&variableName=days");
+        Map<String, Object> page = asMap(listed.get("data"));
+        List<Map<String, Object>> rows = asList(page.get("records"));
+        assertEquals(1, rows.size(), "只该有 days 自己的那一条，实际 " + rows);
+        Map<String, Object> row = rows.get(0);
+        assertEquals("days", row.get("variableName"));
+        assertEquals("audit-admin", row.get("changedBy"), "审计要能回答'谁改的'");
+        // 流程启动不写变量审计（启动是"建流程"不是"改变量"），所以 days 只有这一条
+        assertEquals("1 -> 5", row.get("change"));
+
+        // 值里含分隔符的那条：change 必须原样保留，引擎不替调用方切
+        List<Map<String, Object>> remarks = asList(asMap(getOk(
+                "/api/wf/history/variable-changes?processInstanceId=" + processId
+                        + "&variableName=remark").get("data")).get("records"));
+        assertEquals(1, remarks.size());
+        assertEquals("remark", remarks.get(0).get("variableName"));
+        assertEquals("(未设置) -> 紧急 -> 明天再办", remarks.get(0).get("change"),
+                "值里的 '-> ' 被当分隔符切了，审计给出错的值比不给值更糟");
+        assertEquals("remark: (未设置) -> 紧急 -> 明天再办", remarks.get(0).get("content"));
+
+        // total 来自 count 而非当前页长度
+        assertEquals(1, ((Number) page.get("total")).intValue());
+    }
+
+    @Test
     @DisplayName("变量端点：读 → 批量写 → 删除，全程留审计")
     void variableEndpoints() throws Exception {
         String businessKey = "WEB-VAR-" + System.nanoTime();
@@ -309,17 +353,23 @@ class WfWebApiTest {
         // 变量变更必须能从评论里查到（审计留痕）
         List<Map<String, Object>> comments = asList(
                 getOk("/api/wf/process/comments?processInstanceId=" + processId).get("data"));
-        boolean sawVariableAudit = false;
+        java.util.Set<String> auditedNames = new java.util.LinkedHashSet<String>();
+        int variableAudits = 0;
         for (Map<String, Object> comment : comments) {
             if ("variable".equals(comment.get("type"))) {
-                sawVariableAudit = true;
+                variableAudits++;
                 assertEquals("var-admin", comment.get("userId"),
                         "变量变更必须留下操作人，否则无法回答'谁改的'");
-                assertTrue(String.valueOf(comment.get("content")).contains("amount"),
-                        "审计内容应点名变量：" + comment.get("content"));
+                // 批量写是「一个变量一条」而不是整批拼一条（拼一起就没法按变量名精确查，
+                // 查 amount 会顺带命中 discount_amount），所以变量名要从各自那条里取
+                auditedNames.add(String.valueOf(comment.get("content")).split(":")[0].trim());
             }
         }
-        assertTrue(sawVariableAudit, "变量变更应当留下审计记录，评论列表: " + comments);
+        assertTrue(variableAudits > 0, "变量变更应当留下审计记录，评论列表: " + comments);
+        assertTrue(auditedNames.contains("amount"),
+                "审计应点名 amount，实际点名的变量: " + auditedNames);
+        assertTrue(auditedNames.contains("days"),
+                "审计应点名 days，实际点名的变量: " + auditedNames);
 
         // 删除走独立分支，不靠"值为 null"
         postOk("/api/wf/process/variables",

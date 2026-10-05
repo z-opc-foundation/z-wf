@@ -272,6 +272,40 @@ public class WfViewMapper {
         return result;
     }
 
+    public List<WfViews.VariableChangeView> toVariableChangeViews(List<WfComment> audits) {
+        List<WfViews.VariableChangeView> result = new ArrayList<>();
+        for (WfComment comment : audits) {
+            result.add(toVariableChangeView(comment));
+        }
+        return result;
+    }
+
+    /**
+     * 拆 {@code "变量名: 变更描述"}。拆点取<b>第一个</b> {@code ": "}：
+     * 变量名由调用方给（理论上能含 ": "），碰上这种名字时这里给出的是短一截的名字，
+     * 原始 {@code content} 一并透出，调用方能自己判断，不靠这个字段猜。
+     */
+    private WfViews.VariableChangeView toVariableChangeView(WfComment comment) {
+        WfViews.VariableChangeView view = new WfViews.VariableChangeView();
+        view.setAuditId(comment.getId());
+        view.setProcessInstanceId(comment.getProcessInstanceId());
+        view.setTaskId(comment.getTaskId());
+        view.setChangedBy(comment.getUserId());
+        view.setContent(comment.getContent());
+        view.setTime(time(comment.getTime()));
+        String content = comment.getContent();
+        int idx = content == null ? -1 : content.indexOf(": ");
+        if (idx >= 0) {
+            view.setVariableName(content.substring(0, idx));
+            view.setChange(content.substring(idx + 2));
+        } else {
+            // 没有冒号就不是引擎自己写的行（理论上不会发生），不替它编一个变量名
+            view.setVariableName(null);
+            view.setChange(content);
+        }
+        return view;
+    }
+
     private long time(Date date) {
         return date == null ? 0L : date.getTime();
     }

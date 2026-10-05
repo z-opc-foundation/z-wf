@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.zifang.z.wf.core.model.WfActivityInstance;
+import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfProcessStatus;
 import com.zifang.z.wf.core.model.WfTask;
@@ -14,6 +15,7 @@ import com.zifang.z.wf.core.persistence.WfPersistence;
 import com.zifang.z.wf.core.persistence.WfHistoricActivityInstanceQuery;
 import com.zifang.z.wf.core.persistence.WfProcessInstanceQuery;
 import com.zifang.z.wf.core.persistence.WfTaskQuery;
+import com.zifang.z.wf.core.persistence.WfVariableAuditQuery;
 
 /**
  * 历史服务 —— 已结束流程与已完成任务的查询。
@@ -102,6 +104,27 @@ public class WfHistoryService {
     /** 与 {@link #queryFinishedProcesses} 同条件的条数。 */
     public long countFinishedProcesses(WfProcessInstanceQuery query) {
         return persistence.countProcessInstances(asFinished(query));
+    }
+
+    // ==================== 变量变更审计 ====================
+
+    /**
+     * 变量变更明细 —— "这个变量什么时候被谁改的"。
+     *
+     * <p>对应 Camunda 的 {@code createHistoricDetailQuery}。数据源是
+     * {@code WfComment(type=variable)}，不另建审计表：
+     * 变量变更与人工评论在排障时是一起看的，分两张表只会让"这个单子上发生过什么"
+     * 需要两次查询再手工拼。
+     *
+     * <p>按变更时间<b>倒序</b>（与轨迹的正序相反）：审计是"越新越先看"。
+     */
+    public List<WfComment> queryVariableChanges(WfVariableAuditQuery query) {
+        return persistence.queryVariableAudits(query);
+    }
+
+    /** 与 {@link #queryVariableChanges} 同条件的条数。 */
+    public long countVariableChanges(WfVariableAuditQuery query) {
+        return persistence.countVariableAudits(query);
     }
 
     private WfProcessInstanceQuery asFinished(WfProcessInstanceQuery query) {

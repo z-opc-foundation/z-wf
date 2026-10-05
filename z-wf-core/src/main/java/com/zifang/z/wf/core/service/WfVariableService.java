@@ -1,6 +1,8 @@
 package com.zifang.z.wf.core.service;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -136,13 +138,17 @@ public class WfVariableService {
             }
         }
 
-        StringBuilder trace = new StringBuilder();
+        // 每个变量记一条审计，而不是把整批拼成一条。
+        // 拼成一条的话，"amount 什么时候被谁改的"就只能拿 LIKE 去匹配一整段文本，
+        // 而 amount 会命中 discount_amount —— 审计查询必须精确到变量名。
+        List<String> traces = new ArrayList<String>();
         for (Map.Entry<String, Object> entry : values.entrySet()) {
             Object before = instance.getVariables().get(entry.getKey());
             instance.getVariables().put(entry.getKey(), entry.getValue());
-            appendChange(trace, entry.getKey(), before, entry.getValue());
+            traces.add(entry.getKey() + ": " + render(before)
+                    + " -> " + render(entry.getValue()));
         }
-        persistWithAudit(instance, operatorId, trace.toString());
+        persistWithAudit(instance, operatorId, traces);
         return instance;
     }
 
@@ -161,7 +167,9 @@ public class WfVariableService {
             return instance;
         }
         Object before = instance.getVariables().remove(name);
-        persistWithAudit(instance, operatorId, "remove " + name + ": " + render(before) + " -> (已删除)");
+        persistWithAudit(instance, operatorId,
+                java.util.Collections.singletonList("remove " + name + ": " + render(before)
+                        + " -> (已删除)"));
         return instance;
     }
 
@@ -221,14 +229,17 @@ public class WfVariableService {
      * 代价是实例落库后、写审计前崩溃会丢一条审计记录，
      * 这种情况由 comment 里的时间戳与实例 revision 变化对不上体现出来。
      */
-    private void persistWithAudit(WfProcessInstance instance, String operatorId, String trace) {
+    private void persistWithAudit(WfProcessInstance instance, String operatorId,
+                                  List<String> traces) {
         instance.nextRevision();
         persistence.saveProcessInstance(instance);
-        if (trace != null && !trace.isEmpty()) {
-            persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                    instance.getId(), operatorId, COMMENT_TYPE_VARIABLE, trace));
+        if (traces != null) {
+            for (String trace : traces) {
+                persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                        instance.getId(), operatorId, COMMENT_TYPE_VARIABLE, trace));
+            }
         }
-        log.info("流程 {} 变量变更 by {}: {}", instance.getId(), operatorId, trace);
+        log.info("流程 {} 变量变更 by {}: {}", instance.getId(), operatorId, traces);
     }
 
     private void recordTaskAudit(WfTask task, String operatorId, String trace) {
@@ -236,13 +247,6 @@ public class WfVariableService {
                 task.getProcessInstanceId(), operatorId, COMMENT_TYPE_VARIABLE,
                 "任务 " + task.getName() + "(" + task.getId() + ") " + trace));
         log.info("任务 {} 变量变更 by {}: {}", task.getId(), operatorId, trace);
-    }
-
-    private void appendChange(StringBuilder trace, String name, Object before, Object after) {
-        if (trace.length() > 0) {
-            trace.append("; ");
-        }
-        trace.append(name).append(": ").append(render(before)).append(" -> ").append(render(after));
     }
 
     /** 变量不存在时渲染成 {@code (未设置)}，而不是和 null 值混淆。 */
