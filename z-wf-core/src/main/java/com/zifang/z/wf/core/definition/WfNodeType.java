@@ -89,8 +89,26 @@ public enum WfNodeType {
     /**
      * 是否会创建 {@link com.zifang.z.wf.core.model.WfTask} 并挂起等待人工。
      */
+    /**
+     * 本节点是否会创建一条任务并<b>停在该节点等外部动作</b>。
+     *
+     * <p>返回 true 时，{@code WfEngine} 会执行行为、登记任务、把 token 置 WAITING，
+     * 直到 {@code completeTask}（人办结）或 {@code triggerMessage}（消息到达）才继续。
+     *
+     * <p><b>为什么含 {@link #RECEIVE_TASK}：</b> 接收任务的全部意义就是"停住等消息"，
+     * 它等的人不是某个具体用户，而是一条消息。若不把它算进来，引擎会走
+     * "执行完行为直接离开"分支，{@code WfReceiveTaskBehavior} 建出来的
+     * {@link com.zifang.z.wf.core.model.WfTask} 会被<b>原样丢弃</b>——
+     * 流程一路穿到结束事件，节点却留下"entered/completed"的活动记录，
+     * 看上去跑通了，实际什么都没等。
+     *
+     * <p><b>为什么不含 {@link #SEND_TASK}：</b> 发送任务按 BPMN 语义是穿透的——
+     * 它把消息发出去就往下走，不等任何人回复。把它算进来会让流程停在一个
+     * 没有任何人能办结的任务上，整条流程死锁。两者一个都不能加错。
+     */
     public boolean createsTask() {
-        return this == USER_TASK || this == MANUAL_TASK || this == TASK;
+        return this == USER_TASK || this == MANUAL_TASK || this == TASK
+                || this == RECEIVE_TASK;
     }
 
     /**

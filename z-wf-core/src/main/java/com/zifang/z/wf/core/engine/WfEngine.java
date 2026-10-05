@@ -198,7 +198,19 @@ public class WfEngine {
 
         // ---- 其他节点：执行行为后离开 ----
         try {
-            behaviorRegistry.getBehavior(node.getType()).execute(context, node, token);
+            WfTask stray = behaviorRegistry.getBehavior(node.getType())
+                    .execute(context, node, token);
+            if (stray != null) {
+                // 穿透型节点却建出了任务：这个任务既不会入库、token 也不会停，
+                // 等于凭空消失，而流程照常往下跑、轨迹照常记"completed"——
+                // 从外面看一切正常。所以这里必须炸，不能只记一条日志。
+                // （真实踩过的坑：receiveTask 漏在 createsTask() 之外，
+                //   WfReceiveTaskBehavior 建的任务被这一行原样丢弃，流程直接穿到结束。）
+                fail(context, "节点 " + node.getId() + "（" + node.getType().bpmnName()
+                        + "）的行为创建了任务，但该类型不是等待态，任务无法登记。"
+                        + "若本节点应等待外部动作，请把它加进 WfNodeType#createsTask()");
+                return;
+            }
         } catch (Exception e) {
             fail(context, "节点执行失败: " + node.getId() + " - " + e.getMessage());
             return;

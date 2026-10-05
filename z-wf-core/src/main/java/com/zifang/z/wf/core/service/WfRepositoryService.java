@@ -135,6 +135,21 @@ public class WfRepositoryService {
     }
 
     /**
+     * 这个 key/version 是否<b>已经落库</b>，落库了就返回它，没落库返回 {@code null}。
+     *
+     * <p>与 {@link #getDefinitionOrLatest(String, Integer)} 的区别是<b>不抛异常</b>：
+     * 这里要回答的是"在不在"，不是"给我一个"，调用方需要自己决定怎么处置。
+     * 启动流程前的落库前置检查就靠它。
+     */
+    public WfDefinition findPersisted(String key, int version) {
+        WfDefinition definition = persistence.findDefinition(key, version);
+        if (definition != null) {
+            return definition;
+        }
+        return persistence.findLatestDefinition(key);
+    }
+
+    /**
      * 取指定版本，不存在时回落到最新版本。
      * <p>给"按 key 启动流程"的主路径用：调用方通常只关心 key。
      */

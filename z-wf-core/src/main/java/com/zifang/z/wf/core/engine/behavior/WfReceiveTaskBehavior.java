@@ -12,8 +12,14 @@ import com.zifang.z.wf.core.model.WfTask;
  *
  * <p>与 {@link WfUserTaskBehavior} 的区别：接收任务<b>没有候选人也没有 assignee</b>，
  * 它等待的是"消息"而不是"人"。所以任务落在 {@link WfTask.Status#CREATED} 态，
- * 由 {@code WfRuntimeService#triggerMessage(messageName, variables)} 唤醒，
+ * token 停在本节点等待，由 {@code WfRuntimeService#triggerMessage(...)}
+ * （点对点）或 {@code WfRuntimeService#broadcastSignal(...)}（广播）唤醒，
  * 按 {@link WfNode#getMessageName()} 匹配。
+ *
+ * <p><b>messageName 存在 {@link WfTask#getCategory()} 里</b>，不是独立字段：
+ * 接收任务与人工任务在建任务时走的是同一条 {@code WfTask} 落地路径，
+ * 独立加一列会让持久化多一处需要维护的映射。代价是 category 变成复合用途，
+ * 因此唤醒时必须再按 {@code type} 过滤一遍，否则人工任务会被消息一起唤醒。
  *
  * <p>没有 messageName 时校验器会给 WARN（不阻断）—— 任务仍能建出来，
  * 但只能靠 force-complete 推进。这是刻意的：设计器可能还没配消息名就保存了，

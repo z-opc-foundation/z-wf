@@ -106,6 +106,20 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      */
     public String startProcessInstance(WfDefinition definition, String businessKey, String userId,
                                        String deptId, Map<String, Object> variables) {
+        // ---- 0. 定义必须已落库，否则启动即制造一个永远推不动的死实例 ----
+        // 流程一旦停在等待态，后续 completeTask / advance 都要靠 definitionKey+version
+        // 从仓储重新载入定义；没 deploy 过的定义拿不回来，于是每推进一步都报
+        // "流程定义不存在"。而这个错误出现在**完全不同的调用点**上，
+        // 启动时一切正常、待办也建出来了，很难联想到是启动姿势的问题。
+        // 所以在这里就挡掉，并说清楚正确用法。
+        WfDefinition persisted = repositoryService.findPersisted(definition.getKey(),
+                definition.getVersion());
+        if (persisted == null) {
+            throw new WfDefinitionException("流程定义 [" + definition.getKey()
+                    + "] 尚未部署，无法启动。实例一旦停在等待态就再也推不动了，"
+                    + "请先调用 WfRepositoryService#deploy 部署该定义");
+        }
+
         // ---- 1. 前置钩子（可否决）----
         if (!hookDispatcher.fireBeforeStart(definition.getKey(), variables)) {
             log.info("流程启动被钩子否决: {}", definition.getKey());
@@ -414,6 +428,107 @@ public class WfRuntimeService implements WfSubProcessLauncher {
 
     public List<WfComment> getComments(String processInstanceId) {
         return persistence.findComments(processInstanceId);
+    }
+
+    // ==================== 消息与信号 ====================
+
+    /**
+     * 触发一个等待中的<b>接收任务</b>（点对点）。
+     *
+     * <p>这是 {@code receiveTask} 唯一的正常唤醒路径。任务停在
+     * {@link WfTask.Status#CREATED}、token 停在该节点，直到这里按
+     * {@link com.zifang.z.wf.core.definition.WfNode#getMessageName()} 匹配上。
+     *
+     * <p><b>匹配到多于一个时直接报错，不挑一个执行。</b> 消息的语义是"点对点"，
+     * 多个任务同时等同一个消息名说明流程定义或消息名分配有歧义；
+     * 此时按 id 排序取第一个看起来很合理，实际后果是"另一条流程永远等不到"，
+     * 而且没有任何报错。宁可让调用方把消息名改具体，或改用
+     * {@link #broadcastSignal} 明确表达"就是要广播"。
+     *
+     * @param messageName 消息名，对应 receiveTask 的 {@code messageName}
+     * @param processInstanceId 限定在某个流程实例内；{@code null} 表示全局查找
+     * @return 被触发的流程实例
+     * @throws WfEngineException 没有匹配任务，或匹配到多个
+     */
+    public WfProcessInstance triggerMessage(String messageName, String processInstanceId,
+                                            String userId, Map<String, Object> variables,
+                                            String comment) {
+        List<WfTask> matched = findWaitingReceiveTasks(messageName, processInstanceId);
+        if (matched.isEmpty()) {
+            throw new WfEngineException("没有等待消息 [" + messageName + "] 的接收任务"
+                    + (processInstanceId == null ? "" : "（流程实例 " + processInstanceId + "）"));
+        }
+        if (matched.size() > 1) {
+            List<String> ids = new ArrayList<>();
+            for (WfTask task : matched) {
+                ids.add(task.getId() + "@" + task.getProcessInstanceId());
+            }
+            throw new WfEngineException("消息 [" + messageName + "] 匹配到 " + matched.size()
+                    + " 个接收任务，点对点消息无法决定触发哪一个: " + ids
+                    + "。请把消息名改得更具体，或改用 broadcastSignal 表达广播语义");
+        }
+        return completeTask(matched.get(0).getId(), userId, comment, variables);
+    }
+
+    /**
+     * 广播一个信号，唤醒<b>全部</b>等待该信号名的接收任务。
+     *
+     * <p>与 {@link #triggerMessage} 的区别就是信号与消息的区别：
+     * 消息点对点、只唤醒一个；信号广播、唤醒所有订阅者。
+     * 提供两个方法而不是给 {@code triggerMessage} 加一个 boolean 开关，
+     * 是为了让"我以为我唤醒了一个"这种误用在编译期就暴露。
+     *
+     * @return 被触发的流程实例（按任务创建顺序）
+     * @throws WfEngineException 一个都没匹配到 —— 静默返回空列表会让"消息名写错了"
+     *         这类问题一直潜伏到某天没人再等这条消息为止
+     */
+    public List<WfProcessInstance> broadcastSignal(String signalName, String userId,
+                                                   Map<String, Object> variables, String comment) {
+        List<WfTask> matched = findWaitingReceiveTasks(signalName, null);
+        if (matched.isEmpty()) {
+            throw new WfEngineException("没有等待信号 [" + signalName + "] 的接收任务");
+        }
+        List<WfProcessInstance> advanced = new ArrayList<>();
+        for (WfTask task : matched) {
+            advanced.add(completeTask(task.getId(), userId, comment, variables));
+        }
+        log.info("广播信号 [{}] 唤醒 {} 个接收任务", signalName, matched.size());
+        return advanced;
+    }
+
+    /**
+     * 找出等待指定消息/信号的接收任务。
+     *
+     * <p>必须按 {@code type=receiveTask} 过滤，不能只按 category 匹配：
+     * {@code WfReceiveTaskBehavior} 是把 messageName 写进 {@code category} 的，
+     * 而 {@code category} 本身是通用字段，人工任务、审批分组都会用它。
+     * 只按 category 查会把一批普通人工任务一起"唤醒"，而它们其实在等人。
+     */
+    private List<WfTask> findWaitingReceiveTasks(String messageName, String processInstanceId) {
+        if (messageName == null || messageName.trim().isEmpty()) {
+            throw new WfEngineException("消息名不能为空");
+        }
+        WfTaskQuery query = new WfTaskQuery()
+                .setCategory(messageName)
+                .setOpenOnly(true)
+                .setPageNum(1)
+                .setPageSize(Integer.MAX_VALUE);
+        if (processInstanceId != null) {
+            query.setProcessInstanceId(processInstanceId);
+        }
+        List<WfTask> found = persistence.queryTasks(query);
+        if (found == null || found.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<WfTask> matched = new ArrayList<>();
+        for (WfTask task : found) {
+            if (task != null
+                    && com.zifang.z.wf.core.definition.WfNodeType.RECEIVE_TASK
+                            .bpmnName().equals(task.getType())) {
+                matched.add(task);
+            }
+        }
+        return matched;
     }
 
     // ==================== 子流程 ====================
