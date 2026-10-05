@@ -133,6 +133,8 @@ public final class WfDefinitionCodec {
         private String completionCondition;
         private boolean sequential;
         private String loopAssignees;
+        private String errorCode;
+        private String attachedToRef;
         private String calledElementKey;
         private String resultExpression;
         private Map<String, Object> properties = new HashMap<>();
@@ -294,6 +296,22 @@ public final class WfDefinitionCodec {
             return loopAssignees;
         }
 
+        public String getErrorCode() {
+            return errorCode;
+        }
+
+        public void setErrorCode(String errorCode) {
+            this.errorCode = errorCode;
+        }
+
+        public String getAttachedToRef() {
+            return attachedToRef;
+        }
+
+        public void setAttachedToRef(String attachedToRef) {
+            this.attachedToRef = attachedToRef;
+        }
+
         public void setLoopAssignees(String loopAssignees) {
             this.loopAssignees = loopAssignees;
         }
@@ -444,6 +462,8 @@ public final class WfDefinitionCodec {
             gn.setCompletionCondition(node.getCompletionCondition());
             gn.setSequential(node.isSequential());
             gn.setLoopAssignees(node.getLoopAssignees());
+            gn.setErrorCode(node.getErrorCode());
+            gn.setAttachedToRef(node.getAttachedToRef());
             gn.setCalledElementKey(node.getCalledElementKey());
             gn.setResultExpression(node.getResultExpression());
             gn.setProperties(new HashMap<>(node.getProperties()));
@@ -524,6 +544,8 @@ public final class WfDefinitionCodec {
             node.setCompletionCondition(gn.getCompletionCondition());
             node.setSequential(gn.isSequential());
             node.setLoopAssignees(gn.getLoopAssignees());
+            node.setErrorCode(gn.getErrorCode());
+            node.setAttachedToRef(gn.getAttachedToRef());
             node.setCalledElementKey(gn.getCalledElementKey());
             node.setResultExpression(gn.getResultExpression());
             node.setProperties(new HashMap<>(gn.getProperties()));

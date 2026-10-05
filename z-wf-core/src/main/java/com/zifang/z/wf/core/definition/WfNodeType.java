@@ -63,7 +63,15 @@ public enum WfNodeType {
     CALL_ACTIVITY("callActivity"),
 
     /** 通用任务：无类型约束，行为等同 userTask 但不要求 assignee。 */
-    TASK("task");
+    TASK("task"),
+    /**
+     * 边界事件。
+     *
+     * <p><b>它不是普通节点</b>：没有入线，靠宿主节点出错/超时/收消息时被触发。
+     * 所以 {@link #createsTask()} 为 false（不该建任务），
+     * 也不该被任何 sequenceFlow 指到 —— 校验器会挡住"有入线"的写法。
+     */
+    BOUNDARY_EVENT("boundaryEvent");
 
     private final String bpmnName;
 
@@ -209,6 +217,7 @@ public enum WfNodeType {
                 SERVICE_TASK.bpmnName, SCRIPT_TASK.bpmnName, MANUAL_TASK.bpmnName,
                 SEND_TASK.bpmnName, RECEIVE_TASK.bpmnName, EXCLUSIVE_GATEWAY.bpmnName,
                 PARALLEL_GATEWAY.bpmnName, INCLUSIVE_GATEWAY.bpmnName,
-                SUB_PROCESS.bpmnName, CALL_ACTIVITY.bpmnName, TASK.bpmnName));
+                SUB_PROCESS.bpmnName, CALL_ACTIVITY.bpmnName, TASK.bpmnName,
+                BOUNDARY_EVENT.bpmnName));
     }
 }

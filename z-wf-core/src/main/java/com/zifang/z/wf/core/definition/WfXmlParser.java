@@ -92,6 +92,7 @@ public class WfXmlParser {
             {"transaction", "transaction"},
             {"adHocSubProcess", "adHocSubProcess"},
             {"callActivity", "callActivity"},
+            {"boundaryEvent", "boundaryEvent"},
     };
 
     /**
@@ -258,6 +259,16 @@ public class WfXmlParser {
             // 值是流程变量里的一个集合，逐实例派人时用 ${loopAssignee} 引用
             node.setLoopAssignees(extension(element, "loopAssignees"));
         }
+
+        // ---- 错误边界事件：errorRef 取自 errorEventDefinition 子元素 ----
+        // 注意不能放进上面的 if (loop != null) 里：边界事件没有多实例子元素，
+        // 放进去就意味着它永远解析不到自己挂在谁身上（曾这么错过一次）。
+        node.setAttachedToRef(attr(element, "attachedToRef"));
+        Element errorDef = childElement(element, "errorEventDefinition");
+        if (errorDef != null) {
+            node.setErrorCode(errorDef.getAttribute("errorRef"));
+        }
+
         node.setDueDateDuration(extension(element, "dueDate"));
 
         String priority = extension(element, "priority");

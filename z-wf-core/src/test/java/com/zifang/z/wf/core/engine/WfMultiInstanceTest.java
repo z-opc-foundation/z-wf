@@ -110,6 +110,16 @@ class WfMultiInstanceTest {
         runtime.completeTask(task.getId(), user, user + "同意", new HashMap<>());
     }
 
+    /**
+     * 用任务<b>自己的</b>办理人办结。
+     *
+     * <p>刻意不写成"取列表里第一个人"：列表顺序与 assignee 排序后的顺序不对应，
+     * 那样写会拿 alice 去办 carol 的任务，引擎正确地拒绝，报错却指不到真正的原因。
+     */
+    private void completeOwn(WfTask task) {
+        completeAs(task, task.getAssignee());
+    }
+
     // ==================== 会签（全部完成） ====================
 
     @Test
@@ -141,9 +151,9 @@ class WfMultiInstanceTest {
 
         String pid = start(xml, vars);
         List<WfTask> open = openAt(pid, "counterSign");
-        completeAs(open.get(0), assigneesOf(open).get(0));
+        completeOwn(open.get(0));
         open = openAt(pid, "counterSign");
-        completeAs(open.get(0), assigneesOf(open).get(0));
+        completeOwn(open.get(0));
 
         assertEquals(WfProcessStatus.ACTIVE, repo.findProcessInstance(pid).getStatus(),
                 "还差一个人时流程必须继续等 —— 提前放行就是会签失效");
@@ -161,7 +171,7 @@ class WfMultiInstanceTest {
 
         String pid = start(xml, vars);
         for (WfTask t : openAt(pid, "counterSign")) {
-            completeAs(t, t.getAssignee());
+            completeOwn(t);
         }
 
         WfProcessInstance done = repo.findProcessInstance(pid);

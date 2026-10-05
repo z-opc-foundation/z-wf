@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.WfDefinitionException;
 import com.zifang.z.wf.core.definition.WfNode;
+import com.zifang.z.wf.core.definition.WfNodeType;
 import com.zifang.z.wf.core.engine.WfContext;
 import com.zifang.z.wf.core.engine.WfEngine;
 import com.zifang.z.wf.core.engine.WfIdGenerator;
@@ -651,6 +652,163 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             persistence.saveExecution(token);
         }
         return true;
+    }
+
+    // ==================== 错误路由（BPMN Error） ====================
+
+    /**
+     * 在指定任务所在的活动上抛出一个 BPMN 业务错误，路由到匹配的边界事件。
+     *
+     * <p>这是"某一步失败了不要让整条流程死掉"的入口：边界事件带一个
+     * {@code errorCode}，只捕获同码的错误。没有匹配时流程以内部终止收场
+     * 并记下错误码 —— 不静默继续，因为静默继续等于"这一步没做但看起来做了"。
+     *
+     * <p>触发边界事件时：宿主节点上<b>还没办结的待办被作废</b>
+     * （不然后续流程走完了，列表里还挂着一个永远办不完的活）。
+     *
+     * @param taskId 出错的任务；用任务反查宿主节点与 token
+     * @param errorCode 错误码，与 boundaryEvent 的 errorRef 匹配（不区分大小写）
+     * @return 被触发后流程实例的最新状态
+     */
+    public WfProcessInstance handleBpmnError(String taskId, String errorCode,
+                                             String message, Map<String, Object> variables) {
+        WfTask task = requireTask(taskId);
+        if (!task.isOpen()) {
+            // 任务已办结/作废时它的 token 早已不在该节点上。
+            // 此时再路由错误，会去找一个不属于该活动的 token，
+            // 把流程从别处拽到边界事件上 —— 比不路由更糟。
+            throw new WfEngineException("任务已办结或已作废（" + task.getStatus()
+                    + "），不能再路由错误: " + taskId);
+        }
+        WfProcessInstance instance = requireInstance(task.getProcessInstanceId());
+        if (instance.getStatus().isTerminal()) {
+            throw new WfEngineException("流程实例已结束，无法再路由错误: " + instance.getId());
+        }
+        if (errorCode == null || errorCode.trim().isEmpty()) {
+            throw new WfEngineException("errorCode 不能为空："
+                    + "没有码就没有边界事件能捕获它，流程只能直接失败");
+        }
+        WfDefinition definition = definitionOf(instance);
+        String nodeId = task.getDefinitionId();
+        WfNode boundary = findErrorBoundary(definition, nodeId, errorCode);
+
+        // ---- 记录错误：让"为什么失败"在轨迹与日志里都能查到 ----
+        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                instance.getId(), errorOperator(task), "error",
+                "节点 " + nodeId + " 抛出 BPMN 错误 [" + errorCode + "]: " + message));
+        log.warn("流程 {} 节点 {} 抛出 BPMN 错误 [{}]: {}",
+                instance.getId(), nodeId, errorCode, message);
+
+        if (boundary == null) {
+            instance.setStatus(WfProcessStatus.INTERNALLY_TERMINATED);
+            instance.setEndTime(new Date());
+            instance.setDeleteReason("BPMN 错误 [" + errorCode + "]: " + message
+                    + "（节点 " + nodeId + " 上没有匹配该错误码的边界事件）");
+            instance.nextRevision();
+            persistence.saveProcessInstance(instance);
+            // 待办全部作废，否则它们会永远挂在办理人列表里
+            cancelOpenTasks(instance.getId());
+            return instance;
+        }
+
+        // ---- 找 token：它必须停在宿主节点上，否则路由没有"当前执行"可言 ----
+        WfExecution execution = task.getExecutionId() != null
+                ? persistence.findExecution(task.getExecutionId()) : null;
+        if (execution == null) {
+            for (WfExecution candidate
+                    : persistence.findExecutionsByProcessInstance(instance.getId())) {
+                if (nodeId.equals(candidate.getActivityId())) {
+                    execution = candidate;
+                    break;
+                }
+            }
+        }
+
+        cancelOpenTasksOn(instance.getId(), nodeId);
+        if (execution == null) {
+            instance.setStatus(WfProcessStatus.INTERNALLY_TERMINATED);
+            instance.setEndTime(new Date());
+            instance.setDeleteReason("BPMN 错误 [" + errorCode + "] 无可用 token，无法路由到边界事件 "
+                    + boundary.getId());
+            instance.nextRevision();
+            persistence.saveProcessInstance(instance);
+            return instance;
+        }
+
+        // ---- 把 token 移到边界事件上，由它沿出线走补偿分支 ----
+        WfContext context = contextForError(instance, definition, execution, variables);
+        execution.setActivityId(boundary.getId());
+        execution.setState(WfExecution.State.ACTIVE);
+        execution.setEnteredTime(new Date());
+        context.recordActivity(boundary.getId(), boundary.getName(),
+                boundary.getType().bpmnName(), "error:" + errorCode);
+        engine.startFrom(context, execution);
+        persistAll(context);
+        resolveCompletion(context);
+        log.info("流程 {} 的错误 [{}] 已路由到边界事件 {}",
+                instance.getId(), errorCode, boundary.getId());
+        return instance;
+    }
+
+    /**
+     * 记错误时用谁的名义。
+     *
+     * <p>优先取 owner（委派态下责任在人身上），其次 assignee。
+     * 两者都没有时记 "system" —— 不能写 null，否则"是谁触发的错误"永远查不到。
+     */
+    private String errorOperator(WfTask task) {
+        if (task.getOwner() != null && !task.getOwner().trim().isEmpty()) {
+            return task.getOwner();
+        }
+        if (task.getAssignee() != null && !task.getAssignee().trim().isEmpty()) {
+            return task.getAssignee();
+        }
+        return "system";
+    }
+
+    /** 找挂在 host 节点上、且捕获该错误码的边界事件。 */
+    private WfNode findErrorBoundary(WfDefinition definition, String hostNodeId,
+                                     String errorCode) {
+        if (hostNodeId == null || definition.getNodes() == null) {
+            return null;
+        }
+        for (WfNode node : definition.getNodes()) {
+            if (node.getType() == WfNodeType.BOUNDARY_EVENT
+                    && hostNodeId.equals(node.getAttachedToRef())
+                    && node.catchesError(errorCode)) {
+                return node;
+            }
+        }
+        return null;
+    }
+
+    private WfContext contextForError(WfProcessInstance instance, WfDefinition definition,
+                                      WfExecution execution, Map<String, Object> variables) {
+        WfContext context = engine.newContext(definition, instance, execution);
+        context.setSubProcessLauncher(this);
+        context.setVariables(variables);
+        context.setProcessExecutions(
+                persistence.findExecutionsByProcessInstance(instance.getId()));
+        return context;
+    }
+
+    private void cancelOpenTasks(String processInstanceId) {
+        cancelOpenTasksOn(processInstanceId, null);
+    }
+
+    /** 作废未完成任务；{@code nodeId} 非 null 时只作废该节点上的。 */
+    private void cancelOpenTasksOn(String processInstanceId, String nodeId) {
+        WfTaskQuery query = new WfTaskQuery().setProcessInstanceId(processInstanceId)
+                .setOpenOnly(true).setPageNum(1).setPageSize(Integer.MAX_VALUE);
+        if (nodeId != null) {
+            query.setDefinitionId(nodeId);
+        }
+        for (WfTask pending : persistence.queryTasks(query)) {
+            pending.setStatus(WfTask.Status.CANCELLED);
+            pending.setEndTime(new Date());
+            pending.nextRevision();
+            persistence.saveTask(pending);
+        }
     }
 
     // ==================== 子流程 ====================

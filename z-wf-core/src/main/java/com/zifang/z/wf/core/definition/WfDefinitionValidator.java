@@ -114,6 +114,10 @@ public class WfDefinitionValidator {
                             "receiveTask 没有 messageName，该任务将只能被 force-complete 推进");
                 }
             }
+            // ---- 错误边界事件 ----
+            if (node.getType() == WfNodeType.BOUNDARY_EVENT) {
+                validateBoundaryEvent(node, definition);
+            }
             // ---- 多实例（会签 / 或签）----
             validateMultiInstance(node);
             // ---- 退化出来的节点：语义已被换掉，必须挡住部署 ----
@@ -277,6 +281,48 @@ public class WfDefinitionValidator {
 
     private List<WfValidationIssue> result() {
         return new ArrayList<>(issues);
+    }
+
+    /**
+     * 边界事件校验。
+     *
+     * <p>四条规则，每条都对应一种"部署通过、运行时行为不是作者以为的那样"：
+     * <ul>
+     *   <li>缺 attachedToRef ⇒ 不知道挂在谁身上，等于没挂</li>
+     *   <li>挂到了不存在的节点 ⇒ 永远不会触发</li>
+     *   <li>缺 errorCode ⇒ 无法决定捕不捕获。这里刻意<b>不接受</b> BPMN 里的
+     *       "空 errorRef 表示捕获所有错误"：宽泛捕获会把不相关的异常也吸走，
+     *       让本该崩掉的流程继续走下去，而那正是边界事件最该避免的事</li>
+     *   <li>有入线 ⇒ 画错了。边界事件靠宿主节点出错时触发，
+     *       被 sequenceFlow 指到它意味着作者以为它是普通流程节点</li>
+     * </ul>
+     */
+    private void validateBoundaryEvent(WfNode node, WfDefinition definition) {
+        if (isBlank(node.getAttachedToRef())) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "boundaryEvent 缺少 attachedToRef，不知道挂在哪个节点上");
+        } else if (definition.node(node.getAttachedToRef()) == null) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "boundaryEvent 挂载的目标节点不存在: " + node.getAttachedToRef()
+                            + "，该边界事件永远不会触发");
+        }
+        if (isBlank(node.getErrorCode())) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "boundaryEvent 缺少 errorCode。本实现刻意不支持"
+                            + "「空 errorRef = 捕获所有错误」：宽泛捕获会把不相关的异常也吸走，"
+                            + "让本该崩掉的流程继续走下去。请显式写明捕获哪一种错误");
+        }
+        if (definition.incomingFlows(node.getId()) != null
+                && !definition.incomingFlows(node.getId()).isEmpty()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "boundaryEvent 不该有入线。它靠宿主节点出错时被触发，"
+                            + "被 sequenceFlow 指到说明画成了普通流程节点");
+        }
+        List<WfFlow> outgoing = definition.outgoingFlows(node.getId());
+        if (outgoing == null || outgoing.isEmpty()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "boundaryEvent 没有出线。触发之后将无处可去，流程会直接结束");
+        }
     }
 
     /**

@@ -91,6 +91,45 @@ public class WfNode implements Serializable {
     /** 扩展属性。 */
     private Map<String, Object> properties = new HashMap<>();
 
+    // ==================== 错误 / 边界事件 ====================
+
+    /**
+     * 错误码，对应 BPMN 的 {@code errorEventDefinition/@errorRef}。
+     *
+     * <p>空字符串在 BPMN 里表示"捕获所有错误"，本实现<b>刻意不支持</b>：
+     * 宽泛捕获会把不相关的异常也吸走，让本该崩的流程继续走下去。
+     * 必须显式写明捕获哪一种错误。
+     */
+    private String errorCode;
+
+    /**
+     * 边界事件挂在哪个节点上（{@code attachedToRef}）。
+     * 只有 {@link WfNodeType#BOUNDARY_EVENT} 会用。
+     */
+    private String attachedToRef;
+
+    public String getErrorCode() {
+        return errorCode;
+    }
+
+    public void setErrorCode(String errorCode) {
+        this.errorCode = errorCode;
+    }
+
+    public String getAttachedToRef() {
+        return attachedToRef;
+    }
+
+    public void setAttachedToRef(String attachedToRef) {
+        this.attachedToRef = attachedToRef;
+    }
+
+    /** 是否为该错误码的边界事件；errorCode 不区分大小写。 */
+    public boolean catchesError(String code) {
+        return errorCode != null && !errorCode.trim().isEmpty()
+                && errorCode.trim().equalsIgnoreCase(code == null ? "" : code.trim());
+    }
+
     // ==================== 多实例（会签 / 或签 / 计数） ====================
 
     /** 是否多实例节点。 */

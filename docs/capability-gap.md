@@ -73,7 +73,7 @@
 | `setAssignee` / `setOwner` / `setPriority` / `setDueDate` | ✅ | `updateTask` |
 | `addComment` / `getProcessInstanceComments` | ✅ | |
 | `addIdentityLink` / `deleteIdentityLink` | 🟡 | 候选人用户/组存在 `WfTask.candidateUsers/candidateGroups` 字段里，但没有 Camunda 那套 identity link（无类型、无用户/组混合的通用关联） |
-| **`handleBpmnError`** | ❌ | **P0 缺口。** 没有 BPMN 错误事件，`serviceTask` 抛异常只能整体失败，无法路由到补偿分支 |
+| `handleBpmnError` | ✅ | **本轮补上**：`BpmnError(code, msg)` 抛错 → 路由到匹配的边界事件 → 走补偿分支；无匹配则流程终止并记错误码 |
 | `handleEscalation` | ❌ | |
 | **`move` / `moveTaskState`**（流程实例迁移） | ❌ | Camunda 7.15+ 的实例迁移。审批系统改流程时要迁移在途实例，目前只能 `jump` 单个任务 |
 | 任务级变量 `setVariableLocal` / `getVariablesLocal` | 🟡 | 本轮已由 `WfVariableService` 覆盖读写，但**没有变量作用域链**：Camunda 的 Local 变量只在当前 execution 可见，z-wf 的任务级变量随任务走、不会下传给子流程 token |
@@ -134,14 +134,15 @@
 | `callActivity` | ✅ | 本轮修好 `resultExpression` 死字段（解析了但从不求值），并拆出 `resultVariable`；被调流程启动失败不再被吞掉 |
 | **嵌入式 `subProcess`** | ❌ | **内联内容永远不执行。** 解析器把内联节点收进扁平表，引擎却直接穿透。现在部署期报 ERROR 挡住，可用 callActivity 代替 |
 | **`multiInstance`**（会签/或签/计数） | 🟡 | **本轮补上**：`loopCardinality` + `completionCondition`，任务类节点并行展开。缺 `collection` 集合迭代与 `isSequential` 串行（部署期报 ERROR 挡住，不做半套） |
-| **`boundaryEvent`** | ❌ | 边界事件。错误/超时/消息边界都挂不了 |
+| `boundaryEvent` | 🟡 | **本轮支持错误边界**：`<errorEventDefinition errorRef>` + `WfRuntimeService#handleBpmnError` + `BpmnError`。超时/消息/信号边界仍不支持 |
 | **`intermediateCatchEvent` / `intermediateThrowEvent`** | ❌ | 中间事件 |
 | `eventBasedGateway` | ❌ | 现在会被校验器**报错挡住**（见 §4），不会静默退化 |
 | `complexGateway` | ❌ | |
 | `transaction` / `adHocSubProcess` | ❌ | 同上，报错挡住 |
 | **定时器** `timerEventDefinition` | ❌ | |
 | **异步** `asyncBefore` / `asyncAfter` | ❌ | |
-| `errorRef` / `escalationCode` / `compensation` | ❌ | |
+| `errorRef` / `errorEventDefinition` | ✅ | 见上。**刻意不支持「空 errorRef = 捕获所有错误」**——宽泛捕获会把不相关异常也吸走，让本该崩的流程继续走 |
+| `escalationCode` / `compensation` | ❌ | |
 | `dataObject` / `dataStore` / 数据关联 | ❌ | |
 | `linkEvent` | ❌ | |
 
@@ -242,7 +243,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 |---|---|---|
 | 1 | ~~**多实例（会签/或签/计数）**~~ | ✅ 本轮已实现（并行）。剩余：`collection` 迭代、串行、变量下标 EL |
 | 2 | ~~**变量服务**~~ | ✅ 本轮已补（`WfVariableService` + REST `GET/POST /api/wf/process/variables`）。剩余缺口：变量实例查询、类型化变量、变量作用域链（execution 级） |
-| 3 | **BPMN 错误事件 + `handleBpmnError`** | `serviceTask` 失败目前只能整体崩，无法走补偿分支 |
+| 3 | ~~**BPMN 错误事件 + `handleBpmnError`**~~ | ✅ 本轮已实现（错误边界）。剩余：escalation / compensation / 超时与消息边界 |
 | 4 | **边界事件 + 定时器 + Job 执行器** | 缺一整条机制：超时提醒/超时升级/异步调用都做不了 |
 
 ### P1 —— 引擎成熟度

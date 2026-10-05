@@ -149,6 +149,31 @@ public class WfEngine {
      * <p>调用时机：用户任务办结后、receiveTask 被消息触发后、挂起后恢复时。
      * 此时 token 停在"已经执行过的节点"上，所以走 leave 而不是 enter。
      */
+    /**
+     * 从指定 token 的当前活动开始推进（不重新 arriveAt）。
+     *
+     * <p>与 {@link #advance} 的区别：{@code advance} 会让 token 重新进入当前活动
+     * （用于"任务办结后再走一次"），而这里调用方已经把 token 摆到了目标活动上
+     * （错误路由把 token 移到了边界事件），需要的是"从这里出发"。
+     * 调 advance 会让边界事件被当成刚进入的任务节点跑一遍，语义不对。
+     */
+    public void startFrom(WfContext context, WfExecution token) {
+        WfDefinition definition = context.getDefinition();
+        WfNode node = definition.node(token.getActivityId());
+        if (node == null) {
+            fail(context, "流程定义 " + definition.getKey()
+                    + " 中找不到节点: " + token.getActivityId());
+            return;
+        }
+        WfExecution saved = context.getCurrentExecution();
+        context.setCurrentExecution(token);
+        try {
+            leave(context, 0);
+        } finally {
+            context.setCurrentExecution(saved);
+        }
+    }
+
     public void advance(WfContext context) {
         leave(context, 0);
     }
