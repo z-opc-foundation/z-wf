@@ -29,9 +29,15 @@
     <url>https://github.com/yuku123/z-opc-foundation</url>
 
     <licenses>
+        <!--
+          与组织其余仓库保持一致：z-boot-parent 1.0.21 与 z-camuda 均为 MIT。
+          此前这里写的是 Apache-2.0，那是本仓早期脚手架的模板默认值，
+          从未与组织统一过，也与 z-camuda 构成不一致。已按 MIT 对齐。
+        -->
         <license>
-            <name>Apache License, Version 2.0</name>
-            <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+            <name>MIT License</name>
+            <url>https://opensource.org/licenses/MIT</url>
+            <distribution>repo</distribution>
         </license>
     </licenses>
 

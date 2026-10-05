@@ -1,5 +1,7 @@
 # z-wf — 自研流程引擎
 
+> [English](README.en.md) · [能力盘点：与 Camunda 7 的逐项对照](docs/capability-gap.md)
+
 > 不依赖 Camunda / Flowable / Activiti 等任何第三方工作流引擎。定义层协议与 `z-util-wf-kernel` 共用，
 > 运行时层（token 执行树、网关求值、持久化、REST）全部自研。
 
