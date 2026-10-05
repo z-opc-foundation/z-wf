@@ -61,7 +61,21 @@
     </modules>
 
     <properties>
-        <revision>1.0.0</revision>
+        <!--
+            版本 2.0.0 是**刻意的破坏性大版本**，不是随手抬的：
+            坐标 io.github.yuku123:z-wf 在 Central 上的 1.0.4/1.0.5/1.0.6 是
+            **Camunda 版**引擎（z-camuda 仓最初就叫 z-wf，后来改名为 z-camuda，
+            但改名不释放已发布坐标）。本仓是自研引擎 —— 执行模型（token 执行树 vs
+            Camunda 的 PVM）、持久化（ZWF_* 自有表 vs ACT_*）、条件求值语义都不同，
+            属于"同一个坐标下换了整套实现"，必须用 semver 大版本把边界显式标出来。
+
+            升到 2.0.0 同时解决两件事：
+            ① 不低于 Central 上已发布的 1.0.6，不存在版本倒退；
+            ② 依赖 [1.0,) 区间升级的仓会明确拿到 2.x 的大版本语义变更，
+               而不是像"1.0.6→1.0.7"那样在版本边界上静默翻转引擎实现。
+            详见 README 顶部的「坐标与版本」一节。
+        -->
+        <revision>2.0.0</revision>
 
         <!-- z-util 版本口径。
              坑：<b>只定义 z-util.version 属性是盖不住 import 进来的 BOM 的</b>。
