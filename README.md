@@ -197,10 +197,73 @@ WorkflowConfiguration back = ZUtilWfBridge.toWorkflowConfiguration(definition);
 
 `START_EVENT` / `END_EVENT` / `USER_TASK` / `SERVICE_TASK` / `SCRIPT_TASK` / `MANUAL_TASK` /
 `SEND_TASK` / `RECEIVE_TASK` / `EXCLUSIVE_GATEWAY` / `PARALLEL_GATEWAY` / `INCLUSIVE_GATEWAY` /
-`SUB_PROCESS` / `CALL_ACTIVITY` / `TASK`。
+`SUB_PROCESS` / `CALL_ACTIVITY` / `TASK` / `BOUNDARY_EVENT`。
 
-类型名大小写不敏感（`userTask` / `user-task` / `USER_TASK` 归一到同一个），
-未识别的类型退化为 `TASK` 而不是让整份定义解析失败。
+类型名大小写不敏感（`userTask` / `user-task` / `USER_TASK` 归一到同一个）。
+
+**未识别的类型会被标记并在部署期报 ERROR，而不是静默放行。**
+解析期仍保持宽松（能读进来才给得出有用的诊断），但退化出来的节点会带上
+原始元素名，校验器据此拒绝部署。原因是静默退化不是"少支持一个特性"：
+`eventBasedGateway` 退化成人工任务，等于把"多路事件竞速"换成了"等人来点"，
+而流程照跑、轨迹照记 completed、作者与实际行为之间零提示。
+
+### 3.3 多实例（会签 / 或签）
+
+审批系统的默认需求。任务类节点可挂 `multiInstanceLoopCharacteristics`：
+
+```xml
+<userTask id="counterSign" zifang:assignee="${loopAssignee}"
+          zifang:loopAssignees="${approvers}">
+  <multiInstanceLoopCharacteristics>
+    <loopCardinality>3</loopCardinality>
+    <completionCondition>${nrOfCompletedInstances >= 2}</completionCondition>
+  </multiInstanceLoopCharacteristics>
+</userTask>
+```
+
+| 写法 | 语义 |
+|---|---|
+| 不写 `completionCondition` | **会签**：3 个人都办完才算通过 |
+| `${nrOfCompletedInstances >= 1}` | **或签**：第一个人办完就放行 |
+| `${nrOfCompletedInstances >= 2}` | **计数会签**：2/3 即放行 |
+
+可用循环变量：`loopCounter` / `nrOfInstances` / `nrOfActiveInstances` / `nrOfCompletedInstances`，
+以及流程本身的全部业务变量（完成条件常写成 `${nrOfCompletedInstances >= 2 && amount > 1000}`）。
+
+三个要点：
+
+- **实例数从任务反推，不另存计数。** 任务本身就是实例，统计是数出来的，
+  不会与 `terminate` 作废、`force-complete` 补办、并发修改之间漂移
+- **逐实例派不同人**靠 `zifang:loopAssignees` + `${loopAssignee}`，
+  不用 `${approvers[loopCounter]}` —— 实测 z-util 的 EL 不支持变量下标
+- 完成条件里的变量名拼错会因 fail-closed 判"不成立"，而会签语义下
+  "不成立"= "继续等"，于是流程**永远**卡死且无报错。所以校验器要求完成条件
+  必须引用标准循环变量，否则部署期就报错
+
+已知限制：不支持 `collection` 集合迭代与 `isSequential` 串行，配置了会在部署期
+报 ERROR —— 宁可部署失败，也不给一个半套实现。
+
+### 3.4 错误边界事件
+
+```xml
+<userTask id="approve" zifang:assignee="boss"/>
+<boundaryEvent id="onFail" attachedToRef="approve">
+  <errorEventDefinition errorRef="APPROVAL_FAILED"/>
+</boundaryEvent>
+<userTask id="cleanup" zifang:assignee="ops"/>
+<sequenceFlow id="f3" sourceRef="onFail" targetRef="cleanup"/>
+```
+
+```java
+runtimeService.handleBpmnError(taskId, "APPROVAL_FAILED", "查不到档案", vars);
+// 或 delegate 里 throw new BpmnError("APPROVAL_FAILED", "...");
+```
+
+错误码匹配时 token 走到边界事件、沿出线进补偿分支；无匹配时流程终止并把
+错误码写进 `deleteReason`，**绝不静默继续**。
+
+刻意**不支持** BPMN 里"空 errorRef = 捕获所有错误"：宽泛捕获会把不相关的异常
+也吸走，让本该崩掉的流程继续走下去。必须显式写明捕获哪一种错误。
 
 ---
 
@@ -350,17 +413,30 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 
 ## 9. 测试
 
-98 个测试，全绿。
+188 个测试，全绿。
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
 | `WfDefinitionParserTest` | 17 | XML/JSON 解析、校验器、类型归一、与 z-util-wf 的解析 parity |
-| `ZUtilWfBridgeTest` | 14 | 协议往返、fail-closed、已知限制、桥接定义真的能跑完审批 |
+| `ZUtilWfBridgeTest` | 14 | 协议��返、fail-closed、已知限制、桥接定义真的能跑完审批 |
 | `JdbcWorkflowPersistenceTest` | 17 | H2 上的建表 / CRUD / 乐观锁 / 查询 |
 | `InMemoryWorkflowPersistenceTest` | 11 | 内存存储语义、深拷贝隔离 |
 | `WfEngineEndToEndTest` | 18 | 线性 / 排他 / 并行 / 走默认流 四种审批链 |
+| **`WfNodeTypeCoverageTest`** | **16** | **14 种节点类型的实际运行行为**（不是"能解析"） |
+| **`WfHookDispatchAuditTest`** | **15** | **11 个扩展点回调逐个验证真的会触发** |
+| **`WfMultiInstanceTest`** | **16** | 会签 / 或签 / 计数会签、逐实例派人、收口作废 |
+| **`WfBpmnErrorTest`** | **13** | 错误边界路由、作废待办、5 类必须被挡住的配置 |
+| **`WfMessageTriggerTest`** | **9** | 消息唤醒 / 信号广播 / 歧义报错 / 不误伤人工任务 |
+| **`WfVariableServiceTest`** | **12** | 变量读写、批量原子性、审计留痕、终态拒绝 |
+| **`UnsupportedBpmnElementTest`** | **7** | 未支持元素不许静默退化（XML + JSON 两条入口） |
 | `WfAdminEndToEndTest` | 6 | Spring 全栈 + JDBC 落库 + 示例流程端到端 |
-| `WfWebApiTest` | 15 | **真实 HTTP**（`RANDOM_PORT` 起容器）跑 34 个端点：VO 边界、分页 total、异常→状态码 |
+| `WfWebApiTest` | 17 | **真实 HTTP**（`RANDOM_PORT` 起容器）：VO 边界、分页 total、异常→状态码、变量端点 |
+
+> 加粗的那几个是**行为审计**而非功能测试。本项目有过三次"实现了、注册了、
+> 从来没触发"，静态检查全都看不出来：未支持元素静默退化、`receiveTask` 不等待、
+> `notifyOverdue` 零调用点。所以每种节点类型、每个扩展点回调都单独写了
+> 断言"它真的会跑"的用例，并且每次修复都做**反向验证**：
+> 临时摘掉修复，确认测试由绿转红。
 
 `z-wf-admin` 用 `h2-test` profile，不依赖外部 MySQL / z-config / z-rpc。
 

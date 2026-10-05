@@ -27,6 +27,13 @@
 - **5 个 service** + 34 个 REST 端点（审批中心 13 / 任务操作 7 / 流程操作 9 / 分组 3 / 健康 1）
 - **消息与信号唤醒**：`triggerMessage`（点对点，歧义时报错）与
   `broadcastSignal`（广播）
+- **多实例会签**：`loopCardinality` + `completionCondition`，支持会签/或签/计数会签；
+  实例数从任务反推而非另存计数；逐实例派不同人靠 token 局部变量
+- **错误边界事件与 `handleBpmnError`**：错误码匹配则走补偿分支，
+  无匹配则流程终止并记下错误码；`BpmnError(code, msg)` 供 delegate 抛
+- **变量服务** `WfVariableService`：流程级与任务级读写，批量整批只落一次库，
+  每次变更留审计；REST `GET/POST /api/wf/process/variables`
+- **`WfOverdueScanner`**：超期待办扫描（不自带定时器，频率交给调用方）
 - 与 `z-util-wf-kernel` 的双向协议桥 `ZUtilWfBridge`
 - 4 个模块：`z-wf-core` / `z-wf-web` / `z-wf-starter` / `z-wf-admin`
 - 开源基座：LICENSE、CONTRIBUTING、SECURITY、CHANGELOG、CI 工作流、issue 模板
@@ -65,11 +72,11 @@ z-util 版本覆盖失效；`WfHistoryService` 两个与既有路径逐字重复
 
 见 [`docs/capability-gap.md`](docs/capability-gap.md)。最要紧的几条：
 
-- **不支持会签/或签**（BPMN multiInstance）—— 审批系统的默认需求，当前只能手写多个节点
-- **没有变量服务 API** —— 变量已持久化，但没有 Camunda 那套
-  `getVariable`/`setVariable` 读写入口
-- **没有 Job/定时器/异步执行** —— 超时提醒、超时升级、异步调用外部系统都做不了
-- **没有 BPMN 错误事件** —— `serviceTask` 抛异常只能整体失败，走不了补偿分支
+- **不支持会签的集合迭代与串行**（`collection` / `isSequential`）—— 配置了会在部署期报错
+- **没有定时器 / 异步执行** —— 超时提醒有 `WfOverdueScanner` 可用，
+  但超时自动升级、异步调用外部系统仍做不了（缺 Job 执行器）
+- **边界事件只支持错误一种** —— 超时边界、消息边界未支持
+- **没有 BPMN escalation / compensation**
 - **扩展面比 Camunda 窄**：3 个 hook 对比 Camunda 的几十个监听点
 
 身份、表单、鉴权、CMMN **有意不做**，理由见能力盘点文档 §5。

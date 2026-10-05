@@ -61,7 +61,7 @@ extension namespace carries approval semantics that standard BPMN has no slot fo
 
 `startEvent` · `endEvent` · `userTask` · `serviceTask` · `scriptTask` · `manualTask` ·
 `sendTask` · `receiveTask` · `task` · `exclusiveGateway` · `parallelGateway` ·
-`inclusiveGateway` · `subProcess` · `callActivity`
+`inclusiveGateway` · `subProcess` · `callActivity` · `boundaryEvent`
 
 **Unsupported BPMN elements fail loudly at deploy time.** Elements the engine does not
 implement (`eventBasedGateway`, `transaction`, `intermediateCatchEvent`, …) are parsed
@@ -75,6 +75,58 @@ author and the running process would disagree with no signal at all.
 
 You can override the inferred type per element with `zifang:type`; an explicit override is
 respected and not blocked.
+
+### Multi-instance (countersign / any-one / 2-of-3)
+
+The default requirement for approval systems. Task-like nodes accept
+`multiInstanceLoopCharacteristics`:
+
+```xml
+<userTask id="counterSign" zifang:assignee="${loopAssignee}"
+          zifang:loopAssignees="${approvers}">
+  <multiInstanceLoopCharacteristics>
+    <loopCardinality>3</loopCardinality>
+    <completionCondition>${nrOfCompletedInstances >= 2}</completionCondition>
+  </multiInstanceLoopCharacteristics>
+</userTask>
+```
+
+| Configuration | Meaning |
+|---|---|
+| no `completionCondition` | **countersign** — all three must approve |
+| `${nrOfCompletedInstances >= 1}` | **any-one** — the first approval releases |
+| `${nrOfCompletedInstances >= 2}` | **2-of-3** |
+
+Three things worth knowing:
+
+- **Instance counts are derived from the tasks, never stored.** A task *is* an
+  instance, so the count cannot drift against `terminate`, `force-complete`, or
+  concurrent edits
+- Per-instance assignees come from `zifang:loopAssignees` + `${loopAssignee}`,
+  **not** `${approvers[loopCounter]}` — the EL does not support variable
+  subscripts (`${approvers[1]}` works, `${approvers[loopCounter]}` throws)
+- A typo'd variable in `completionCondition` evaluates fail-closed, which in
+  countersign means "keep waiting" — the process would hang forever with no
+  error. The validator therefore requires the condition to reference a standard
+  loop variable
+
+Not supported, and rejected at deploy time rather than half-implemented:
+`collection` iteration and `isSequential`.
+
+### Error boundary events
+
+```java
+runtimeService.handleBpmnError(taskId, "APPROVAL_FAILED", "no record found", vars);
+// or throw new BpmnError("APPROVAL_FAILED", "...") from a delegate
+```
+
+A matching boundary event moves the token to its outgoing flow (the compensation
+branch). No match terminates the process with the error code in `deleteReason` —
+never silently continuing.
+
+BPMN's "empty errorRef catches everything" is deliberately **rejected**: a broad
+catch swallows unrelated exceptions and lets a process that should have died keep
+running. You must name the error you intend to catch.
 
 ---
 
@@ -127,7 +179,12 @@ converts between them, so the storage layout can evolve without touching engine 
 
 ## Testing
 
-114 tests, all green. `mvn -o clean install`.
+188 tests, all green. `mvn -o clean install`.
+
+Six of the test classes are **behaviour audits** rather than feature tests —
+one per node type and one per extension-point callback. This project shipped
+three "implemented, registered, never actually invoked" defects, and none of
+them is visible to a static check.
 
 Every bug fix in this repository shipped with a **reverse verification**: temporarily
 revert the fix, confirm the test turns red, restore it. A test that stays green after you
@@ -142,6 +199,12 @@ does nothing*:
 | `receiveTask` never waited | The task object was built and then **discarded**; the token walked to the end event |
 | `onBeforeCreate` hook | Implemented, registered, never invoked |
 | `delegateChain` | No column in the DDL, no write in the UPDATE, no read in the query |
+| Unresolvable `delegateClass` | `log.error` then pass through — the service task silently did nothing while the process reported success |
+| Embedded `subProcess` | Inline children were parsed but the engine never entered them |
+| `callActivity` `resultExpression` | Parsed and stored, never evaluated — always null |
+| `notifyOverdue` | A dead hook: zero call sites anywhere in the repo |
+| `notifyTaskAssigned` | Fired only at task creation, never on claim/transfer/delegate |
+| `terminate()` | Fired no hooks at all — nobody was told the request was cancelled |
 
 ---
 
@@ -158,14 +221,14 @@ See [SECURITY.md](SECURITY.md) for the full trust-boundary notes.
 
 `z-wf` does **not** currently cover all of Camunda 7. The most significant gaps:
 
-- **No multi-instance** (countersign / "3 of 3 approvers") — the default requirement for
-  approval systems
+- **No collection-based multi-instance** and no sequential (`isSequential`) countersign —
+  both are rejected at deploy time rather than half-implemented
+- **No timer / escalation / compensation boundary events** — only error boundaries
+- **No BPMN escalation or compensation**
 - **No variable service API** — variables are persisted, but there is no
   `getVariable`/`setVariable` surface like Camunda's
 - **No jobs, timers, or async execution** — timeout reminders, escalation, and async
   external calls are not possible
-- **No BPMN error events** — a failing `serviceTask` fails the whole process rather than
-  routing to a compensation branch
 - **Narrower extension surface** — 3 hook interfaces against Camunda's dozens of listeners
 
 Identity, forms, authorization, and CMMN are **deliberately out of scope**; the reasoning
