@@ -55,6 +55,7 @@
 | `suspend` / `activate` / `delete` 实例 | ✅ | `terminate` 对应 delete |
 | **变量服务** `getVariable(s)` / `setVariable(s)` / `getVariableLocal` / `setVariableLocal` | ✅ | **本轮补上** `WfVariableService`：流程级 get/set/remove/has + 任务级 get/set/remove，批量整批只落一次库，变更留审计 |
 | `createProcessInstanceQuery` 流畅查询 | 🟡 | `WfProcessInstanceQuery` 有 10 个条件，但没有 `variableValueEquals`（按变量值查实例，审批系统常用） |
+| **`move` / `moveTaskState`**（流程实例迁移） | 🟡 | **本轮补上 `move`**：`WfRuntimeService#move` 按 token 粒度迁移，撤掉源节点的待办、该 token 的 job 与到达记录，再在目标节点**重新进入**；给 `sourceActivityId` 就只迁指定源，不给就迁全部未结束 token。REST `POST /api/wf/process/move`。**刻意不检查图上可达性** —— 运营改流程后图往往已对不上，强行校验等于"改一次流程就得重画一遍"，代价是目标节点必须在定义里存在（部署期之外做存在性校验）。**仍缺** Camunda 的 `moveTaskState`（按任务状态筛选迁移）与迁移过程自身的历史记录类型 |
 | `createExecutionQuery` | 🟡 | 只有 `getExecutions(processInstanceId)` 列举，没有按条件查 |
 | `createVariableInstanceQuery` | ❌ | |
 | `createEventSubscriptionQuery` | ✅ | **本轮补上** `WfSubscriptionService` + `WfSubscriptionView`（放 core 不放 web：订阅查询通常由独立部署的监控/运维服务消费，放 web 会把它拖进 Spring MVC 运行时）。REST `GET /api/wf/subscriptions` 与 `/subscriptions/count`，并**并进 `GET /api/wf/process/overview`**。回答的是"这条单子怎么不动了"——在等消息的流程没有待办、轨迹没动、也不报错，没有这张表就只能翻 XML 猜。**job 类型归并成"等什么"**（message/signal/timer/external/async）同时**保留原 jobType** 以区分"打断"与"竞速"；竞速分支额外带 `gatewayId`，让人看得出几条是同一次竞速。**超过扫描上限（2000）直接报错**而不是给一份看起来完整的截断列表 |
@@ -75,7 +76,6 @@
 | `addIdentityLink` / `deleteIdentityLink` | 🟡 | 候选人用户/组存在 `WfTask.candidateUsers/candidateGroups`，**可运行时增删**（`addCandidateUser/Group` / `removeCandidateUser/Group`，REST `POST /api/wf/task/candidate`），BPMN 部署时写入的与运行时加的走同一份数据。**仍缺** Camunda 那套带 type 的通用关联表（participating / starter 等）—— 刻意不另建：审批场景的判定需求现有字段已覆盖，另建一张表会带来两个真源 |
 | `handleBpmnError` | ✅ | **本轮补上**：`BpmnError(code, msg)` 抛错 → 路由到匹配的边界事件 → 走补偿分支；无匹配则流程终止并记错误码 |
 | `handleEscalation` | ❌ | |
-| **`move` / `moveTaskState`**（流程实例迁移） | ❌ | Camunda 7.15+ 的实例迁移。审批系统改流程时要迁移在途实例，目前只能 `jump` 单个任务 |
 | 任务级变量 `setVariableLocal` / `getVariablesLocal` | 🟡 | 本轮已由 `WfVariableService` 覆盖读写，但**没有变量作用域链**：Camunda 的 Local 变量只在当前 execution 可见，z-wf 的任务级变量随任务走、不会下传给子流程 token |
 | 任务挂起（suspension state） | ✅ | `WfTaskService#suspendTask / activateTask`，REST `POST /api/wf/task/suspend\|activate`。**挂起后仍留在待办列表并带 `suspended` 标记**（前端显示暂停角标），刻意不隐藏 —— 挂起常是「等条件成立」不是「单子不存在」，藏起来用户的感受是「我那张单不见了」。闸门覆盖认领/办结/转办/委派/撤回/强制完成/跳转**全部七处**，且报错文案与「已结束」分开：挂起能一键恢复，报成结束会让人去查历史而不是恢复 |
 | `withdraw` | ✅ | z-wf 扩展，比 Camunda 多 |
@@ -285,19 +285,36 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 历史查询体系（活动 / 任务 / 流程实例 / **变量变更审计** + 历史清理已实现）·
 ~~Repository 完整化~~（定义停用/启用 + 模型回读 + 定义查询 + 物理删除已实现）·
 ~~任务挂起~~（suspend/activate + 七处闸门 + 查询过滤 + REST 已实现）·
-~~运行时增删候选人~~（含 `candidateOrAssigned` 待办或语义 + 可认领列表按人过滤）· ~~复杂网关~~ · ~~事件网关~~（消息/信号分支已实现，定时器分支待补）· Filter
+~~运行时增删候选人~~（含 `candidateOrAssigned` 待办或语义 + 可认领列表按人过滤）· ~~复杂网关~~ · ~~事件网关~~（消息/信号分支已实现，定时器分支待补）· ~~实例迁移~~（`move` 已实现，见 §1.2；`moveTaskState` 仍缺）· Filter
 
 ### P2 —— 管理便利
 
-引擎指标 · 实例迁移（`move`）· ~~流程模型图形回读~~（BPMN DI 解析 + REST 已实现，见 §1.1）
+引擎指标 · ~~流程模型图形回读~~（BPMN DI 解析 + REST 已实现，见 §1.1）
 
 ---
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 473 个测试兜着
-- 从测试与审计中逼出并修复的**真实缺陷 29 项**，其中 4 项属于"能力看着在、实际不生效"：
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 493 个测试兜着
+- 从测试与审计中逼出并修复的**真实缺陷 31 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
+- **本轮实例迁移时逼出 `jump` 的两个同源缺陷**，两个都是"接口返回成功、效果却不对"：
+  ① `jump` 推进时调的是 `advance`（语义为"这个节点已经执行过了"，内部走 `leave`），
+  于是跳到人工节点时**不建待办、流程一路跑到结束** —— 而"这个审批人不管了，直接跳给总经理"
+  恰恰是 `jump` 最主要的用法，跳过去没有待办等于这个操作白做；
+  ② `jump` 自己 `new WfEngine()`，丢掉自定义的行为注册表、表达式求值器配置、id 生成器与
+  delegate 注册表，表现为"同一条流程跳转前后的节点行为不是同一套"，且全程无任何日志提示。
+  修法是让 `jump` 与 `move` 共用一条 `migrateToken` 路径（context 构造、hookDispatcher、
+  `persistAll`、终态判定全在 `WfRuntimeService` 内完成），并新增 `WfEngine#enterAt`
+  —— 迁移目标**一次都没执行过**，必须走纯 `enter`，复用 `advance`/`startFrom` 都会沿出线跳过它
+- **一处"共用一段代码"时最容易踩的坑，本轮主动避开了**：撤源节点待办天然是**按节点**的动作，
+  而 `jump` 只针对一条 token。若让 `jump` 也走那条路，多实例节点（同节点 N 条 token N 个待办）
+  上跳走一条会把**别人的待办一起撤掉**，那些分支停在原地却没有任何入口能推进它们 ——
+  既办不完也查不出来。所以待办撤销留在 `move` 的循环前，`migrateToken` 不碰待办
+- **一处注释里的因果句被探针证伪，已改正**：`arrivedActivities`（token 的到达记录）
+  全仓**只写不读** —— 汇合判定 `allSiblingsArrived` 比的是兄弟 token 的 `activityId`，
+  并不查这份列表。原先"迁移不清到达记录会导致汇合误判"的说法不成立
+  （反向验证摘掉那一行，17 条用例全绿）。仍然清，但注释已改为如实记录现状
 - **两处"两套实现语义不一致"值得单独记**：内存版 `lockExternalTasks` 直接改内部引用，
   绕过了 `saveJob` 的乐观锁契约（表现为"领一次活就把 job 永久锁死在乐观锁异常里"）；
   `job INSERT` 写了 15 列却只给 14 个占位符，只有 JDBC 路径能触发 ——
@@ -317,3 +334,24 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 > 维护约定：新增或移除一项能力时，**同步改这份文档**。
 > 一份会过期的能力表比没有更糟——它会让读者以为"没提到就是不支持"。
+
+### 本轮反向验证记录（实例迁移 `move`）
+
+18 条变异，**16 条由绿转红**；2 条保持绿且各有实证，不是判据漏写：
+
+| 变异 | 结果 | 说明 |
+| --- | --- | --- |
+| `enterAt` → `advance` | 🔴 红 | 跳/迁到人工节点不建待办 |
+| 撤掉源 token 的 job | 🔴 红 | 事件照常到达会推进已迁走的分支 |
+| 迁移轨迹记录 | 🔴 红 | 轨迹凭空少一次访问 |
+| 撤源节点待办 | 🔴 红 | 源待办与新待办并存 |
+| 终态 / 目标存在 / 同源同目标 / 无 token 四处守卫 | 🔴 红 ×4 | 各有专测 |
+| 评论记原因 | 🔴 红 | 无法追责 |
+| 迁移带变量 | 🔴 红 | 变量合并那行（首次变异打偏到 `startProcessInstance`，换唯一锚点后转红） |
+| `persistAll` | 🔴 红 | 迁过去的东西不落库 |
+| `jump` 不办结源待办 / 目标存在校验 | 🔴 红 ×2 | — |
+| 把 `cancelOpenTasksOn` 塞回 `migrateToken` | 🔴 红 | **故意重现本轮避开的那类回归**：多实例同节点上别人的待办被撤 |
+| 换成 `new WfEngine()` | 🔴 红 | 丢掉自定义行为注册表 |
+| REST 丢 `sourceActivityId` | 🔴 红 | 变成迁全部 token |
+| 清到达记录 | ⚪ 绿 | `arrivedActivities` 只写不读，见 §7 上文 |
+| `resolveCompletion` | ⚪ 绿 | 正常路径上 `leave` 已兜住，功能测试对它天然无区分（该结论原就写在 `resolveCompletion` 的注释里，本轮探针复现确认） |

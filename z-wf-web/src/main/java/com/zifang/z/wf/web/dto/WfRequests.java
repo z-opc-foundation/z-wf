@@ -337,6 +337,92 @@ public final class WfRequests {
      * <p>事件网关、消息边界与接收任务共用这一个请求体：三者等的是同一个"事件名"，
      * 拆成三个 DTO 只会让调用方为了换个等待方式而改整个请求结构。
      */
+    /**
+     * 实例迁移。
+     *
+     * <p>与 {@code TaskOperation} 分开而不是复用：jump 的入口是<b>任务</b>，
+     * move 的入口是<b>流程实例</b>，而"没有待办可指"的流程恰恰是 move 存在的理由 ——
+     * 共用一个请求体会让人以为 move 也需要一个 taskId，于是把迁移用在了跳不动的场景上。
+     */
+    public static class InstanceMigration implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private String processInstanceId;
+
+        /** 迁移到的目标节点 id，必须在定义里存在。 */
+        private String targetActivityId;
+
+        /**
+         * 只迁移停在这个节点上的 token。
+         *
+         * <p>留空表示迁移该实例<b>全部</b>未结束的 token —— 并行分支走到一半时
+         * 通常只想迁其中一条，指明源节点能避免把整棵执行树一次端掉。
+         */
+        private String sourceActivityId;
+
+        private String userId;
+
+        /** 写进评论与轨迹的一句话原因。迁移是运营干预，没有原因事后无法追责。 */
+        private String reason;
+
+        private Map<String, Object> variables;
+
+        public String getProcessInstanceId() {
+            return processInstanceId;
+        }
+
+        public void setProcessInstanceId(String processInstanceId) {
+            this.processInstanceId = processInstanceId;
+        }
+
+        public String getTargetActivityId() {
+            return targetActivityId;
+        }
+
+        public void setTargetActivityId(String targetActivityId) {
+            this.targetActivityId = targetActivityId;
+        }
+
+        public String getSourceActivityId() {
+            return sourceActivityId;
+        }
+
+        public void setSourceActivityId(String sourceActivityId) {
+            this.sourceActivityId = sourceActivityId;
+        }
+
+        public String getUserId() {
+            return userId;
+        }
+
+        public void setUserId(String userId) {
+            this.userId = userId;
+        }
+
+        public String getReason() {
+            return reason;
+        }
+
+        public void setReason(String reason) {
+            this.reason = reason;
+        }
+
+        public Map<String, Object> getVariables() {
+            return variables;
+        }
+
+        public void setVariables(Map<String, Object> variables) {
+            this.variables = variables;
+        }
+    }
+
+    /**
+     * 投递消息 / 广播信号。
+     *
+     * <p>事件网关、消息边界与接收任务共用这一个请求体：三者等的是同一个"事件名"，
+     * 拆成三个 DTO 只会让调用方为了换个等待方式而改整个请求结构。
+     */
     public static class EventDelivery implements Serializable {
 
         private static final long serialVersionUID = 1L;

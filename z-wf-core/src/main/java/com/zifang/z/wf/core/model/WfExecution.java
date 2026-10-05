@@ -185,7 +185,12 @@ public class WfExecution implements Serializable {
     }
 
     /**
-     * 记录一次"到达某节点"（汇合判定用；幂等）。
+     * 记录一次"到达某节点"（幂等）。
+     *
+     * <p><b>当前只写不读</b>：汇合判定 {@code WfEngine#allSiblingsArrived} 比的是
+     * 兄弟 token 的 {@code activityId}，并不查这份列表。保留它是因为它随 token 落库，
+     * 且描述的是"这条 token 走过哪些节点"这一件真实发生过的事；
+     * 但不要据这份注释以为改动汇合逻辑时它会生效。
      */
     public void arriveAt(String activityId) {
         if (activityId != null && !arrivedActivities.contains(activityId)) {

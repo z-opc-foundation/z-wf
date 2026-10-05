@@ -179,6 +179,30 @@ public class WfEngine {
         leave(context, 0);
     }
 
+    /**
+     * 进入 token 当前所在的节点并执行它 —— 语义是「token 刚到达这个节点」。
+     *
+     * <p><b>与 {@link #advance} / {@link #startFrom} 的区别就在这一个词</b>：
+     * 那两个都走 {@code leave}，假设这个节点<b>已经执行过了</b>（任务办结后、
+     * 边界事件把 token 挪过去之后）。用它进入一个从没跑过的节点，
+     * 结果是直接沿它的出线跳过去 —— 症状是"迁到人工节点却没有待办，
+     * 流程反而一下就走完了"。
+     *
+     * <p>供实例迁移（{@code WfRuntimeService#move}）使用。
+     * 刻意<b>不</b>复用 {@link #resumeEnter}：那个会打上 asyncContinuation 标记，
+     * 而迁移进去的目标节点如果自己带 {@code asyncBefore}，那个 job 是<b>该</b>排的 ——
+     * 续跑的语义是"补跑一个已经排过队的节点"，迁移的语义是"第一次到达它"。
+     */
+    public void enterAt(WfContext context, WfExecution token) {
+        WfExecution saved = context.getCurrentExecution();
+        context.setCurrentExecution(token);
+        try {
+            enter(context, 0);
+        } finally {
+            context.setCurrentExecution(saved);
+        }
+    }
+
     // ==================== enter：进入节点 ====================
 
     /**

@@ -9,8 +9,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.zifang.z.wf.core.definition.WfDefinition;
-import com.zifang.z.wf.core.engine.WfContext;
-import com.zifang.z.wf.core.engine.WfEngine;
 import com.zifang.z.wf.core.hook.WfHookDispatcher;
 import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfProcessInstance;
@@ -449,18 +447,15 @@ public class WfTaskService {
             throw new WfEngineException("任务 " + taskId + " 找不到对应 token，无法跳转");
         }
 
-        execution.setActivityId(targetActivityId);
-        execution.setState(WfExecution.State.ACTIVE);
-        execution.setEnteredTime(new Date());
-        // 清空到达记录：跳转后要能重新汇合
-        execution.clearArrived();
-        persistence.saveExecution(execution);
-
-        // ---- 3. 从新位置推进 ----
-        WfEngine engine = new WfEngine();
-        WfContext context = engine.newContext(definition, instance, execution);
-        context.setAuthenticatedUserId(operatorId);
-        engine.advance(context);
+        // ---- 3. 真正迁过去 ----
+        // 委托给 runtimeService 而不是就地推进。迁一条 token 要用到 context 构造、
+        // hookDispatcher 挂载、persistAll 与终态判定，这些都归 runtimeService 管。
+        // 就地写一份的代价本轮已经付过两次：先是自己 new WfEngine()（丢掉自定义行为
+        // 注册表与表达式求值配置），再是调 advance —— 后者走的是 leave，语义为
+        // "这个节点已经执行过了"，于是跳到人工节点时不建待办，流程一路跑到结束。
+        // 而"这个审批人不管了，直接跳给总经理"恰恰是 jump 最主要的用法。
+        runtimeService.migrateToken(instance, definition, execution, targetActivityId,
+                operatorId, "（跳转）");
 
         log.info("任务跳转: taskId={} → 节点 {}, 操作人={}", taskId, targetActivityId, operatorId);
         return instance;

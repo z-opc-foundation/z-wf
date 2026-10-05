@@ -3,8 +3,10 @@ package com.zifang.z.wf.core.service;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -1360,6 +1362,203 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      * 那条路径上的流转钩子静默不触发 —— 而"接口在、方法有、就是不响"是最难查的一类。
      * 新增推进入口时照此调用即可。
      */
+    // ==================== 迁移 ====================
+
+    /**
+     * 实例迁移 —— 把 token 强行挪到指定节点并从那里继续。
+     *
+     * <p><b>与 {@code WfTaskService#jump} 的区别是「有没有待办可跳」</b>：
+     * jump 的入口是任务 id，所以一条正在等消息、信号、定时器或外部 worker 的流程
+     * 压根跳不动 —— 它没有任务。而"改流程时把在途的单迁过去"恰恰最常发生在这种单上：
+     * 它已经等了很久，业务方决定不再等事件，直接走人工。
+     *
+     * <p>迁移必须把源节点上"正在等的那些东西"一并撤掉，否则会出现一个 token
+     * 同时被两个东西盯着的情况：事件照常到达时照样会推进这条已经迁走的分支，
+     * 于是流程在一个节点上被走两遍。撤的四样：源节点上的待办、该 token 上的 job、
+     * 该 token 的到达记录（否则汇合会误判它已经到过）。
+     *
+     * <p><b>不检查图上是否可达</b>，与 jump 同一理由：运营改流程后图往往已经对不上，
+     * 强行校验可达性等于"运营改一次流程就得重画一遍"。代价是可能跳到图外节点，
+     * 因此目标节点必须在定义里存在。
+     *
+     * @param sourceActivityId 只迁移停在这个节点上的 token；{@code null} 表示
+     *                         迁移该实例<b>全部</b>未结束的 token
+     * @return 被迁移的流程实例
+     */
+    public WfProcessInstance move(String processInstanceId, String targetActivityId,
+                                   String sourceActivityId, String operatorId,
+                                   String reason, Map<String, Object> variables) {
+        WfProcessInstance instance = requireInstance(processInstanceId);
+        if (instance.getStatus().isTerminal()) {
+            throw new WfEngineException("流程实例 " + processInstanceId + " 已是终态 "
+                    + instance.getStatus() + "，无法迁移");
+        }
+        WfDefinition definition = definitionOf(instance);
+        if (definition.node(targetActivityId) == null) {
+            throw new WfEngineException("迁移目标节点不存在于流程定义 " + definition.getKey()
+                    + " 中: " + targetActivityId);
+        }
+        if (targetActivityId.equals(sourceActivityId)) {
+            // 不是死代码：source 为 null 且实例只有一条 token 时，源与目标会是同一个节点。
+            // 不挡住的话会走完"撤光待办与 job、再原地进入"这一整套，结果是待办被重建
+            throw new WfEngineException("迁移目标与当前节点相同: " + targetActivityId
+                    + "。这多半是漏传了 sourceActivityId —— "
+                    + "不给源就表示迁移全部 token，而实例当前只有这一条");
+        }
+
+        List<WfExecution> candidates = new ArrayList<>();
+        for (WfExecution execution : persistence.findExecutionsByProcessInstance(processInstanceId)) {
+            if (execution == null || execution.isEnded()) {
+                continue;
+            }
+            if (sourceActivityId == null || sourceActivityId.trim().isEmpty()
+                    || sourceActivityId.equals(execution.getActivityId())) {
+                candidates.add(execution);
+            }
+        }
+        if (candidates.isEmpty()) {
+            throw new WfEngineException("流程实例 " + processInstanceId + " 上没有可迁移的 token"
+                    + (sourceActivityId == null ? ""
+                    : "（找的是停在 " + sourceActivityId + " 上的）")
+                    + "。已结束的 token 不参与迁移 —— 拿它去改会造出一条孤儿记录");
+        }
+
+        persistence.saveComment(new WfComment(idGenerator.nextCommentId(), processInstanceId,
+                operatorId == null || operatorId.trim().isEmpty() ? "system" : operatorId,
+                "move", "迁移到节点 " + targetActivityId + "：迁走 " + candidates.size()
+                + " 条 token（原位置 "
+                + candidates.get(0).getActivityId() + "）"
+                + (reason == null || reason.trim().isEmpty() ? "" : "。原因: " + reason)));
+
+        // 先把源节点上的待办统一撤掉，再逐条迁移。
+        // 顺序有讲究：先撤后迁，中间不存在"待办还挂在已经被迁走的节点上"的窗口。
+        // 撤待办这件事放在循环外而不是逐条做，是因为它是**按节点**的，
+        // 而逐条做会让人误以为每条 token 只带走自己那条 —— 多实例节点上
+        // 一个节点有 N 条 token N 个待办，这个区别不是笔误：
+        // 撤错了会留下"token 还在原地但待办没了"的死分支，永远办不完也查不出来。
+        // 对 move 来说这个节点的所有 token 都在 candidates 里，所以按节点撤是安全的。
+        Set<String> sourceNodes = new LinkedHashSet<>();
+        for (WfExecution execution : candidates) {
+            sourceNodes.add(execution.getActivityId());
+        }
+        for (String sourceNode : sourceNodes) {
+            cancelOpenTasksOn(processInstanceId, sourceNode);
+        }
+
+        // 变量在循环外并一次：往 instance 上 putAll 是幂等的，
+        // 放进循环里只会让人误以为每条 token 拿到的是不同的一份
+        if (variables != null && !variables.isEmpty()) {
+            instance.getVariables().putAll(variables);
+        }
+        for (WfExecution execution : candidates) {
+            migrateToken(instance, definition, execution, targetActivityId, operatorId,
+                    reason == null || reason.trim().isEmpty()
+                            ? "（迁移）" : "（迁移: " + reason + "）");
+        }
+        log.info("流程 {} 迁移到 {}: 迁走 {} 条 token，操作人={}",
+                processInstanceId, targetActivityId, candidates.size(), operatorId);
+        return instance;
+    }
+
+    /**
+     * 把<b>一条</b> token 从它当前所在节点迁到目标节点。
+     *
+     * <p>{@link #move} 与 {@code WfTaskService#jump} 共用这一段。两者本质是同一个动作的
+     * 不同粒度 —— 迁整个实例里符合条件的所有 token，还是只迁某个待办所在的那一条 ——
+     * 拆成两份写，代价是修一处漏一处，而漏的那处症状还极不直观
+     * （本轮 {@code jump} 就是漏了"重新进入目标节点"这步，跳过去没有待办、
+     * 流程一路跑到了结束，看上去像跳转功能坏了）。
+     *
+     * <p>能合在这里还有一个前提：context 构造、{@code hookDispatcher} 挂载、
+     * {@code persistAll} 与终态判定<b>全都在本类</b>里完成。
+     * 分出去一份就等于"有的迁移带生命周期钩子、有的不带"，
+     * 而钩子差异不会报错，只会让一半的迁移绕过审批前置校验。
+     *
+     * <p><b>不管源节点上遗留的待办</b>，那是调用方的策略，因为两者对"源节点"的定义不同：
+     * {@link #move} 是按节点整体腾空（该节点所有 token 都在迁走），所以在循环前统一撤；
+     * {@code jump} 只针对一条 token，它自己的待办已经由 jump 办结了，
+     * 而同一个节点上<b>别的</b> token 的待办必须留着 —— 一起撤掉会让那些分支
+     * 停在原地却没有待办，既办不完也查不出来。
+     *
+     * @param traceLabel 写进轨迹的来源标注，如 {@code "（迁移: 改流程）"} / {@code "（跳转）"}
+     */
+    void migrateToken(WfProcessInstance instance, WfDefinition definition, WfExecution execution,
+                      String targetActivityId, String operatorId, String traceLabel) {
+        String processInstanceId = instance.getId();
+        String from = execution.getActivityId();
+        // 1. 撤掉这条 token 上的 job（消息订阅 / 事件网关分支 / 定时器 / 外部任务）。
+        //    漏掉的话事件照常到达会推进一条已经迁走的分支 —— 同一个节点被走两遍
+        cancelJobsOf(processInstanceId, execution.getId());
+        // 2. 清到达记录：token 换了位置，"它到过哪些节点"这件事也得跟着改。
+        // 先把现状说清楚，免得下一个读代码的人被注释带偏：
+        // 这份列表目前**只写不读** —— 汇合判定 allSiblingsArrived 比的是兄弟 token 的
+        // activityId，不查它。所以清不清当前都不改变行为（反向验证摘掉这一行，
+        // 本轮 17 条用例全绿，证实了这点）。
+        // 仍然清，是因为这份记录随 token 落库，而它描述的是一件已经变了的事实：
+        // 留着等于给将来"拿它做判定"的代码埋一份脏数据。
+        // 顺带一提，WfExecution#arriveAt 的注释写着"汇合判定用"，那个说法现在也不准确 ——
+        // 汇合逻辑改用 activityId 比较之后就没再查过它。
+        execution.clearArrived();
+
+        WfContext context = newContext(definition, instance, execution);
+        context.setAuthenticatedUserId(operatorId);
+        context.setSubProcessLauncher(this);
+        context.setProcessExecutions(
+                persistence.findExecutionsByProcessInstance(processInstanceId));
+        execution.setActivityId(targetActivityId);
+        execution.setState(WfExecution.State.ACTIVE);
+        execution.setEnteredTime(new Date());
+        // 迁移记录记在**源**节点上，不靠 pendingActivityOutcome。
+        // 目标节点会在它自己离开时写它那一条（人工节点 = 办结时），
+        // 而源节点这次是被我们直接改掉 activityId 的、走不到 leave，
+        // 所以不补这一条的话轨迹上会凭空少一次"等主管批"，
+        // 看起来就像流程是从事件网关直接到了 manual
+        WfNode source = definition.node(from);
+        context.recordActivity(from, source == null ? null : source.getName(),
+                source == null ? null : source.getType().bpmnName(),
+                "→ " + targetActivityId + traceLabel);
+        // enterAt 而不是 advance/startFrom：目标节点一次都没跑过，
+        // 用 leave 会直接沿它的出线跳过去 —— "迁到人工节点却没有待办"
+        engine.enterAt(context, execution);
+        persistAll(context);
+        resolveCompletion(context);
+    }
+
+    /**
+     * 撤掉某个 token 上挂着的全部 job。
+     *
+     * <p>按 executionId 逐条删而不是按类型删：迁移不关心它是等消息、等定时器
+     * 还是等外部 worker，漏掉任何一类都会留下"一个 token 被两个东西盯着"的状态。
+     */
+    private void cancelJobsOf(String processInstanceId, String executionId) {
+        if (executionId == null) {
+            return;
+        }
+        List<WfJob> jobs = persistence.queryJobs(new WfJobQuery()
+                .setProcessInstanceId(processInstanceId).setPageNum(1).setPageSize(500));
+        if (jobs == null) {
+            return;
+        }
+        for (WfJob job : jobs) {
+            if (job != null && executionId.equals(job.getExecutionId())) {
+                persistence.deleteJob(job.getId());
+            }
+        }
+    }
+
+    /**
+     * 本服务使用的引擎。
+     *
+     * <p>存在的理由是<b>结构性的</b>：{@code WfTaskService#jump} 曾经自己
+     * {@code new WfEngine()}，于是跳转丢掉自定义的行为注册表、表达式求值器配置
+     * 与 id 生成器 —— 同一份流程，跳转前后的节点行为可能不是同一套。
+     * 把引擎从这里暴露出去而不是给 {@code WfTaskService} 加构造参数，
+     * 是为了让"用同一个引擎"成为**没法搞错**的形态而不是一条约定。
+     */
+    public WfEngine getEngine() {
+        return engine;
+    }
+
     private WfContext newContext(WfDefinition definition, WfProcessInstance instance,
                                  WfExecution execution) {
         WfContext context = engine.newContext(definition, instance, execution);

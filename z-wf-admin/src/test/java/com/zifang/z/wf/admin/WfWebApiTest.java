@@ -274,6 +274,71 @@ class WfWebApiTest {
         assertNotNull(getOk("/api/wf/process/executions?processInstanceId=" + processId));
     }
 
+    // ==================== 实例迁移 ====================
+
+    @Test
+    @DisplayName("实例迁移端点：等消息的单子没有任务可跳，只有 move 搬得动，且真的建出待办")
+    void instanceMigrationEndpoint() throws Exception {
+        deployMoveProcess();
+        String tag = "WEB-MOVE-" + System.nanoTime();
+        String leader = "mv-leader-" + tag;
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("moveLeader", leader);
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webMoveProcess", "businessKey", tag,
+                        "userId", "mv-owner", "variables", vars)).get("data");
+
+        // 前置条件一：此刻只有两条订阅，一个待办都没有。
+        // 这正是 move 存在的理由 —— jump 的入口是任务，没有任务就跳不动
+        List<Map<String, Object>> before = asList(asMap(getOk(
+                "/api/wf/subscriptions?processInstanceId=" + processId).get("data"))
+                .get("records"));
+        assertEquals(2, before.size(), "两条分支各一条订阅。实际 " + before.size());
+        assertTrue(asList(asMap(getOk("/api/approval-center/tasks/todo?userId=" + leader)
+                .get("data")).get("records")).isEmpty(),
+                "迁移前不该有待办 —— 有的话这条用例就测不到 move 存在的理由了");
+
+        postOk("/api/wf/process/move",
+                body("processInstanceId", processId, "targetActivityId", "mvManual",
+                        "sourceActivityId", "mvWaitMsg", "userId", "mv-ops", "reason", "等太久了"));
+
+        // 期望值 1：迁到人工节点要真的建出一个待办。用 leave 推进的话目标节点会被
+        // 直接走过，这里就是 0 —— 迁完了却什么都没人可办，等于白迁
+        List<Map<String, Object>> todos = asList(asMap(getOk(
+                "/api/approval-center/tasks/todo?userId=" + leader).get("data")).get("records"));
+        assertEquals(1, todos.size(), "迁到人工节点必须建出一个待办。实际 " + todos.size() + " 个");
+        assertEquals("mvManual", todos.get(0).get("definitionId"),
+                "待办要挂在目标节点上，而不是留在原地或落到别处");
+
+        // 源 token 的订阅必须随之撤掉：留着的话那条消息照常到达，
+        // 会推进一条已经迁走的分支 —— 同一个节点被走两遍
+        List<Map<String, Object>> after = asList(asMap(getOk(
+                "/api/wf/subscriptions?processInstanceId=" + processId).get("data"))
+                .get("records"));
+        assertEquals(1, after.size(),
+                "迁走一条分支后只剩另一条分支的订阅。实际 " + after.size()
+                        + " 条 —— 源订阅没撤掉的话，消息到达会推进一条已经迁走的分支");
+        assertEquals("mvWaitSignal", after.get(0).get("activityId"),
+                "剩下的是没被迁移的那条分支的订阅");
+
+        // 一路走通：迁过去的待办能正常办结，剩下的那条迁完也能办结，流程最终到终态。
+        // 只断言"待办出现了"不够 —— 建出一个办不掉的待办同样是坏的
+        postOk("/api/approval-center/tasks/complete",
+                body("taskId", todos.get(0).get("taskId"), "userId", leader, "comment", "同意"));
+        postOk("/api/wf/process/move",
+                body("processInstanceId", processId, "targetActivityId", "mvManual",
+                        "userId", "mv-ops", "reason", "另一条也转人工"));
+        for (Map<String, Object> record : asList(asMap(getOk(
+                "/api/approval-center/tasks/todo?userId=" + leader).get("data")).get("records"))) {
+            postOk("/api/approval-center/tasks/complete",
+                    body("taskId", record.get("taskId"), "userId", leader, "comment", "同意"));
+        }
+        assertEquals("COMPLETED", asMap(getOk(
+                "/api/approval-center/processes/get?processInstanceId=" + processId)
+                .get("data")).get("status"),
+                "两条分支都办结后流程应当结束 —— 不结束说明迁移把某条 token 弄丢了");
+    }
+
     // ==================== 变量 ====================
 
     @Test
@@ -1616,6 +1681,41 @@ class WfWebApiTest {
      * 而 job 端点要有 job 可查，就得有东西能起出 job 来。
      * 测试自己部署自己的前置条件，比改动示例流程更局部。
      */
+    /**
+     * 部署一个"卡在等消息上"的流程，专门给实例迁移端点当前置。
+     *
+     * <p>用事件网关而不是现成的示例流程：要测的正是<b>一条待办都没有</b>的单子。
+     * jump 的入口是任务，所以这类单子压根跳不动 —— 它就是 move 存在的理由。
+     * 办理人走 {@code ${moveLeader}} 变量：所有用例共享同一个 H2 库，
+     * 办理人写死会把别的用例的待办一起捞进来，断言就变成碰巧通过。
+     */
+    private void deployMoveProcess() {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"webMoveProcess\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"mvs\"/>\n"
+                + "    <eventBasedGateway id=\"mvg\"/>\n"
+                + "    <intermediateCatchEvent id=\"mvWaitMsg\" name=\"等消息\">\n"
+                + "      <messageEventDefinition messageRef=\"mvMsg\"/>\n"
+                + "    </intermediateCatchEvent>\n"
+                + "    <intermediateCatchEvent id=\"mvWaitSignal\" name=\"等信号\">\n"
+                + "      <signalEventDefinition signalRef=\"mvSig\"/>\n"
+                + "    </intermediateCatchEvent>\n"
+                + "    <userTask id=\"mvManual\" name=\"转人工\""
+                + " zifang:assignee=\"${moveLeader}\"/>\n"
+                + "    <endEvent id=\"mve\"/>\n"
+                + "    <sequenceFlow id=\"mvf1\" sourceRef=\"mvs\" targetRef=\"mvg\"/>\n"
+                + "    <sequenceFlow id=\"mvf2\" sourceRef=\"mvg\" targetRef=\"mvWaitMsg\"/>\n"
+                + "    <sequenceFlow id=\"mvf3\" sourceRef=\"mvg\" targetRef=\"mvWaitSignal\"/>\n"
+                + "    <sequenceFlow id=\"mvf4\" sourceRef=\"mvWaitMsg\" targetRef=\"mvManual\"/>\n"
+                + "    <sequenceFlow id=\"mvf5\" sourceRef=\"mvWaitSignal\" targetRef=\"mvManual\"/>\n"
+                + "    <sequenceFlow id=\"mvf6\" sourceRef=\"mvManual\" targetRef=\"mve\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        repositoryService.deploy(new com.zifang.z.wf.core.definition.WfXmlParser().parse(xml));
+    }
+
     private void deployTimerProcess() {
         String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
                 + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""

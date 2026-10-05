@@ -116,6 +116,30 @@ public class WfProcessOperationController {
         return Result.success(payload);
     }
 
+    /**
+     * 实例迁移 —— 把 token 挪到指定节点并从那里继续。
+     *
+     * <p><b>与 {@code /api/wf/tasks/jump} 的区别</b>：jump 入口是任务，
+     * 所以一条正在等消息 / 等信号 / 等定时器 / 等外部 worker 的流程根本跳不动 ——
+     * 它没有任务。而"改流程后把在途的单迁过去"最常发生在这种单上。
+     *
+     * <p><b>权限提示</b>：与 {@code jump} / {@code force-complete} 同级 ——
+     * 它能把任意在途流程挪到任意节点，绕过全部业务规则。若本仓无 z-ctc 统一鉴权，
+     * 必须在网关层限制这个路径的访问。
+     */
+    @PostMapping("/move")
+    @Operation(summary = "014_实例迁移：把在途流程的 token 挪到指定节点（含等事件/等定时器的单）")
+    public Result<WfViews.ProcessInstanceView> move(
+            @RequestBody WfRequests.InstanceMigration request) {
+        if (request == null) {
+            throw new com.zifang.z.wf.core.service.WfEngineException("请求体不能为空");
+        }
+        WfProcessInstance instance = runtimeService.move(request.getProcessInstanceId(),
+                request.getTargetActivityId(), request.getSourceActivityId(),
+                request.getUserId(), request.getReason(), request.getVariables());
+        return Result.success(viewMapper.toProcessView(instance));
+    }
+
     @PostMapping("/comment")
     @Operation(summary = "004_加签评论")
     public Result<Map<String, Object>> addComment(@RequestBody WfRequests.ProcessOperation request,
