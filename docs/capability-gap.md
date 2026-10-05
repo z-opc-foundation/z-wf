@@ -127,10 +127,12 @@
 |---|---|---|
 | `startEvent` / `endEvent` | ✅ | |
 | `userTask` / `serviceTask` / `scriptTask` / `manualTask` | ✅ | |
-| `sendTask` / `receiveTask` | ✅ | **receiveTask 的等待语义本轮才真正修好**（此前建了任务却被丢弃） |
+| `receiveTask` | ✅ | 等待语义本轮才真正修好（此前建了任务却被丢弃） |
+| `sendTask` | ✅ | 与 `serviceTask` 共用行为，即同步跑一个 delegate。**没有 delegate 会让流程失败**——因为它不是 BPMN 那种抛消息 |
 | `task` | ✅ | |
 | `exclusiveGateway` / `parallelGateway` / `inclusiveGateway` | ✅ | |
-| `subProcess` / `callActivity` | ✅ | |
+| `callActivity` | ✅ | 本轮修好 `resultExpression` 死字段（解析了但从不求值），并拆出 `resultVariable`；被调流程启动失败不再被吞掉 |
+| **嵌入式 `subProcess`** | ❌ | **内联内容永远不执行。** 解析器把内联节点收进扁平表，引擎却直接穿透。现在部署期报 ERROR 挡住，可用 callActivity 代替 |
 | **`multiInstance`**（会签/或签） | ❌ | **P0 缺口。** 审批系统最核心的需求之一——"3 个人都批才算通过"目前只能拆成 3 个节点手写 |
 | **`boundaryEvent`** | ❌ | 边界事件。错误/超时/消息边界都挂不了 |
 | **`intermediateCatchEvent` / `intermediateThrowEvent`** | ❌ | 中间事件 |
