@@ -69,17 +69,13 @@ public class WfHookDispatcher {
      * 注销任务钩子。
      *
      * <p>只增不减的注册表会出两类问题：一是长期运行的进程里反复注册同一个钩子导致回调翻倍；
-     * 二是无法在运行期切换实现（比如按配置决定是否启用某个审计钩子）。
+     * 二是运行期无法摘掉某个实现（比如按配置决定是否启用某个审计钩子，以及测试收尾时
+     * 清理临时钩子 —— Spring 上下文在测试类之间复用，留着会污染后续用例）。
      *
-     * @return 确实被移除的钩子个数
+     * @return 确实被移除的钩子个数（未注册过则返回 0）
      */
     public int removeTaskHook(WfTaskHook hook) {
         return taskHooks.remove(hook) ? 1 : 0;
-    }
-
-    /** 清空任务钩子（测试收尾用）。 */
-    public void clearTaskHooks() {
-        taskHooks.clear();
     }
 
     // ==================== 流程钩子 ====================

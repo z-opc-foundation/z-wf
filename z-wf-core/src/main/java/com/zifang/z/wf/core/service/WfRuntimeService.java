@@ -449,6 +449,12 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      * <p>顺序有讲究：先 token 再任务（任务外键指向 token），最后实例（实例是聚合根）。
      */
     private void persistAll(WfContext context) {
+        // ---- 0. 任务创建前置钩子（可否决）：必须跑在任何落库之前 ----
+        // 放在保存任务的循环里逐个判，会留下"token 已落库、任务没落、instance 也没落"的
+        // 撕裂写（persistAll 的顺序是 token → task → history → instance）。
+        // 钩子是在"创建审批任务"这个动作上表达意见，早于任何持久化才谈得上"否决"。
+        fireBeforeCreateHooks(context);
+
         // 本次 persistAll 已落库的 token id（防同一 token 被重复写）。
         // 必须是**方法局部变量**：service 是单例且被多线程共享，
         // 放字段里会让 A 请求的 token 混进 B 请求的去重表 → B 的 token 漏存。
@@ -486,6 +492,30 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         WfProcessInstance instance = context.getProcessInstance();
         instance.nextRevision();
         persistence.saveProcessInstance(instance);
+    }
+
+    /**
+     * 任务创建前置钩子（可否决）。
+     *
+     * <p>跑在 {@link #persistAll} 的最前面，早于任何持久化：
+     * 钩子是在"创建审批任务"这个动作上表达意见，被否决时必须一个字节都没落库。
+     *
+     * <p>否决一律抛 {@link WfEngineException}，与 {@code onBeforeComplete} 的否决口径一致
+     * （都映射成 HTTP 400）。不选"静默跳过这个任务"是因为那样 token 会停在本节点
+     * 且没有任何待办可办 —— 表现为流程永远 ACTIVE 且待办点不动，是最难排查的一类挂起。
+     */
+    private void fireBeforeCreateHooks(WfContext context) {
+        for (WfTask task : context.getCreatedTasks()) {
+            if (task.getId() == null) {
+                // 提前分配：钩子拿得到 taskId 才能把它写进审计/告警上下文
+                task.setId(idGenerator.nextTaskId());
+            }
+            if (!hookDispatcher.fireBeforeCreate(task.getId(), task.getAssignee(),
+                    task.getVariables())) {
+                throw new WfEngineException("任务创建被钩子否决: "
+                        + (task.getName() != null ? task.getName() : task.getDefinitionId()));
+            }
+        }
     }
 
     /**

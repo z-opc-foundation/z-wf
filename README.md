@@ -247,6 +247,13 @@ advance() = leave(token) + 沿出线 enter(下一个 token)
 **钩子异常一律不否决流程**，只有显式 `return false` 才否决。
 钩子里的异常会被 `WfHookDispatcher` 捕获并 WARN——一个坏的通知插件不该让整个审批停摆。
 
+**扩展点必须真的被调用。** `onBeforeCreate`（建任务前置校验，可否决）曾长期只声明不触发：
+`fireBeforeCreate` 没有任何调用方。业务方按接口 javadoc 实现一条校验规则，
+会得到"看起来实现了、实际永不执行"的结果，且没有任何报错。
+现在它在 `persistAll` 的**最前面**触发 —— 早于任何持久化，
+否则会留下"token 已落库、任务没落、实例没落"的撕裂写。
+`WfHookDispatcher.removeTaskHook` 与 `getTaskHooks` 同批补上（此前也是零调用方的死 API）。
+
 > 范围说明：`z-camuda` 那边有 22 个 SPI 接口 + 3 个 hook。`z-wf` 的扩展模型目前以
 > **3 个 hook + `WfPersistence` SPI + `WfJavaDelegate` + `WfActivityBehavior` 注册表** 的形态落地，
 > 22 个 SPI 尚未逐个实现。这是当前真实范围，不是遗漏声明。
@@ -301,7 +308,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 
 ## 9. 测试
 
-91 个测试，全绿。
+94 个测试，全绿。
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
@@ -309,7 +316,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 | `ZUtilWfBridgeTest` | 14 | 协议往返、fail-closed、已知限制、桥接定义真的能跑完审批 |
 | `JdbcWorkflowPersistenceTest` | 13 | H2 上的建表 / CRUD / 乐观锁 / 查询 |
 | `InMemoryWorkflowPersistenceTest` | 11 | 内存存储语义、深拷贝隔离 |
-| `WfEngineEndToEndTest` | 15 | 线性 / 排他 / 并行 / 走默认流 四种审批链 |
+| `WfEngineEndToEndTest` | 18 | 线性 / 排他 / 并行 / 走默认流 四种审批链 |
 | `WfAdminEndToEndTest` | 6 | Spring 全栈 + JDBC 落库 + 示例流程端到端 |
 | `WfWebApiTest` | 15 | **真实 HTTP**（`RANDOM_PORT` 起容器）跑 34 个端点：VO 边界、分页 total、异常→状态码 |
 
@@ -348,6 +355,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 | 流程定义反序列化后 `startTime` 为 null | `WfDefinition` 含 `Date`，JSON 往返静默失败 |
 | admin 启动就 `NoClassDefFoundError: DataAccessException` | `optional` 依赖不传递，admin 缺显式 jdbc starter |
 | 条件丢失 ⇒ 该审批的单被静默放行 | 桥接丢弃了无法归属的条件（已改为 fail-closed） |
+| `WfTaskHook.onBeforeCreate` 实现了但**从没被触发** | `fireBeforeCreate` 无人调用。业务方按接口 javadoc 实现"建任务前置校验"会**静默永不生效且无任何报错** —— 比死代码严重：API 看起来是活的 |
 | `/processes/search` 的 `total` 恒等于当前页条数 | 拿**已分页**的 `queryProcessInstances().size()` 当总数。已加 `countProcessInstances` SPI，列表与计数共用同一段 WHERE |
 | `/process/executions` 把 `arrivedActivities` / `variables` 抖给前端 | 直接返回了 `WfExecution` 持久化实体，违反本仓"VO 边界"约定。已补 `WfViews.ExecutionView` |
 | `POST /comment` 与 `GET /comments` 返回字段不一致 | 新建返回 `WfComment` 实体、列表返回 Map，前端会先按一个渲染再被另一个打脸。已统一 |

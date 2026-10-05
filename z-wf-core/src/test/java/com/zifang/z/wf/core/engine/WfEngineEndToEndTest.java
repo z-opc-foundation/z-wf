@@ -3,8 +3,10 @@ package com.zifang.z.wf.core.engine;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -15,12 +17,14 @@ import org.junit.jupiter.api.Test;
 
 import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.hook.WfHookDispatcher;
+import com.zifang.z.wf.core.hook.WfTaskHook;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfProcessStatus;
 import com.zifang.z.wf.core.model.WfTask;
 import com.zifang.z.wf.core.persistence.InMemoryWorkflowPersistence;
 import com.zifang.z.wf.core.persistence.WfProcessInstanceQuery;
 import com.zifang.z.wf.core.persistence.WfTaskQuery;
+import com.zifang.z.wf.core.service.WfEngineException;
 import com.zifang.z.wf.core.service.WfRepositoryService;
 import com.zifang.z.wf.core.service.WfRuntimeService;
 import com.zifang.z.wf.core.service.WfTaskService;
@@ -360,6 +364,85 @@ class WfEngineEndToEndTest {
                 new WfProcessInstanceQuery().setStartUserId("u_alice"));
         assertEquals(1, mine.size());
         assertEquals("O-1", mine.get(0).getBusinessKey());
+    }
+
+    // ==================== 钩子：扩展点必须真的被触发 ====================
+
+    @Test
+    @DisplayName("onBeforeCreate 钩子会被真的触发（不是只声明不调）")
+    void beforeCreateHookActuallyFires() {
+        deployLinearLeave();
+        final List<String> fired = new ArrayList<>();
+        hookDispatcher.addTaskHook(new WfTaskHook() {
+            @Override
+            public boolean onBeforeCreate(String taskId, String assignee, Map<String, Object> variables) {
+                fired.add(taskId + "@" + assignee);
+                return true;
+            }
+        });
+
+        runtimeService.startProcessInstance("leaveProcess", null, "HOOK-1", "u_alice", null, null);
+
+        assertEquals(1, fired.size(), "建任务时必须触发一次 onBeforeCreate");
+        assertTrue(fired.get(0).endsWith("@manager"),
+                "钩子应拿到已解析好的办理人（而不是字面量 ${leaderId}），实际: " + fired.get(0));
+    }
+
+    @Test
+    @DisplayName("onBeforeCreate 钩子可否决：抛 WfEngineException 且一个字节都没落库")
+    void beforeCreateHookCanVetoWithoutTornWrite() {
+        deployLinearLeave();
+        hookDispatcher.addTaskHook(new WfTaskHook() {
+            @Override
+            public boolean onBeforeCreate(String taskId, String assignee, Map<String, Object> variables) {
+                return false;
+            }
+        });
+
+        WfEngineException e = assertThrows(WfEngineException.class,
+                () -> runtimeService.startProcessInstance(
+                        "leaveProcess", null, "HOOK-VETO", "u_alice", null, null));
+        assertTrue(e.getMessage().contains("任务创建被钩子否决"), "实际: " + e.getMessage());
+
+        // 关键：否决发生在 persistAll 的最前面，所以不能留下"token 落了、instance 没落"的撕裂写
+        assertEquals(0, persistence.queryProcessInstances(
+                new WfProcessInstanceQuery().setBusinessKey("HOOK-VETO")).size(),
+                "被否决的流程不应留下流程实例");
+        assertEquals(0, persistence.queryTasks(new WfTaskQuery()).size(),
+                "被否决的流程不应留下任务");
+        assertEquals(0, persistence.findExecutionsByProcessInstance("HOOK-VETO").size(),
+                "被否决的流程不应留下孤儿 token —— 这是把校验放在落库前的原因");
+    }
+
+    @Test
+    @DisplayName("钩子抛异常不否决流程（只记日志），返回 false 才否决")
+    void hookExceptionDoesNotBlockButFalseDoes() {
+        deployLinearLeave();
+
+        WfTaskHook throwing = new WfTaskHook() {
+            @Override
+            public boolean onBeforeCreate(String taskId, String assignee, Map<String, Object> variables) {
+                throw new IllegalStateException("通知服务临时不可用");
+            }
+        };
+        hookDispatcher.addTaskHook(throwing);
+        String processId = runtimeService.startProcessInstance(
+                "leaveProcess", null, "HOOK-THROW", "u_alice", null, null);
+        assertNotNull(processId, "钩子抛异常表达的是'我没意见但出错了'，不该阻断审批");
+        assertEquals(1, taskService.getTodoList("manager", null, 1, 10).size(),
+                "任务照常创建，待办照常产生");
+
+        // 摘掉抛异常的钩子，换成明确否决的
+        assertEquals(1, hookDispatcher.removeTaskHook(throwing));
+        hookDispatcher.addTaskHook(new WfTaskHook() {
+            @Override
+            public boolean onBeforeCreate(String taskId, String assignee, Map<String, Object> variables) {
+                return false;
+            }
+        });
+        assertThrows(WfEngineException.class, () -> runtimeService.startProcessInstance(
+                "leaveProcess", null, "HOOK-FALSE", "u_bob", null, null),
+                "显式 return false 才是否决");
     }
 
     private Map<String, Object> vars(String key, Object value) {
