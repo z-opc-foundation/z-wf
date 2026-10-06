@@ -1091,6 +1091,14 @@ public class WfEngine {
         }
 
         if (node.getType() == WfNodeType.COMPLEX_GATEWAY) {
+            // 复杂网关有两种判定方式，**由网关自己有没有判别变量决定**：
+            // 有 → 取值分派（Camunda 的 caseValue 扩展，只走一条）；
+            // 没有 → 条件分派（BPMN 2.0 对复杂网关的定义：出线带条件，成立的都激活）。
+            // 两种方式混在同一个网关上会让"走哪几条"没有唯一答案，
+            // 所以校验器会把混用挡在部署期，而不是在这里挑一种执行。
+            if (node.getCaseVariable() == null || node.getCaseVariable().trim().isEmpty()) {
+                return selectByConditions(flows, variables);
+            }
             return selectByCaseValue(context, node, flows, variables);
         }
 
@@ -1101,6 +1109,42 @@ public class WfEngine {
             }
             if (flow.isUnconditional()
                     || expressionEvaluator.evaluate(flow.getConditionExpression(), variables)) {
+                selected.add(flow);
+            }
+        }
+        if (selected.isEmpty()) {
+            return defaultFlow(flows);
+        }
+        return selected;
+    }
+
+    /**
+     * 复杂网关的<b>条件分派</b>：出线带条件，条件成立的线**全部激活**。
+     *
+     * <p>这是 BPMN 2.0 对复杂网关的定义，也是它区别于排他网关的地方 ——
+     * 排他是"第一条成立就停"，复杂是"有几条成立就走几条"。
+     * 此前本引擎只按 {@code caseValue} 分派，出线上的 {@code <conditionExpression>}
+     * 被<b>完全忽略</b>：一条只带条件的出线永远不会被选中，流程静默落到默认线，
+     * 而校验器却会因为它与 caseValue 同时出现而报错 ——
+     * 也就是说这个属性"看起来有意义、实际不起作用"。
+     *
+     * <p><b>多条激活不会让汇合死锁</b>：汇合判定数的是"确实已激活的兄弟 token"
+     * （见 {@link #allSiblingsArrived}），没被激活的线根本不会产生 token，
+     * 所以汇合不会去等它们。这条是本方法成立的前提。
+     *
+     * <p>一条都没成立时走默认线；<b>无条件且非默认的出线不存在</b> ——
+     * 校验器会报 ERROR，因为"没有条件也照样走"在这种网关上无法与
+     * "条件成立才走"区分。
+     */
+    private List<WfFlow> selectByConditions(List<WfFlow> flows, Map<String, Object> variables) {
+        List<WfFlow> selected = new ArrayList<>();
+        for (WfFlow flow : flows) {
+            if (flow.isDefaultFlow()) {
+                continue;
+            }
+            // 求值是 fail-closed 的：引用不存在的变量算"不成立"而不是抛，
+            // 与排他/包容网关保持同一条约定
+            if (expressionEvaluator.evaluate(flow.getConditionExpression(), variables)) {
                 selected.add(flow);
             }
         }

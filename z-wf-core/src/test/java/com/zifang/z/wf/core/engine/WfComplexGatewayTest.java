@@ -1,9 +1,11 @@
 package com.zifang.z.wf.core.engine;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -309,6 +311,65 @@ class WfComplexGatewayTest {
                 "复用排他网关会让 caseValue 被当成 conditionExpression 处理");
     }
 
+    @Test
+    @DisplayName("条件分派：两条分支在包容网关汇合时不会等第三条（否则流程卡死）")
+    void multiActivationStillJoinsWithoutDeadlock() {
+        // 这是「多条激活不会让汇合死锁」那条断言的判据 ——
+        // 汇合有 4 条入线而只激活了 2 条；汇合判定若数的是"图上入线总数"而不是"确实激活过的兄弟 token"，
+        // 这里就会永远等那条没被选中的 archive 分支，流程停在汇合处不动。
+        // 注释里写了"不会死锁"，就得有判据钉住它。
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"joinRoute\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"s1\"/>\n"
+                + "    <complexGateway id=\"gw\"/>\n"
+                + "    <userTask id=\"audit\" zifang:assignee=\"audit\"/>\n"
+                + "    <userTask id=\"notify\" zifang:assignee=\"notify\"/>\n"
+                + "    <userTask id=\"archive\" zifang:assignee=\"archive\"/>\n"
+                + "    <userTask id=\"manual\" zifang:assignee=\"ops\"/>\n"
+                + "    <inclusiveGateway id=\"join\"/>\n"
+                + "    <userTask id=\"done\" zifang:assignee=\"ops\"/>\n"
+                + "    <endEvent id=\"e1\"/>\n"
+                + "    <sequenceFlow id=\"f1\" sourceRef=\"s1\" targetRef=\"gw\"/>\n"
+                + "    <sequenceFlow id=\"f2\" sourceRef=\"gw\" targetRef=\"audit\">\n"
+                + "      <conditionExpression>${amount &gt; 10000}</conditionExpression>\n"
+                + "    </sequenceFlow>\n"
+                + "    <sequenceFlow id=\"f3\" sourceRef=\"gw\" targetRef=\"notify\">\n"
+                + "      <conditionExpression>${urgent}</conditionExpression>\n"
+                + "    </sequenceFlow>\n"
+                + "    <sequenceFlow id=\"f4\" sourceRef=\"gw\" targetRef=\"archive\">\n"
+                + "      <conditionExpression>${archived}</conditionExpression>\n"
+                + "    </sequenceFlow>\n"
+                + "    <sequenceFlow id=\"fa\" sourceRef=\"gw\" targetRef=\"manual\" default=\"true\"/>\n"
+                + "    <sequenceFlow id=\"f5\" sourceRef=\"audit\" targetRef=\"join\"/>\n"
+                + "    <sequenceFlow id=\"f6\" sourceRef=\"notify\" targetRef=\"join\"/>\n"
+                + "    <sequenceFlow id=\"f7\" sourceRef=\"archive\" targetRef=\"join\"/>\n"
+                + "    <sequenceFlow id=\"fb\" sourceRef=\"manual\" targetRef=\"join\"/>\n"
+                + "    <sequenceFlow id=\"f8\" sourceRef=\"join\" targetRef=\"done\"/>\n"
+                + "    <sequenceFlow id=\"f9\" sourceRef=\"done\" targetRef=\"e1\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        Map<String, Object> vars = new HashMap<String, Object>();
+        vars.put("amount", 20000);
+        vars.put("urgent", true);
+        vars.put("archived", false);
+        String pid = runtime.startProcessInstance(
+                repository.deploy(new WfXmlParser().parse(xml)),
+                "JOIN-" + System.nanoTime(), "alice", null, vars);
+
+        assertEquals(2, openTasks(pid).size(), "应当只有两条分支被激活");
+        // 把两条分支都办掉，汇合处必须放行到 done
+        for (WfTask t : openTasks(pid)) {
+            runtime.completeTask(t.getId(), t.getAssignee(), "办结", new HashMap<String, Object>());
+        }
+        List<WfTask> after = openTasks(pid);
+        assertEquals(1, after.size(), "两条分支办完后应当只剩汇合后的那一个待办，实际 " + after.size());
+        assertEquals("ops", after.get(0).getAssignee(), "放行的是汇合之后的收尾任务");
+        assertTrue(repo.findProcessInstance(pid).getStatus().isActive(),
+                "流程应当还在等收尾任务办结，而不是卡在汇合处或提前结束");
+    }
+
     private WfDefinitionException assertThrowsDeploy(String xml) {
         try {
             repository.deploy(new WfXmlParser().parse(xml));
@@ -316,5 +377,150 @@ class WfComplexGatewayTest {
             return e;
         }
         throw new AssertionError("复杂网关的这段写法本该在部署期被 ERROR 挡住");
+    }
+
+    // ==================== 条件分派（第 25 轮） ====================
+
+    /**
+     * 条件分派：一个网关三条出线，各带条件，两条不成立的走默认。
+     *
+     * <p>没有 {@code zifang:caseVariable} ⇒ 走 BPMN 2.0 对复杂网关的定义
+     * （出线带条件，成立的都激活）。此前这种写法里的条件<b>完全不生效</b>，
+     * 三条线一条都选不中，流程静默走默认 —— 而校验器还会在
+     * 「caseValue 与 condition 同时配」时报错，让人以为条件是有意义的。
+     */
+    private static final String CONDITION_BPMN =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+            + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+            + "  <process id=\"condRoute\" isExecutable=\"true\">\n"
+            + "    <startEvent id=\"s1\"/>\n"
+            + "    <complexGateway id=\"gw\"/>\n"
+            + "    <userTask id=\"audit\" name=\"审计\" zifang:assignee=\"audit\"/>\n"
+            + "    <userTask id=\"notify\" name=\"通知\" zifang:assignee=\"notify\"/>\n"
+            + "    <userTask id=\"archive\" name=\"归档\" zifang:assignee=\"archive\"/>\n"
+            + "    <userTask id=\"manual\" name=\"转人工\" zifang:assignee=\"ops\"/>\n"
+            + "    <endEvent id=\"e1\"/>\n"
+            + "    <endEvent id=\"e2\"/>\n"
+            + "    <endEvent id=\"e3\"/>\n"
+            + "    <endEvent id=\"e4\"/>\n"
+            + "    <sequenceFlow id=\"f1\" sourceRef=\"s1\" targetRef=\"gw\"/>\n"
+            + "    <sequenceFlow id=\"f2\" sourceRef=\"gw\" targetRef=\"audit\">\n"
+            + "      <conditionExpression xsi:type=\"tFormalExpression\""
+            + " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">"
+            + "${amount &gt; 10000}</conditionExpression>\n"
+            + "    </sequenceFlow>\n"
+            + "    <sequenceFlow id=\"f3\" sourceRef=\"gw\" targetRef=\"notify\">\n"
+            + "      <conditionExpression xsi:type=\"tFormalExpression\""
+            + " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">"
+            + "${urgent}</conditionExpression>\n"
+            + "    </sequenceFlow>\n"
+            + "    <sequenceFlow id=\"f4\" sourceRef=\"gw\" targetRef=\"archive\">\n"
+            + "      <conditionExpression xsi:type=\"tFormalExpression\""
+            + " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">"
+            + "${archived}</conditionExpression>\n"
+            + "    </sequenceFlow>\n"
+            + "    <sequenceFlow id=\"f5\" sourceRef=\"gw\" targetRef=\"manual\" default=\"true\"/>\n"
+            + "    <sequenceFlow id=\"f6\" sourceRef=\"audit\" targetRef=\"e1\"/>\n"
+            + "    <sequenceFlow id=\"f7\" sourceRef=\"notify\" targetRef=\"e2\"/>\n"
+            + "    <sequenceFlow id=\"f8\" sourceRef=\"archive\" targetRef=\"e3\"/>\n"
+            + "    <sequenceFlow id=\"f9\" sourceRef=\"manual\" targetRef=\"e4\"/>\n"
+            + "  </process>\n"
+            + "</definitions>\n";
+
+    private List<WfTask> openTasks(String pid) {
+        return repo.queryTasks(new WfTaskQuery().setProcessInstanceId(pid)
+                .setOpenOnly(true).setPageNum(1).setPageSize(10));
+    }
+
+    private String pidWith(Object... kv) {
+        WfDefinition definition = repository.deploy(new WfXmlParser().parse(CONDITION_BPMN));
+        Map<String, Object> vars = new HashMap<String, Object>();
+        for (int i = 0; i < kv.length; i += 2) {
+            vars.put(String.valueOf(kv[i]), kv[i + 1]);
+        }
+        return runtime.startProcessInstance(definition, "COND-" + System.nanoTime(),
+                "alice", null, vars);
+    }
+
+    @Test
+    @DisplayName("条件分派：条件成立的线全部激活（复杂网关可以同时走多条）")
+    void conditionsActivateEveryMatchingFlow() {
+        // 两条都成立 ⇒ 两条都被激活。若实现成"第一条成立就停"，
+        // 走的就是排他网关的语义，「复杂」两个字就没有意义了
+        String pid = pidWith("amount", 20000, "urgent", true, "archived", false);
+        List<WfTask> open = openTasks(pid);
+        assertEquals(2, open.size(), "两条条件都成立，必须同时走两条，实际 " + open.size());
+        List<String> assignees = new ArrayList<String>();
+        for (WfTask t : open) {
+            assignees.add(t.getAssignee());
+        }
+        assertTrue(assignees.contains("audit") && assignees.contains("notify"),
+                "应当是审计与通知两条，实际 " + assignees);
+    }
+
+    @Test
+    @DisplayName("条件分派：一条都不成立时走默认线")
+    void noConditionHoldsFallsBackToDefault() {
+        String pid = pidWith("amount", 1, "urgent", false, "archived", false);
+        List<WfTask> open = openTasks(pid);
+        assertEquals(1, open.size(), "都不成立时应当只走默认线");
+        assertEquals("ops", open.get(0).getAssignee());
+    }
+
+    @Test
+    @DisplayName("条件分派：引用未定义变量的线判「不成立」而不是放行")
+    void undefinedVariableMeansNotMatched() {
+        // 与排他/包容网关同一条约定：未定义变量 fail-closed。
+        // 放行的话「金额未知」会被当成「金额大于一万」
+        String pid = pidWith("urgent", false);
+        List<WfTask> open = openTasks(pid);
+        assertEquals(1, open.size(), "amount / archived 都没传，只有默认线该走");
+        assertEquals("ops", open.get(0).getAssignee());
+    }
+
+    @Test
+    @DisplayName("条件分派：三条都成立 ⇒ 三条都激活（不封顶）")
+    void allThreeConditionsHold() {
+        String pid = pidWith("amount", 20000, "urgent", true, "archived", true);
+        assertEquals(3, openTasks(pid).size(),
+                "复杂网关不限制激活几条 —— 限制成一条就退化成排他网关了");
+    }
+
+    @Test
+    @DisplayName("条件分派：两种判定方式混用 ⇒ 部署期 ERROR（走哪几条没有唯一答案）")
+    void mixingBothModesIsRejected() {
+        String xml = CONDITION_BPMN
+                .replace("<complexGateway id=\"gw\"/>",
+                        "<complexGateway id=\"gw\" zifang:caseVariable=\"${result}\"/>");
+        WfDefinitionException e = assertThrowsDeploy(xml);
+        assertTrue(e.getMessage().contains("conditionExpression"),
+                "要说清是「出线带条件但网关在按取值分派」: " + e.getMessage());
+    }
+
+    @Test
+    @DisplayName("条件分派：出线带 caseValue 却没配判别变量 ⇒ 部署期 ERROR")
+    void caseValueWithoutCaseVariableIsRejected() {
+        String xml = CONDITION_BPMN.replace(
+                "${amount &gt; 10000}</conditionExpression>",
+                "</conditionExpression>").replace(
+                "<sequenceFlow id=\"f3\"", "<sequenceFlow zifang:caseValue=\"x\" id=\"f3\"");
+        WfDefinitionException e = assertThrowsDeploy(xml);
+        assertTrue(e.getMessage().contains("caseVariable"),
+                "要说清是「写了取值匹配却没告诉网关读哪个变量」: " + e.getMessage());
+    }
+
+    @Test
+    @DisplayName("复杂网关既不配判别变量、出线也没条件 ⇒ 部署期 ERROR")
+    void neitherModeConfiguredIsRejected() {
+        // 此前这条会以「缺少 caseVariable」被拒；现在条件分派也是一条路，
+        // 所以理由要改成「两种方式都没有」——否则报错在替一条已经不存在的规则说话
+        WfDefinitionException e = assertThrowsDeploy(CONDITION_BPMN
+                .replaceAll("<conditionExpression[^>]*>[^<]*</conditionExpression>", ""));
+        assertTrue(e.getMessage().contains("两种判定方式都没有"),
+                "要说清是两种分派方式都没配: " + e.getMessage());
+        assertFalse(e.getMessage().contains("缺少 zifang:caseVariable"),
+                "不要再拿「缺少 caseVariable」当理由 —— "
+                        + "那个理由在有条件分派之后已经不成立了: " + e.getMessage());
     }
 }

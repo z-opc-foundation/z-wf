@@ -350,37 +350,75 @@ public class WfDefinitionValidator {
      * 缺判别变量 ⇒ 永远走默认线；一条 caseValue 都没有 ⇒ 永远走默认线；
      * 没有默认流 ⇒ 判别变量的值一变，token 就永久停留。
      */
+    /**
+     * 复杂网关：两种判定方式，各有各的硬要求。
+     *
+     * <p><b>取值分派</b>（网关配了判别变量）：走第一条 caseValue 相同的线，只走一条。
+     * <b>条件分派</b>（网关不配判别变量）：出线条件成立的线全部激活。
+     *
+     * <p><b>两种方式不许混用</b>：同一个网关上既有 caseValue 出线又有条件出线时，
+     * "走哪几条"没有唯一答案 —— 而猜错的后果是流程走上一组作者没想过的分支。
+     * 所以这里报 ERROR 而不是挑一种执行。
+     *
+     * <p>此前本方法只认取值分派，于是出线上的 {@code <conditionExpression>}
+     * 无人问津：一条只带条件的线永远不会被选中，流程静默落到默认线。
+ */
     private void validateComplexGateway(String id, WfNode node, List<WfFlow> outs,
                                        int defaultCount) {
-        if (isBlank(node.getCaseVariable())) {
-            add(WfValidationIssue.Severity.ERROR, id,
-                    "complexGateway 缺少 zifang:caseVariable（或 camunda:caseExpression）。"
-                            + "没有它就永远走默认线，而流程照样能跑完 —— "
-                            + "排查时看不出它是个坏网关");
-            return;
-        }
-        int withCase = 0;
+        boolean valueMode = !isBlank(node.getCaseVariable());
+        int withCaseValue = 0;
+        int withCondition = 0;
         for (WfFlow f : outs) {
-            if (!isBlank(f.getCaseValue())) {
-                withCase++;
+            boolean hasCase = !isBlank(f.getCaseValue());
+            boolean hasCondition = !isBlank(f.getConditionExpression());
+            if (hasCase) {
+                withCaseValue++;
             }
-            // 两条判定方式都配时，引擎只会用 caseValue。留着 conditionExpression
+            if (hasCondition) {
+                withCondition++;
+            }
+            // 两种判定方式都配时，引擎只会用 caseValue。留着 conditionExpression
             // 的人会以为"条件不成立就顺延到下一条"，而实际是根本不看它
-            if (!isBlank(f.getCaseValue()) && !isBlank(f.getConditionExpression())) {
+            if (hasCase && hasCondition) {
                 add(WfValidationIssue.Severity.ERROR, id,
                         "出线 " + f.getId() + " 同时配了 caseValue 与 conditionExpression，"
                                 + "只能留一个。复杂网关比的是取值等于，不是条件成立与否");
             }
         }
-        if (withCase == 0) {
-            add(WfValidationIssue.Severity.ERROR, id,
-                    "complexGateway 的 " + outs.size() + " 条出线没有一条配 caseValue，"
-                            + "无论判别变量是什么值都会走默认线");
+
+        if (valueMode) {
+            if (withCaseValue == 0) {
+                add(WfValidationIssue.Severity.ERROR, id,
+                        "complexGateway 配了判别变量（" + node.getCaseVariable() + "），"
+                                + "但 " + outs.size() + " 条出线没有一条配 caseValue，"
+                                + "无论判别变量是什么值都会走默认线");
+            }
+            if (withCondition > 0) {
+                add(WfValidationIssue.Severity.ERROR, id,
+                        "complexGateway 配了判别变量（取值分派），却有出线带 conditionExpression"
+                                + "（条件分派）。两种判定方式混用时「走哪几条」没有唯一答案 —— "
+                                + "要么去掉判别变量改用条件，要么把出线条件去掉");
+            }
+        } else {
+            if (withCondition == 0) {
+                add(WfValidationIssue.Severity.ERROR, id,
+                        "complexGateway 既没有判别变量（" + node.getCaseVariable() + "），"
+                                + "出线也没有一条带条件 —— 两种判定方式都没有，"
+                                + "无论变量是什么值都会走默认线。"
+                                + "要按取值分派请配 zifang:caseVariable，"
+                                + "要按条件分派请给出线加 <conditionExpression>");
+            }
+            if (withCaseValue > 0) {
+                add(WfValidationIssue.Severity.ERROR, id,
+                        "complexGateway 没配判别变量，却有出线带 caseValue（取值分派）。"
+                                + "要么配上 zifang:caseVariable，要么把 caseValue 换成条件表达式");
+            }
         }
         if (defaultCount == 0) {
             add(WfValidationIssue.Severity.ERROR, id,
-                    "complexGateway 没有默认流。判别变量的值不匹配任何 caseValue 时，"
-                            + "token 会永久停留在这里，而流程不会报任何错");
+                    "complexGateway 没有默认流。判别变量的值不匹配任何 caseValue、"
+                            + "或所有出线条件都不成立时，token 会永久停留在这里，"
+                            + "而流程不会报任何错");
         }
     }
 
