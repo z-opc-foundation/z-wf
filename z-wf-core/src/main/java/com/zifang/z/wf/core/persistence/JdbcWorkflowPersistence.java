@@ -1704,11 +1704,25 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 + "SELECT PROC_ID FROM ZWF_PROCESS WHERE END_TIME IS NOT NULL AND END_TIME < ?"
                 + ")";
         int comments = update(commentSql, before);
+        // 执行令牌也必须一起删，否则 ZWF_PROCESS 那批行没了、令牌还留着 ——
+        // 它们没有别的清理路径（主代码里 deleteExecution 从不被调用），
+        // 于是这张表只增不减，而每一行都属于一个已经查不到的流程实例。
+        //
+        // 与内存实现的差别：InMemoryWorkflowPersistence 一直会删令牌。
+        // 两套实现对"清理要清到什么程度"的口径本来就该一致，
+        // 而这类分歧只有真库上才验得到 —— 内存里不留痕迹。
+        //
+        // 放在删流程**之前**：子查询要靠 ZWF_PROCESS 里的 END_TIME 圈定目标。
+        String executionSql = "DELETE FROM ZWF_EXECUTION WHERE PROC_ID IN ("
+                + "SELECT PROC_ID FROM ZWF_PROCESS WHERE END_TIME IS NOT NULL AND END_TIME < ?"
+                + ")";
+        int executions = update(executionSql, before);
         String processSql = "DELETE FROM ZWF_PROCESS "
                 + "WHERE END_TIME IS NOT NULL AND END_TIME < ?";
         int processes = update(processSql, before);
-        log.info("清理 {} 之前的历史: 流程 {} 条 / 活动 {} 条 / 任务 {} 条 / 评论 {} 条",
-                before, processes, activities, tasks, comments);
+        log.info("清理 {} 之前的历史: 流程 {} 条 / 活动 {} 条 / 任务 {} 条 / 评论 {} 条"
+                        + " / 令牌 {} 条",
+                before, processes, activities, tasks, comments, executions);
         return processes;
     }
 

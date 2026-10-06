@@ -2488,6 +2488,115 @@ class WfWebApiTest {
             + "  </process>\n"
             + "</definitions>\n";
 
+// ==================== 活动实例树端点 ====================
+
+    @Test
+    @DisplayName("活动实例树端点：并行分支是父子链，且标出「有并发」")
+    void activityInstanceTreeOverHttp() throws Exception {
+        String tag = "WEB-TREE-" + System.nanoTime();
+        postOk("/api/wf/definitions/deploy", body("key", "webTree",
+                "xml", TREE_PARALLEL_BPMN));
+        String pid = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webTree", "businessKey", tag, "userId", "tree-alice"))
+                .get("data");
+
+        Map<String, Object> root = asMap(getOk(
+                "/api/wf/process/activity-instance?processInstanceId=" + pid).get("data"));
+
+        assertEquals("process:" + pid, root.get("id"));
+        assertEquals("process", root.get("activityType"));
+        assertEquals(Boolean.TRUE, root.get("concurrent"),
+                "两条并行分支都没结束，根上必须标出有并发 —— "
+                        + "按「同一父下有几个兄弟」去判的话这一位永远是 false");
+
+        List<Map<String, Object>> top = asList(root.get("childActivityInstances"));
+        assertEquals(1, top.size(),
+                "并行网关的第一条出线留在父 token 上，根下只有一条，第二条是它的子 token");
+        Map<String, Object> parent = top.get(0);
+        assertEquals("wta", parent.get("activityId"));
+        assertEquals(root.get("id"), parent.get("parentActivityInstanceId"),
+                "父指针与 children 必须双向自洽，调用方才知道该信哪一个");
+
+        List<Map<String, Object>> children = asList(parent.get("childActivityInstances"));
+        assertEquals(1, children.size());
+        Map<String, Object> child = children.get(0);
+        assertEquals("wtb", child.get("activityId"));
+        assertEquals(parent.get("id"), child.get("parentActivityInstanceId"));
+        assertEquals(Boolean.TRUE, child.get("concurrent"));
+
+        // fork 出来的子 token 没走过起始节点，它的步骤表为空
+        assertTrue(asList(child.get("childTransitionInstances")).isEmpty(),
+                "子 token 从未经过起始节点，步骤表必须为空");
+        List<Map<String, Object>> parentSteps = asList(parent.get("childTransitionInstances"));
+        assertEquals(1, parentSteps.size());
+        assertEquals("wts", parentSteps.get(0).get("activityId"));
+    }
+
+    @Test
+    @DisplayName("活动实例树并进总览：一次请求就能同时拿到轨迹与并发结构")
+    void activityInstanceMergedIntoOverview() throws Exception {
+        String tag = "WEB-TREE-OV-" + System.nanoTime();
+        postOk("/api/wf/definitions/deploy", body("key", "webTreeOverview",
+                "xml", TREE_PARALLEL_BPMN));
+        String pid = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webTreeOverview", "businessKey", tag,
+                        "userId", "tree-ov")).get("data");
+
+        Map<String, Object> overview = asMap(getOk(
+                "/api/wf/process/overview?processInstanceId=" + pid).get("data"));
+        assertNotNull(overview.get("trail"), "轨迹照旧要有");
+        assertNotNull(overview.get("activityTree"),
+                "并发结构要并进总览：前端详情页本来就要拿轨迹与订阅，"
+                        + "再单发一次只为拿「并行分支在哪」，中间状态就对不上了");
+        Map<String, Object> tree = asMap(overview.get("activityTree"));
+        assertEquals("process:" + pid, tree.get("id"));
+        assertEquals(Boolean.TRUE, tree.get("concurrent"));
+
+        // 不存在的实例：加树之前的既有行为是「没有 process / trail / openTasks，
+        // 但 subscriptions 与 incidents 两项在 controller 里是无条件塞的，所以并**不**为空」。
+        // 钉住它，是为了保证多挂一棵树没有顺手改掉老接口的响应形状
+        Map<String, Object> missingOverview = asMap(getOk(
+                "/api/wf/process/overview?processInstanceId=no-such-tree").get("data"));
+        assertNull(missingOverview.get("process"),
+                "不存在的实例不该有 process");
+        assertNull(missingOverview.get("activityTree"),
+                "实例不存在就不该构树：getActivityInstance 会抛「流程实例不存在」，"
+                        + "而 overview 对这条路径的既有语义是「什么都没查着」");
+        assertTrue(missingOverview.containsKey("subscriptions")
+                        && missingOverview.containsKey("incidents"),
+                "这两项在加树之前就是无条件塞的，响应形状不能因为加树而改变。实际键集="
+                        + missingOverview.keySet());
+
+        // 单独的端点则必须报错并点名历史清理 —— 空树会让人分不清三种情况
+        ResponseEntity<String> missing = exchange(HttpMethod.GET,
+                "/api/wf/process/activity-instance?processInstanceId=no-such-tree", null);
+        assertEquals(HttpStatus.BAD_REQUEST, missing.getStatusCode());
+        assertTrue(missing.getBody().contains("流程实例不存在"),
+                "空树会让调用方分不清「没跑起来」「被清过历史」「真的没有分支」: "
+                        + missing.getBody());
+    }
+
+    /** 并行两支并行汇合，活动实例树用。 */
+    private static final String TREE_PARALLEL_BPMN =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+            + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+            + "  <process id=\"webTreeProcess\" isExecutable=\"true\">\n"
+            + "    <startEvent id=\"wts\"/>\n"
+            + "    <parallelGateway id=\"wtpg\"/>\n"
+            + "    <userTask id=\"wta\" name=\"甲\" zifang:assignee=\"tree-a\"/>\n"
+            + "    <userTask id=\"wtb\" name=\"乙\" zifang:assignee=\"tree-b\"/>\n"
+            + "    <parallelGateway id=\"wtjg\"/>\n"
+            + "    <endEvent id=\"wte\"/>\n"
+            + "    <sequenceFlow id=\"wtf1\" sourceRef=\"wts\" targetRef=\"wtpg\"/>\n"
+            + "    <sequenceFlow id=\"wtf2\" sourceRef=\"wtpg\" targetRef=\"wta\"/>\n"
+            + "    <sequenceFlow id=\"wtf3\" sourceRef=\"wtpg\" targetRef=\"wtb\"/>\n"
+            + "    <sequenceFlow id=\"wtf4\" sourceRef=\"wta\" targetRef=\"wtjg\"/>\n"
+            + "    <sequenceFlow id=\"wtf5\" sourceRef=\"wtb\" targetRef=\"wtjg\"/>\n"
+            + "    <sequenceFlow id=\"wtf6\" sourceRef=\"wtjg\" targetRef=\"wte\"/>\n"
+            + "  </process>\n"
+            + "</definitions>\n";
+
     /** 带事件网关的测试定义，事件由 REST 端点投递。 */
     private static final String RACE_BPMN =
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"

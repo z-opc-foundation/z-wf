@@ -1782,17 +1782,28 @@ class JdbcWorkflowPersistenceTest {
         persistence.saveComment(new WfComment("c1", "p-done", "u1", "comment", "同意"));
         persistence.saveComment(new WfComment("c2", "p-open", "u1", "comment", "同意"));
 
+        // 令牌：已结束的该跟着清，在途的必须留着
+        persistence.saveExecution(new WfExecution("x-done", "p-done", "approve"));
+        persistence.saveExecution(new WfExecution("x-open", "p-open", "approve"));
+
         int removed = persistence.deleteHistoryBefore(new Date(BASE + 60_000L));
         assertEquals(1, removed, "返回值是删掉的流程条数");
 
         assertEquals(0, persistence.findActivityInstances("p-done").size());
         assertEquals(0, persistence.findTask("t1") == null ? 0 : 1, "已结束流程的任务也应清掉");
         assertEquals(0, persistence.findComments("p-done").size());
+        assertEquals(0, persistence.findExecutionsByProcessInstance("p-done").size(),
+                "已结束流程的令牌必须一起清掉：它们没有别的清理路径"
+                        + "（主代码里 deleteExecution 从不被调用），"
+                        + "留着就等于这张表只增不减，且每一行都属于一个查不到的流程实例。"
+                        + "内存实现一直是删的 —— 两套口径必须一致");
 
         assertEquals(1, persistence.findActivityInstances("p-open").size(),
                 "在途流程的历史删掉之后轨迹会出洞，而单据还在被人办");
         assertNotNull(persistence.findTask("t2"));
         assertEquals(1, persistence.findComments("p-open").size());
+        assertEquals(1, persistence.findExecutionsByProcessInstance("p-open").size(),
+                "在途流程的令牌绝不能删 —— 删了这条单就再也推进不动了");
     }
 
     // ==================== 任务 count 与分页 ====================

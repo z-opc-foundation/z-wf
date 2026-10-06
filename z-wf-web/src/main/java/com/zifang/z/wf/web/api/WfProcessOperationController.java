@@ -16,7 +16,9 @@ import org.springframework.web.bind.annotation.RestController;
 import com.zifang.util.core.meta.Result;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfProcessInstance;
+import com.zifang.z.wf.core.view.WfActivityInstanceView;
 import com.zifang.z.wf.core.persistence.WfMessageCorrelation;
+import com.zifang.z.wf.core.service.WfActivityInstanceService;
 import com.zifang.z.wf.core.service.WfEngineException;
 import com.zifang.z.wf.core.service.WfHistoryService;
 import com.zifang.z.wf.core.service.WfRepositoryService;
@@ -63,6 +65,9 @@ public class WfProcessOperationController {
 
     @Resource
     private WfIncidentService incidentService;
+
+    @Resource
+    private WfActivityInstanceService activityInstanceService;
 
     @PostMapping("/suspend")
     @Operation(summary = "001_挂起流程实例")
@@ -219,7 +224,45 @@ public class WfProcessOperationController {
         // 而这两者的处置完全不同。与订阅同理，放在 web 层合并，
         // 不让 WfHistoryService 去依赖运行期状态
         overview.put("incidents", incidentService.incidentsOf(processInstanceId));
+        // 活动实例树并进总览，而不是单开一个端点：前端"流程详情"页本来就要
+        // 拿实例 + 待办 + 轨迹 + 订阅 + 故障，再单独发一次请求只为拿"并行分支在哪"，
+        // 会让中间状态不一致（轨迹查完又被人办了，树里对不上）。
+        // 注意它与 trail 是**两种切法**：trail 是时间序，tree 是结构。
+        //
+        // 实例不存在时**不要构树**。注意这里不能说「overview 对不存在的实例返回空」——
+        // 那是错的：subscriptions 与 incidents 两项在 controller 里是无条件塞进去的，
+        // 所以那个响应本来就有两个键（实测确认）。加树之前的既有行为是
+        // 「没有 process / trail / openTasks，但有 subscriptions / incidents」，
+        // 加树之后必须还是这样，否则一个只读视图的增强就改变了老接口的响应形状。
+        // 复用上面已经取到的 overview，**不要再调一次 getProcessOverview**：
+        // 那个方法存在的理由正是"一次算完、避免中间状态不一致"，
+        // 在它算完之后又调一次，等于把它的理由作废还多一次查库。
+        if (overview.get("process") != null) {
+            overview.put("activityTree", activityInstanceService.getActivityInstance(
+                    processInstanceId));
+        }
         return Result.success(overview);
+    }
+
+    /**
+     * 活动实例树 —— "这条单现在走到哪了，并发分支在哪，各分支停在哪一步"。
+     *
+     * <p><b>与 {@code GET /trail} 是两种切法，不是同一份数据的两种格式。</b>
+     * trail 是<b>时间序</b>的事实记录；本树是<b>结构</b>。
+     * 并行分支一旦跑起来，trail 里的行在时间上交错、看不出谁是谁的分支 ——
+     * 而交错的历史行推不出层级，硬推会在并行分支上猜错，
+     * 猜出来的层级比扁平轨迹更坏：它看起来可信。
+     *
+     * <p><b>流程结束了也照样返回</b>：执行令牌连同 parentId 留在库里，
+     * 所以并发结构在结束后仍然可读。但它<b>不是</b>独立于历史的一份数据 ——
+     * {@code DELETE /api/wf/history/cleanup} 会把令牌与历史一起清掉。
+     * ⇒ <b>这棵树活多久，取决于历史保留多久</b>；实例查不到时这里返回 400 而不是空树。
+     */
+    @GetMapping("/activity-instance")
+    @Operation(summary = "007a_活动实例树：并发结构 + 每条分支走过的步骤")
+    public Result<WfActivityInstanceView> activityInstance(
+            @RequestParam String processInstanceId) {
+        return Result.success(activityInstanceService.getActivityInstance(processInstanceId));
     }
 
     @GetMapping("/executions")

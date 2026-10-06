@@ -41,6 +41,7 @@ import com.zifang.z.wf.core.service.WfSubscriptionService;
 import com.zifang.z.wf.core.service.WfVariableService;
 import com.zifang.z.wf.core.service.WfVariableQueryService;
 import com.zifang.z.wf.core.service.WfFilterService;
+import com.zifang.z.wf.core.service.WfActivityInstanceService;
 
 /**
  * z-wf 引擎自动装配。
@@ -247,6 +248,19 @@ public class WfAutoConfiguration {
     public WfSubscriptionService wfSubscriptionService(WfPersistence persistence,
                                                       WfRepositoryService repositoryService) {
         return new WfSubscriptionService(persistence, repositoryService);
+    }
+
+    /**
+     * 活动实例树查询。纯读，不启动任何线程。
+     *
+     * <p>监控台"这条单现在走到哪了、并行分支在哪"走这个 bean；
+     * 它与 {@code WfHistoryService} 的审批轨迹给的是同一批事实的两种切法，不互相推导。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WfActivityInstanceService wfActivityInstanceService(
+            WfPersistence persistence, WfRepositoryService repositoryService) {
+        return new WfActivityInstanceService(persistence, repositoryService);
     }
 
     /**
