@@ -1528,6 +1528,41 @@ public class WfRuntimeService implements WfSubProcessLauncher {
     }
 
     /**
+     * 记一条「job 被手动提前触发」的留痕。
+     *
+     * <p><b>为什么必须单独记一条</b>：{@link #fireTimer} 写下的原因是
+     * 「timer:节点 X 停留超时（已等 N 分钟）」，而提前触发时这句话是<b>假的</b> ——
+     * 它确实是被触发了，但不是因为超时。事后从轨迹上看到"停留超时"，
+     * 排查的人会顺着"为什么提前超时了"找半天，而真因（有人手动点的）只在他脑子里。
+     *
+     * <p>所以这里只<b>追加</b>一条，不去改 {@code fireTimer} 的 reason：
+     * 那条 reason 是活动轨迹的 outcome 字段，被网关与执行器读着，
+     * 为了让"提前触发"这两个字塞进去而给它加参数，会牵动所有调用方。
+     *
+     * @param job 被触发的那条
+     * @param userId 谁点的（空则记成 system）
+     */
+    public void recordManualJobTrigger(WfJob job, String userId) {
+        if (job == null || job.getProcessInstanceId() == null) {
+            return;
+        }
+        String due = job.getDuedate() == null ? "无到期时刻（订阅型）"
+                : java.time.LocalDateTime.ofInstant(job.getDuedate().toInstant(),
+                        java.time.ZoneId.systemDefault())
+                .format(java.time.format.DateTimeFormatter
+                        .ofPattern("yyyy-MM-dd HH:mm"));
+        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                job.getProcessInstanceId(),
+                userId == null || userId.trim().isEmpty() ? "system" : userId.trim(),
+                "job",
+                "job " + job.getId() + "（" + job.getType().getLabel() + "，节点 "
+                        + job.getAttachedToRef() + "）被手动提前触发，原定到期时刻 " + due
+                        + "。轨迹上那条「停留超时」是定时器的措辞，不适用于本次触发"));
+        log.info("job {} 被 {} 手动提前触发（原定到期 {}）",
+                job.getId(), userId, due);
+    }
+
+    /**
      * 触发一个到期的定时器 job。
      *
      * <p><b>按 job 类型分派</b>，而不是按 {@code elementId} 解析出的节点类型

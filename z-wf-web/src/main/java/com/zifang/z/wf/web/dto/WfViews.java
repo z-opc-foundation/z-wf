@@ -847,6 +847,23 @@ public final class WfViews {
         private long createTime;
         private long lastFailureTime;
 
+        /**
+         * 优先级，取自宿主节点。
+         *
+         * <p>暴露它是因为「为什么这条排在那条后面」是排障时最常问的问题之一，
+         * 而它在流程图上完全看不出来 —— 同一个节点上的两个 job，
+         * 差别只在这个数字上，不给出来就只能靠猜。
+         */
+        private int priority;
+
+        public int getPriority() {
+            return priority;
+        }
+
+        public void setPriority(int priority) {
+            this.priority = priority;
+        }
+
         public String getType() {
             return type;
         }

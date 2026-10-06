@@ -1902,6 +1902,91 @@ class WfWebApiTest {
     }
 
     @Test
+    @DisplayName("job 手动触发端点：没到期也能提前触发，走打断分支，且只能触发一次")
+    void manualJobTriggerOverHttp() throws Exception {
+        deployTimerProcess();
+        String tag = "WEB-JOBTRIG-" + System.nanoTime();
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("sla", "PT30M");
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webTimerProcess", "businessKey", tag,
+                        "userId", "jobtrig-owner-" + tag, "variables", vars)).get("data");
+
+        // 前置：领办人真的有待办，且定时器还没到点（到了就不成其为「提前」）
+        assertFalse(asList(asMap(getOk("/api/approval-center/tasks/todo?userId=web-timer-leader")
+                .get("data")).get("records")).isEmpty(), "前置：领办人应有待办");
+        List<Map<String, Object>> jobs = asList(asMap(getOk(
+                "/api/wf/history/jobs?processInstanceId=" + processId)
+                .get("data")).get("records"));
+        assertEquals(1, jobs.size(), "前置：应当恰好一只表。实际 " + jobs);
+        String jobId = (String) jobs.get(0).get("jobId");
+        assertTrue(((Number) jobs.get(0).get("duedate")).longValue() > System.currentTimeMillis(),
+                "前置：还没到点");
+
+        // 触发：没到期也响，且响应里必须能区分「响了」与「没响」
+        Map<String, Object> triggered = asMap(postOk(
+                "/api/wf/jobs/" + jobId + "/trigger?userId=web-ops", null).get("data"));
+        assertEquals(Boolean.TRUE, triggered.get("triggered"), "提前触发应当真的触发。实际 " + triggered);
+        assertEquals(jobId, triggered.get("jobId"));
+
+        // 打断：领办人的待办作废，边界那条线走完（催办待办建给 ceo）
+        assertTrue(asList(asMap(getOk("/api/approval-center/tasks/todo?userId=web-timer-leader")
+                .get("data")).get("records")).isEmpty(),
+                "边界触发是打断：宿主上的待办应当作废");
+        assertFalse(asList(asMap(getOk("/api/approval-center/tasks/todo?userId=web-timer-ceo")
+                .get("data")).get("records")).isEmpty(),
+                "催办待办应当被建出来 —— 流程真的走了边界那条线");
+
+        // job 被消费掉
+        assertTrue(asList(asMap(getOk("/api/wf/history/jobs?processInstanceId=" + processId)
+                .get("data")).get("records")).isEmpty(),
+                "已触发的 job 应当被消费掉");
+
+        // 只能触发一次：第二次必须在「找不到」这一层就停住
+        ResponseEntity<String> again = exchange(HttpMethod.POST,
+                "/api/wf/jobs/" + jobId + "/trigger?userId=web-ops", null);
+        assertEquals(HttpStatus.BAD_REQUEST, again.getStatusCode(),
+                "重复触发要报错而不是幂等成功。实际: " + again.getBody());
+    }
+
+    @Test
+    @DisplayName("两个 job 端点的 id 字段名必须一致（视图分叉会让排障界面点不动）")
+    void bothJobEndpointsAgreeOnIdFieldName() throws Exception {
+        deployTimerProcess();
+        String tag = "WEB-JOBID-" + System.nanoTime();
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("sla", "PT30M");
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webTimerProcess", "businessKey", tag,
+                        "userId", "jobid-owner-" + tag, "variables", vars)).get("data");
+
+        Map<String, Object> fromHistory = asList(asMap(getOk(
+                "/api/wf/history/jobs?processInstanceId=" + processId)
+                .get("data")).get("records")).get(0);
+        // 注意：**ops 端点直接返回 List，不是 PageResult** —— 它没有 total/records 那层包装
+        Map<String, Object> fromOps = asList(getOk(
+                "/api/wf/jobs?processInstanceId=" + processId).get("data")).get(0);
+
+        // **两边必须用同一个字段名**：运维从其中一个列表复制 id，拿去另一个端点查，
+        // 字段名一旦分叉就是「明明有、点进去是空的」，而没有任何报错。
+        // 同一个实体两个视图、两个 id 名字，是本轮真的差点写出来的东西
+        assertEquals(fromHistory.get("jobId"), fromOps.get("jobId"),
+                "两个 job 端点的 id 字段名必须一致。history 端点返回字段集="
+                        + fromHistory.keySet() + "，ops 端点返回字段集=" + fromOps.keySet());
+        assertNotNull(fromOps.get("priority"),
+                "排障要能看出「为什么这条排在那条后面」，而它在图上看不出来");
+
+        // **必须把这条 job 清掉**：/api/wf/history/jobs/execute 是全库扫的，
+        // 本类共享同一个 H2 库，留一只没到点的定时器在下面，
+        // 别的用例（jobsOverHttp 断言「执行端点消费掉 1 个」）就会数成 2。
+        // 留着不清理的话，一条与本用例无关的失败会指向这里。
+        postOk("/api/wf/jobs/" + fromOps.get("jobId") + "/trigger?userId=web-cleanup", null);
+        assertTrue(asList(asMap(getOk("/api/wf/history/jobs?processInstanceId=" + processId)
+                .get("data")).get("records")).isEmpty(),
+                "清理动作应当真的把这条 job 消费掉");
+    }
+
+    @Test
     @DisplayName("清理端点：只删已结束流程，在途流程的历史留着")
     void historyCleanupOverHttp() throws Exception {
         // 造一条已结束、一条在途

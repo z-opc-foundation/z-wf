@@ -268,6 +268,7 @@ public class WfViewMapper {
         view.setExceptionMessage(job.getExceptionMessage());
         view.setCreateTime(time(job.getCreateTime()));
         view.setLastFailureTime(time(job.getLastFailureTime()));
+        view.setPriority(job.getPriority());
         return view;
     }
 

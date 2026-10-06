@@ -520,8 +520,21 @@ advance() = leave(token) + 沿出线 enter(下一个 token)
 `GET /tables`（名字 + 类型 + 行数）、`GET /tables/count?name=`（名字不存在报 400，不返回 0）
 **健康检查** `/api/wf/health`
 
-鉴权不在本层（由 z-ctc 统一拦截）。但 `force-complete` 与 `jump` **不做办理人校验**，
-必须由网关层限制访问——这一点写进了方法的 javadoc 与本 README。
+**Job 运维** `/api/wf/jobs`：`POST /{jobId}/trigger`（没到期也能催，`userId` 可选）、
+`GET /`、`GET /count`、`GET /exhausted`
+
+> `trigger` **只对时间触发型（定时器边界 / 事件网关定时器分支）与异步型开放**。
+> 订阅型（消息 / 信号 / 升级）手动触发等于替引擎伪造一件没发生的事 ——
+> 流程会以为它发生了，而真的那件事随后还会再来一次，**于是同一步走两遍**；
+> 事件网关的分支是**竞速**，手动触发会**作废兄弟分支**且不可逆；
+> 外部任务是 worker 领的活，绕过租约触发会让 worker 正在做的活同时被引擎推进。
+> 三类被拒的**理由文案分别给出**（`GET` 那条错误里就写着），因为它们的后果不同。
+> 返回的 `triggered` 布尔用来区分"触发了"与"**该响没响**"（流程已结束 / token 已挪走）——
+> 后者不是失败，但也绝不是成功。
+
+鉴权不在本层（由 z-ctc 统一拦截）。但 `force-complete`、`jump` 与 `jobs/{jobId}/trigger`
+**不做办理人 / 角色校验**，必须由网关层限制访问——这一点写进了方法的 javadoc 与本 README。
+（`trigger` 内部有类型白名单挡掉不该手动的三类，但"谁有权催"是业务问题，引擎不替你定。）
 
 `/api/wf/management` 这组**不返回任何凭据**（连接串、账号、口令一律不给），
 但它会把**行数**摊开给调用方——多租户场景里「某租户的单据占多少行」本身就是敏感信息。
@@ -553,7 +566,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 
 ## 9. 测试
 
-910 个测试，全绿（core 836 / web 6 / admin 68）。
+931 个测试，全绿（core 845 / web 16 / admin 70）。
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
@@ -570,10 +583,12 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 | **`WfEscalationTest`** | **17** | 升级的中断 / 非中断边界、广播、订阅一次性、零订阅留痕、5 类必须被挡住的配置、codec 往返 |
 | **`WfGatewayJoinSemanticsTest`** | **11** | 排他网关穿透、并行/包容仍合并、复杂网关 joining vs competing、穿透后流程仍收敛、部署期挡住、codec 往返 |
 | **`WfJobPriorityTest`** | **10** | job 优先级从节点拷贝、两套存储实现同一把尺子、存量库补列、更新时不抹掉、排序是开关 |
+| **`WfJobTriggerTest`** | **9** | 只有时间触发型/异步型可提前触发；订阅型、事件网关竞速分支、外部任务三类**分别**说清为什么不行；job 不存在要报错；留痕要点破「停留超时」不适用、且「该响没响」不写假记录 |
 | **`WfVariableServiceTest`** | **12** | 变量读写、批量原子性、审计留痕、终态拒绝 |
 | **`UnsupportedBpmnElementTest`** | **7** | 未支持元素不许静默退化（XML + JSON 两条入口） |
 | `WfAdminEndToEndTest` | 6 | Spring 全栈 + JDBC 落库 + 示例流程端到端 |
-| `WfWebApiTest` | 17 | **真实 HTTP**（`RANDOM_PORT` 起容器）：VO 边界、分页 total、异常→状态码、变量端点 |
+| `WfWebApiTest` | 64 | **真实 HTTP**（`RANDOM_PORT` 起容器）：VO 边界、分页 total、异常→状态码、变量端点 |
+| `WfJobControllerTest` | 10 | job 运维端点的路径/参数/状态码/响应字段；`triggered=false` 仍是 200；两个 job 端点的 id 字段名一致 |
 
 > 加粗的那几个是**行为审计**而非功能测试。本项目有过三次"实现了、注册了、
 > 从来没触发"，静态检查全都看不出来：未支持元素静默退化、`receiveTask` 不等待、

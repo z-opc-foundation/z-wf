@@ -323,6 +323,31 @@ Upgrading an existing database automatically adds `ZWF_JOB.PRIORITY`
 exists). The added column is NULL on existing rows while the default priority is
 50 — without it, every job queued before the upgrade reads back as lowest priority.
 
+### Triggering a job early
+
+`POST /api/wf/jobs/{jobId}/trigger` fires a job before it is due. The use case is
+ordinary: the overdue reminder is two hours away and the customer is out of
+patience.
+
+**Only time-triggered jobs (`TIMER`, `EVENT_TIMER`) and async jobs are allowed.**
+Everything else is rejected, and the three rejection reasons are deliberately
+worded separately because their consequences are not the same:
+
+| Rejected | Consequence | Why one message would not do |
+|---|---|---|
+| message / signal / escalation subscription | **the same step runs twice** | Triggering it forges an event that never happened; the real one still arrives |
+| event-gateway branch | **siblings are cancelled, irreversibly** | It is a *race*, and there is no "undo a race" |
+| external task | a worker's in-flight work is **advanced at the same time** | Leases exist so exactly one side writes the result |
+
+A single shared message can only state the mildest of the three, which is how the
+dangerous one ends up described as "about the same as a normal subscription".
+
+Two more things the endpoint is explicit about: a **missing job is an error, not
+a success** (the usual cause is the scanner having just consumed it, and
+reporting success stops the caller from retrying), and the response carries a
+**`triggered` boolean** so "fired" is distinguishable from "**it should have
+ranged and did not**" — the latter is neither a failure nor a success.
+
 ---
 
 ## Persistence
@@ -341,7 +366,7 @@ converts between them, so the storage layout can evolve without touching engine 
 
 ## Testing
 
-910 tests, all green (core 836 / web 6 / admin 68). `mvn -o clean install`.
+931 tests, all green (core 845 / web 16 / admin 70). `mvn -o clean install`.
 
 Six of the test classes are **behaviour audits** rather than feature tests —
 one per node type and one per extension-point callback. This project shipped
@@ -374,7 +399,10 @@ does nothing*:
 
 **Authentication is not handled here.** z-wf assumes requests have already passed through
 a central auth layer (z-ctc in this organization). Do not expose the port publicly: anyone
-who can reach it can call `force-complete` or `jump` and change the outcome of any process.
+who can reach it can call `force-complete`, `jump`, or `POST /api/wf/jobs/{jobId}/trigger`
+and change the outcome of any process. `trigger` has an internal type whitelist — it refuses
+the job kinds that must not be fired by hand — but *who* is allowed to push a process along is
+a business decision, and the engine does not make it for you.
 See [SECURITY.md](SECURITY.md) for the full trust-boundary notes.
 
 ---
@@ -389,8 +417,6 @@ See [SECURITY.md](SECURITY.md) for the full trust-boundary notes.
 - **No BPMN escalation or compensation**
 - **No variable service API** — variables are persisted, but there is no
   `getVariable`/`setVariable` surface like Camunda's
-- **No jobs, timers, or async execution** — timeout reminders, escalation, and async
-  external calls are not possible
 - **Narrower extension surface** — 3 hook interfaces against Camunda's dozens of listeners
 
 Identity, forms, authorization, and CMMN are **deliberately out of scope**; the reasoning

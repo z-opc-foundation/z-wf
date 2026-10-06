@@ -110,7 +110,7 @@
 
 | Camunda 能力 | z-wf | 说明 |
 |---|---|---|
-| **Job / 定时器** `createJobQuery` / `executeJob` / `setJobRetries` | 🟡 | **本轮补上 job 机制**：`WfJob` + `ZWF_JOB` 表 + `WfJobService#executeDueJobs`（重试计数、耗尽可查）。**本轮再补外部任务**（`externalTask`）：`WfExternalTaskService` + `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制领活、`fail` 解锁+退避、重试耗尽留档不删。**异步执行也已补上**（`asyncBefore`/`asyncAfter`，`camunda:` 前缀同样识别）。**第 28 轮补上 job 优先级**：`zifang:priority` 有了第二个出口 —— 原来它只决定"待办列表里谁排前面"（给人看），现在同时决定"队列里谁先被取走执行"（给执行器看）。**剩余**：异步 job 的 exclusive（跨 job 互斥，需要新的持久化状态）、手动触发 REST 入口。~~循环定时器 / `jobPriority`~~ —— 已实现，见上一行与下一行 |
+| **Job / 定时器** `createJobQuery` / `executeJob` / `setJobRetries` | 🟡 | **本轮补上 job 机制**：`WfJob` + `ZWF_JOB` 表 + `WfJobService#executeDueJobs`（重试计数、耗尽可查）。**本轮再补外部任务**（`externalTask`）：`WfExternalTaskService` + `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制领活、`fail` 解锁+退避、重试耗尽留档不删。**异步执行也已补上**（`asyncBefore`/`asyncAfter`，`camunda:` 前缀同样识别）。**第 28 轮补上 job 优先级**：`zifang:priority` 有了第二个出口 —— 原来它只决定"待办列表里谁排前面"（给人看），现在同时决定"队列里谁先被取走执行"（给执行器看）。**第 29 轮补上手动触发入口**：`POST /api/wf/jobs/{jobId}/trigger`，没到期也能催（超时提醒还差两小时而人等不及了），另有 `GET /api/wf/jobs`、`/count`、`/exhausted` 三个排障端点。**只放行时间触发型（`TIMER`/`EVENT_TIMER`）与异步型**：订阅型等的是"某件事发生了"，手动触发等于替引擎伪造一件没发生的事 —— 流程会以为它发生了，而真的那件事随后还会再来一次，于是同一步走两遍；事件网关的分支更糟，它是**竞速**，手动触发会作废其余兄弟分支，不可逆；外部任务是 worker 领的活，绕过租约触发会让 worker 正在做的活同时被引擎推进。**三类被拒的理由必须分别说清**，合成一条统一文案时恰恰是最危险的那类被稀释掉。**剩余**：异步 job 的 exclusive（跨 job 互斥，需要新的持久化状态）。~~循环定时器 / `jobPriority`~~ —— 已实现，见上一行与下一行 |
 | `createIncidentQuery` | 🟡 | **本轮补上** `WfIncidentService` + `WfIncidentView` + `WfIncidentQuery`，REST `GET /api/wf/incidents` 与 `/incidents/count`，并进 `GET /api/wf/process/overview`。回答的是订阅回答不了的那一半：「在等什么」与「已经没干成」必须一起给 —— 只有订阅时，"单子不动了"分不清是在耐心等还是已经炸了，而这两者处置完全不同。**故障从 job 派生，不建 Camunda 那张独立 incident 表**：故障的定义完全由 job 的 `retries` + `lastFailureTime` 决定，另存一份就多一处可能与 job 对不上，而排障时最不能容忍的就是对不上。代价见 `createHistoricIncidentQuery` 那行 |
 | `createMetricQuery`（引擎指标） | 🟡 | 只有 `getProcessStatusCounts` 一个自定义统计 |
 | `getTableCount` / `getTableNames` / `getProperties` | ✅ | **第 19 轮补上**。自省挂在 `WfPersistence` SPI 上（`getTableNames` / `getTableCount`），`WfManagementService` 负责视图与措辞，REST `GET /api/wf/management/properties` / `/tables` / `/tables/count?name=`。三条硬规矩：① **未知名抛异常不返回 0** —— 拼错表名得到"这里是空的"会把排障方向从「我拼错了」带偏到「谁把它清空了」；② JDBC 侧 `getTableNames()` **从 `DatabaseMetaData` 真查**而不是报常量 —— 常量回答"打算建哪些"，这里要回答"这个库现在真有哪些"，两者在迁移没跑时会分家；③ 视图**显式带 `kind`（table / collection）** —— 内存实现里根本没有表，不标出来运维看到 `ZWF_TASK` 会跑去数据库里找一圈。属性**刻意不含连接串/账号/口令** |
@@ -399,13 +399,14 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 910 个测试兜着
-- 从测试与审计中逼出并修复的**真实缺陷 51 项**（43 项截至第 21 轮 + 第 22 轮的
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 931 个测试兜着
+- 从测试与审计中逼出并修复的**真实缺陷 52 项**（43 项截至第 21 轮 + 第 22 轮的
   `zifang:resultVariable` 读错载体 1 项 + 第 23 轮 DMN 的 3 项
   + 第 24 轮的 `camunda:resultVariable` 前缀读不到 1 项
   + 第 25 轮复杂网关出线条件被忽略 1 项
   + 第 26 轮升级边界配定时器得到哑表 1 项
   + 第 27 轮排他网关把并行 token 合并 1 项
+  + 第 29 轮同一实体的两个 job 视图 id 字段名分叉 1 项
   —— 第 28 轮（job 优先级）是**补缺口，没有新缺陷**），
   其中 **9 项**属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发、
@@ -1992,3 +1993,129 @@ incoming concurrent flows like a parallel gateway」；Camunda 社区版对同�
 于是"分两段"与"整体处理"给出同样的结果。
 ⇒ 判别式补一条：**断言"整体处理 vs 分段处理"的差别时，
 分段里必须有元素能与另一段交错**，否则两种实现分不开。
+
+---
+
+### 手动触发 job 的 REST 入口（第 29 轮）
+
+**为什么需要它**：超时提醒还差两小时才到，而客户已经等不及了。
+执行器只扫到期 job，所以"催一下"这件事此前在引擎里**没有任何入口**。
+
+新增 `WfJobService#triggerJob(jobId, userId)`，与三个排障端点：
+
+| 端点 | 作用 |
+|---|---|
+| `POST /api/wf/jobs/{jobId}/trigger` | 提前触发（`userId` 可选，缺省记成 `system`） |
+| `GET /api/wf/jobs` | 查 job（可按实例 / 节点 / 类型过滤） |
+| `GET /api/wf/jobs/count` | 某类 job 还剩多少条 |
+| `GET /api/wf/jobs/exhausted` | 重试耗尽的失败清单 |
+
+**只放行时间触发型（`TIMER`/`EVENT_TIMER`）与异步型（`ASYNC_BEFORE`/`ASYNC_AFTER`）**，
+其余三类一律报错，且**理由必须分别说清**：
+
+| 被拒的类型 | 后果 | 为什么不能合成一条文案 |
+|---|---|---|
+| 消息 / 信号 / 升级订阅 | **同一步走两遍** | 手动触发等于替引擎伪造一件没发生的事；真的那件事随后还会再投一次 |
+| 事件网关的分支 | **作废兄弟分支，不可逆** | 它是**竞速**，而"撤销一次竞速"没有接口，那些分支上已攒的审批意见也找不回来 |
+| 外部任务 | worker 正在做的活**同时**被推进 | 那是租约制，绕过租约触发等于两边都写回结果，冲突的那边被静默丢掉 |
+
+⇒ **统一文案只能说到最轻的那一层**，而真正危险的那类会被
+"和普通订阅差不多"这句话稀释掉 —— 运维于是以为可以放心点。
+⇒ 判别式：**一组同构操作的错误信息如果后果不同，就不能合并**，
+合并的代价不是变短，是把最危险的那一类说轻。
+
+其余四个取舍：
+
+1. **重试耗尽的 job 允许触发** —— `executeDueJobs` 排除它们是为了不让扫描器无限重试；
+   而"运维手工重跑一个失败的任务"是真实需求，触发后 job 被删，下次失败重新计数。
+2. **job 不存在要报错而不是返回成功** —— 最常见的原因是扫描器刚消费掉它，
+   返回成功会让调用方以为办成了、于是不再重试。
+3. **留痕用追加评论，不改 `fireTimer` 的 reason** —— 那条 reason 是活动轨迹的
+   outcome 字段，被网关与执行器读着；提前触发时它写的「停留超时」是**假话**，
+   所以另记一条并**点破**"轨迹上那条措辞是定时器的，不适用于本次"。
+   **只在真触发时留痕**：`false` 是"该响没响"，写成"已手动触发"是比不写更糟的假记录。
+4. **并发靠既有乐观锁** —— 手动触发与扫描器都走 `checkTimerJobDispatch → deleteJob`，
+   `revision` 保证只有一个成功，不需要新机制。
+
+### 本轮反向验证记录（手动触发 job，第 29 轮）
+
+13 条变异：**11 红 + 2 对照绿**。抓到 **1 个真缺陷**与 **3 处判据自身的问题**。
+
+**一、真缺陷：同一实体的两个视图、两个 id 字段名**
+
+第一版给新端点单独建了 `WfJobView`（放 core，id 字段叫 `id`），
+而 `/api/wf/history/jobs` 早就在用 `WfViews.JobView`，字段叫 `jobId`。
+症状是**运维从新列表复制 id、拿去 history 端点查，什么都查不到** ——
+而两边各自都"工作正常"，**没有任何报错**。
+
+它还顺手犯了第二个错：把 `Date` 直接序列化，
+而既有视图的注释明写着「直接序列化 `Date` 会让时区与毫秒格式成为对外契约的一部分」。
+
+修法：删掉 `WfJobView`，复用 `WfViewMapper#toJobViews`；顺带补上第 28 轮漏掉的 `priority` 映射。
+
+⇒ 判别式：**加第二个视图之前，先确认第一个不是已经够用**。
+⇒ "看起来能跑"与"能被另一个端点用起来"是两件事，
+**跨端点的一致性只有把两个端点都调一遍才问得到** ——
+所以 admin 端到端里专门加了一条同时打两个端点的用例。
+
+**二、`exists()` 断 primitive 字段恒成立（T11 打绿）**
+
+我给 `priority` 写的是 `jsonPath("$.data[0].priority").exists()`。
+而 `WfViews.JobView#priority` 是 `int` —— mapper 不赋值时 Jackson 照样序列化成 `0`，
+于是 **`exists()` 恒为真**，把整行映射删掉照样绿。
+
+更糟一层：我一开始挑的是**定时器** job。查下来 `WfContext#startTimerJobs` 压根不拷优先级
+（只有 `asyncJob` 里 `setPriority(node.getPriority())`），所以定时器 job 永远是默认 50 ——
+**就算断具体值，也区分不出"拷了"与"没拷"**。
+改成异步 job、宿主节点配 `zifang:priority="90"`，断 `$.data[0].priority == 90`。
+
+⇒ 这是既有那条「判据因错误的原因通过」的新变体：
+**`exists()` 问的是"这个键在不在"，而 primitive 字段永远在**。
+⇒ 判别式：断一个**有默认值的字段**时 `exists()` 等于没断；
+要么断具体值，要么先确认夹具里那个值不是默认值。
+
+**三、变异没打干净：关键词在别处还留着（T03 打绿）**
+
+第一版 T03 只改了拒绝文案的第一行，而「兄弟分支」三个字在第三行仍然在，
+`contains("兄弟分支")` 照样成立。
+⇒ 这是既有那条「判据关键词在兜底分支里也出现 ⇒ 断言恒成立」的**镜像**：
+那边是**判据太松**，这边是**变异太松**。两者后果一样 —— 量具报"通过"，而实际没量到。
+⇒ 判别式：关键词在整条消息里出现多次时，一次删干净再跑，否则红的是别的用例。
+
+**四、变异自己编译不过，量到的是 BUILDFAIL 不是 RED（T04）**
+
+第一版 T04 往 `if (job == null) {` 里塞了一句 `return false;`，
+后面还跟着 `throw`，javac 报 `unreachable statement`。
+harness 正确地判成 BUILDFAIL 而不是 RED —— 但那不是"判据红"，是**这条变异没打上**。
+修法：整块换成 `return false;`。
+⇒ 归因五类里「没打上」与「基线红」最像，都要靠**看 javac 报的是什么**来分。
+
+**五、夹具前提不成立：判据问的那一步压根没被走到**（core 判据首跑）
+
+`noFalseRecordWhenNothingFired` 原本写的是「流程办结后去触发那条 job」。
+而正常办结时定时器 job 会被 `clearJobsOf` 一并撤掉 ⇒ `findJob` 返回 null ⇒
+`triggerJob` 停在「job 不存在」那一层，**走不到 `fire`** ——
+判据问的「该响没响」根本没被问到，而且是以"报错"这个**与被问无关**的结果蒙混过关。
+
+改成：办结后把 job **重新插回去**。
+这不是臆造 —— `checkTimerJobDispatch` 的注释明写着
+「流程结束了还有残留定时器是清理没做干净」，那就把它造出来。
+⇒ 判别式：断言问的是 `fire` 的返回值，夹具就必须让流程**真的走到 `fire`**；
+前置条件不成立时，用例会以一个**看起来合理**的失败通过。
+
+**六、判据查错了载体：`userId` 不在评论正文里**（core 判据首跑）
+
+`manualTriggerIsRecorded` 原本在评论**正文**里搜 `"ops"`，
+而 `userId` 存在 `WfComment` 的独立字段上，正文里从来没有它 ⇒ 恒 0 命中。
+那种恒不成立的断言比没有断言更危险：它看上去在钉「谁点的」，实际什么都没钉，
+而且没人会去改那条评论的正文来让它变红。改成断 `comment.getUserId()`。
+
+**七、测试隔离：新用例差点让不相干的用例红**
+
+admin 的 `jobsOverHttp` 断言「执行端点消费掉 1 个」，而那个执行端点是**全库扫**的；
+我新加的用例留了一只没到点的定时器在 H2 库里，于是它数成 2。
+⇒ 判别式：在**共享存储**的测试类里新增"会建出后台 job"的用例时，
+必须问一句「**我走的时候有没有把它清掉**」。
+⇒ 顺带暴露既有的一条脆弱：`jobsOverHttp` 断的是**全局计数**，
+只在别的用例都清理干净时才成立（改用基线差、或断本流程的效果更稳；
+本次只让自己的用例不留残留，没动它的断言）。
