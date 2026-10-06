@@ -119,22 +119,9 @@ public class WfDefinitionValidator {
                     add(WfValidationIssue.Severity.ERROR, node.getId(), "callActivity 缺少 calledElementKey");
                 }
             }
-            // ---- 嵌入式 subProcess：内联内容不会被执行，必须挡住部署 ----
-            // 解析器把 <subProcess> 里的内联节点也收进扁平节点表（isDirectChildOf
-            // 判的是"祖先链里有 process"，不是"直接子节点"），但引擎不会进入
-            // 嵌入式子流程 —— 它没有独立的作用域与 token。结果是流程从 subProcess
-            // 节点直接穿到它的出线，内联的那些节点一个都不会执行，
-            // 而流程照样跑到结束、状态 COMPLETED。
-            // 与其让作者以为"我画了个子流程所以它会跑"，不如部署时就拒绝。
-            if (node.getType() == WfNodeType.SUB_PROCESS) {
-                List<String> inline = inlineChildIds(definition, node.getId());
-                if (!inline.isEmpty()) {
-                    add(WfValidationIssue.Severity.ERROR, node.getId(),
-                            "嵌入式 subProcess 的内联内容不会被执行（本引擎尚不支持嵌入式子流程）。"
-                                    + "被收进节点表但永远跑不到的内联节点: " + inline
-                                    + "。请改用 callActivity 指向一个独立的流程定义 key");
-                }
-            }
+            // ---- 嵌入式 subProcess：内联子图的结构合法性 ----
+            validateInlinePlacement(definition, node);
+            validateSubProcess(definition, node);
             if (node.getType() == WfNodeType.RECEIVE_TASK) {
                 if (isBlank(node.getMessageName())) {
                     add(WfValidationIssue.Severity.WARN, node.getId(),
@@ -820,22 +807,153 @@ public class WfDefinitionValidator {
     }
 
     /**
-     * 找出被嵌在指定容器元素里的节点 id。
+     * 内联节点的<b>归属</b>是否站得住 —— 它声称嵌在某个容器里，那个容器得真的存在。
      *
-     * <p>依赖解析期写下的 {@link WfNode#PROPERTY_NESTED_IN} 标记 ——
-     * 解析结果扁平表，父子关系不靠这个标记无从还原。
+     * <p>报 ERROR 而不是放过：容器认不出来时，引擎的内联查询按 id 匹配，
+     * 一个都匹配不到 ⇒ {@code isInlineSubProcess} 判 false ⇒ 该 subProcess 被当成
+     * 空容器直接穿透。症状是"内联节点一个都没跑，流程照常走到结束、状态 COMPLETED"，
+     * 没有任何日志能解释作者画的东西为什么消失了。
+     *
+     * <p><b>容器存在但不是 subProcess 时放过</b>：解析器记的 {@code nestedIn} 是
+     * "直接父元素"，而 {@code <boundaryEvent>} 在 BPMN 里就写在宿主活动内部 ——
+     * 挂在 userTask 上的超时边界事件，它的容器是那个 userTask。
+     * 那是完全正常的写法，不能当成"内联节点嵌错了地方"。
      */
-    private static List<String> inlineChildIds(WfDefinition definition, String containerId) {
-        List<String> inline = new ArrayList<>();
-        if (definition == null || definition.getNodes() == null) {
-            return inline;
+    private void validateInlinePlacement(WfDefinition definition, WfNode node) {
+        String containerId = node.nestedIn();
+        if (containerId == null) {
+            return;
         }
-        for (WfNode node : definition.getNodes()) {
-            if (node != null && containerId.equals(node.nestedIn())) {
-                inline.add(node.getId());
+        WfNode container = definition.node(containerId);
+        if (container == null) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "内联节点 " + node.getId() + " 声称嵌在容器 " + containerId
+                            + " 里，但流程定义里没有这个 id 的节点。容器元素多半没写 id 属性"
+                            + "（解析器此时只能记下元素名占位，本节点就再也认不出自己属于谁）。"
+                            + "内联容器必须写 id");
+        }
+    }
+
+    /**
+     * 嵌入式 subProcess 的结构校验。
+     *
+     * <p>只在"容器里确实画了节点"时才校验：空的 {@code <subProcess>} + calledElementKey
+     * 在 BPMN 里等价于 callActivity，交给 {@code calledElementKey 缺失}那条规则管。
+     *
+     * <p>四条规则各自挡掉一种"能部署、跑起来不是作者画的那张图"的写法，
+     * 共同点是症状都不带任何报错。
+     */
+    private void validateSubProcess(WfDefinition definition, WfNode node) {
+        if (node.getType() != WfNodeType.SUB_PROCESS) {
+            return;
+        }
+        List<WfNode> children = definition.inlineChildrenOf(node.getId());
+        if (children.isEmpty()) {
+            return;
+        }
+
+        // ---- 恰好一个内联起始节点 ----
+        // 引擎靠"容器内无入线的节点"识别入口。有两个时选谁是猜，猜错的表现是
+        // "另一半内联节点一次都没跑，而实例正常结束"；没有时更糟，token 无处可进。
+        List<String> entries = inlineEntryIds(definition, children);
+        if (entries.size() != 1) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "嵌入式 subProcess " + node.getId() + " 需要恰好一个内联起始节点"
+                            + "（容器内没有入线的那一个），实际找到 " + entries.size() + " 个: " + entries
+                            + "。内联子流程的进入点由「容器内无入线的节点」唯一确定，"
+                            + "多于一个时引擎无法判断该从哪进入");
+        }
+
+        // ---- 至多一个内联结束节点 ----
+        // 有两个时 token 会在第一个"结束"处跳出子流程，后半段永远跑不到；
+        // 一个都没有说明容器内是个环（每个节点都有出线），token 会在里面打转。
+        List<String> exits = inlineExitIds(definition, children);
+        if (exits.size() > 1) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "嵌入式 subProcess " + node.getId() + " 有 " + exits.size()
+                            + " 个内联结束节点（容器内没有出线的节点）: " + exits
+                            + "。子流程的结束点必须唯一，否则 token 会在第一个结束处跳出，"
+                            + "后面的内联内容永远跑不到");
+        } else if (exits.isEmpty()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "嵌入式 subProcess " + node.getId() + " 没有任何内联结束节点"
+                            + "（容器内每个节点都有出线）。这意味着子流程内部成环，"
+                            + "token 会在里面一直转下去");
+        }
+
+        // ---- 不支持嵌套 ----
+        // 理由不是"没实现"这么轻：内层 subProcess 的离开语义与外层不同 ——
+        // 它的出线只通向它自己内部，而"子流程结束了"这件事在 BPMN 里
+        // 没有任何结构标记能指出是哪一个 endEvent 属于内层、哪一个属于外层。
+        // 猜错的后果是内联内容被静默跳过或流程死循环，两者都不报错。
+        List<String> nested = new ArrayList<>();
+        for (WfNode child : children) {
+            if (child.getType() == WfNodeType.SUB_PROCESS) {
+                nested.add(child.getId());
             }
         }
-        return inline;
+        if (!nested.isEmpty()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "嵌入式 subProcess 里又嵌了 subProcess: " + nested
+                            + "。本引擎不支持嵌套的内联子流程：内层子流程的结束点"
+                            + "在 BPMN 里没有结构标记能与其他结束事件区分开，"
+                            + "引擎无法判断该在哪一层跳出。请改用 callActivity 指向独立流程定义");
+        }
+
+        // ---- 不支持边界事件挂在容器上 ----
+        // token 一进入 subProcess 就被推进到内联起始节点，此后它<b>不在</b>
+        // 容器节点上。而 WfRuntimeService#fireEventBoundary 有一道硬闸门：
+        // token 必须仍停在宿主节点上才触发。放宽它要重新定义"打断"的对象，
+        // 语义风险远大于本轮的收益，所以部署期直接挡掉。
+        List<String> boundaries = new ArrayList<>();
+        for (WfNode candidate : definition.getNodes()) {
+            if (candidate != null
+                    && node.getId().equals(candidate.nestedIn())
+                    && candidate.getType() == WfNodeType.BOUNDARY_EVENT) {
+                boundaries.add(candidate.getId());
+            }
+        }
+        if (!boundaries.isEmpty()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "嵌入式 subProcess 上不能挂边界事件: " + boundaries
+                            + "。token 进入 subProcess 后立即被推进到内联起始节点，"
+                            + "此后不再停留在容器上，而边界事件要求 token 仍停在宿主节点才触发。"
+                            + "放到内联的某个具体活动上即可；超时/异常的处理请放到该活动上");
+        }
+
+        // ---- 画了内联内容又配 calledElementKey ----
+        // 两者语义互斥：内联子流程执行的是本图里的节点，calledElementKey 指向另一份定义。
+        // 引擎优先走内联（isInlineSubProcess 先判），配了 calledElementKey 的效果是
+        // "看着像会调外部流程，实际一次都没调"。
+        if (!isBlank(node.getCalledElementKey())) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "subProcess " + node.getId() + " 既画了内联内容，又配了 calledElementKey="
+                            + node.getCalledElementKey().trim() + "。两者互斥："
+                            + "内联子流程执行的是本图里的节点。引擎会以内联内容为准，"
+                            + "calledElementKey 一次都不会生效。要调用独立流程请改用 callActivity");
+        }
+    }
+
+    /** 容器内"无入线"的节点 id —— 内联起始节点候选。 */
+    private static List<String> inlineEntryIds(WfDefinition definition, List<WfNode> children) {
+        List<String> ids = new ArrayList<>();
+        for (WfNode node : children) {
+            if (definition.incomingFlows(node.getId()).isEmpty()) {
+                ids.add(node.getId());
+            }
+        }
+        return ids;
+    }
+
+    /** 容器内"无出线"的节点 id —— 内联结束节点候选。 */
+    private static List<String> inlineExitIds(WfDefinition definition, List<WfNode> children) {
+        List<String> ids = new ArrayList<>();
+        for (WfNode node : children) {
+            if (definition.outgoingFlows(node.getId()).isEmpty()) {
+                ids.add(node.getId());
+            }
+        }
+        return ids;
     }
 
     /**

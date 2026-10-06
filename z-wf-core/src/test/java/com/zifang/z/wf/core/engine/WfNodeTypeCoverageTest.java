@@ -373,15 +373,17 @@ class WfNodeTypeCoverageTest {
     // ==================== 5. 子流程 / 调用 ====================
 
     @Test
-    @DisplayName("subProcess：内联内容当前不执行，部署期就报 ERROR 挡住")
-    void embeddedSubProcessIsRejectedAtDeployTime() {
+    @DisplayName("subProcess：内联内容现在会执行，容器与内联节点各留一条轨迹")
+    void embeddedSubProcessRunsItsInlineGraph() {
         String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
                 + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
                 + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
                 + "  <process id=\"p\" isExecutable=\"true\">\n"
                 + "    <startEvent id=\"s1\"/>\n"
                 + "    <subProcess id=\"sp1\"><userTask id=\"inner\" zifang:assignee=\"i1\"/>"
-                + "<endEvent id=\"ie\"/></subProcess>\n"
+                + "<endEvent id=\"ie\"/>"
+                + "<sequenceFlow id=\"if1\" sourceRef=\"inner\" targetRef=\"ie\"/>"
+                + "</subProcess>\n"
                 + "    <endEvent id=\"e1\"/>\n"
                 + "    <sequenceFlow id=\"f1\" sourceRef=\"s1\" targetRef=\"sp1\"/>\n"
                 + "    <sequenceFlow id=\"f2\" sourceRef=\"sp1\" targetRef=\"e1\"/>\n"
@@ -390,21 +392,29 @@ class WfNodeTypeCoverageTest {
 
         // 解析期仍要宽松：先证明内联节点确实被收进了扁平表
         assertNotNull(parsed.node("inner"),
-                "内联节点会被收进扁平节点表——这正是危险之处：它在表里，却永远跑不到");
+                "内联节点会被收进扁平节点表——父子关系不靠 nestedIn 无从还原");
         assertEquals("sp1", parsed.node("inner").nestedIn(),
-                "必须记下嵌在谁里面，否则校验器无从发现它不可达");
+                "必须记下嵌在谁里面，否则引擎认不出该从哪进入内联子图");
+        assertTrue(parsed.isInlineSubProcess(parsed.node("sp1")),
+                "画了内联内容的 subProcess 才算内联子流程");
 
-        // 部署期必须挡住
-        com.zifang.z.wf.core.definition.WfDefinitionException ex =
-                org.junit.jupiter.api.Assertions.assertThrows(
-                        com.zifang.z.wf.core.definition.WfDefinitionException.class,
-                        () -> repository.deploy(parsed),
-                        "嵌入式 subProcess 的内联节点永远不会被执行，"
-                                + "放行等于让作者以为'画了子流程它就会跑'");
-        assertTrue(ex.getMessage().contains("inner"),
-                "报错要点名哪些内联节点跑不到：" + ex.getMessage());
-        assertTrue(ex.getMessage().contains("callActivity"),
-                "报错应给出可行替代：" + ex.getMessage());
+        String pid = runtime.startProcessInstance(repository.deploy(parsed),
+                "BIZ-" + System.nanoTime(), "alice", null, new HashMap<String, Object>());
+
+        // token 应当停在内联 userTask 上，而不是直接穿到 e1
+        List<WfTask> open = repo.queryTasks(new WfTaskQuery().setProcessInstanceId(pid)
+                .setOpenOnly(true).setPageNum(1).setPageSize(10));
+        assertEquals(1, open.size(),
+                "内联 userTask 应当建出待办——一个都没有就说明内联内容被穿透了");
+        assertEquals("inner", open.get(0).getDefinitionId());
+
+        // 容器没写 id 时，解析器只能记下元素名占位，归属认不出来，必须报 ERROR
+        String noIdXml = xml.replace("<subProcess id=\"sp1\">", "<subProcess>");
+        WfDefinition noId = new WfXmlParser().parse(noIdXml);
+        org.junit.jupiter.api.Assertions.assertThrows(
+                com.zifang.z.wf.core.definition.WfDefinitionException.class,
+                () -> repository.deploy(noId),
+                "认不出内联节点属于谁时，容器会被当成空容器直接穿透，内容一次都不跑");
     }
 
     @Test

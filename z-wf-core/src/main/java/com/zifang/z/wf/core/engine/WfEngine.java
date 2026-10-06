@@ -271,6 +271,14 @@ public class WfEngine {
 
         // ---- 结束事件 ----
         if (node.getType() == WfNodeType.END_EVENT) {
+            // 内联在 subProcess 里的 endEvent 不是"流程结束"，而是"子流程到此为止"：
+            // token 要回到那个 subProcess 节点上，由它沿自己的出线继续走主图。
+            // 少这一道分派，内联子流程的 token 就会在子流程内部直接结束，
+            // 现象是"subProcess 之后的节点一个都没跑，而实例状态是 COMPLETED"。
+            if (definition.isInline(node)) {
+                leaveSubProcess(context, node, token, depth);
+                return;
+            }
             evaluateResult(context, node);
             // 结束节点不走 leave，所以在这里补上唯一那条记录
             WfActivityInstance end = context.recordActivity(node.getId(), node.getName(),
@@ -281,6 +289,17 @@ public class WfEngine {
             // Camunda 的 endEvent 历史同样是 USER_ID 为空。
             end.setAssignee(null);
             token.setState(WfExecution.State.ENDED);
+            return;
+        }
+
+        // ---- 嵌入式子流程：把 token 推进内联起始节点 ----
+        // 排在 END_EVENT 之后、网关之前：subProcess 既不是结束也不是网关。
+        //
+        // 只对"真的画了内联内容"的 subProcess 生效（isInlineSubProcess）。空容器配
+        // calledElementKey 的那种在 BPMN 里等价于 callActivity，仍走
+        // WfCallActivityBehavior —— 两者共用同一个枚举值，靠"容器里有没有节点"区分。
+        if (definition.isInlineSubProcess(node)) {
+            enterSubProcess(context, node, token, depth);
             return;
         }
 
@@ -869,6 +888,84 @@ public class WfEngine {
     }
 
     /**
+     * 进入嵌入式子流程 —— 把 token 从 subProcess 节点挪到它的内联起始节点。
+     *
+     * <p><b>不新建 execution</b>：内联子流程与 callActivity 的根本差别就在这里 ——
+     * 它展开在父实例的同一棵 token 树里，所以并行网关的汇合判定、
+     * 轨迹的父子归属都沿用主图的机制，不需要跨实例回查。
+     * 代价是没有独立作用域（内联节点与主流程共享变量），这是与 Camunda 的显式差异，
+     * 已写进 {@code docs/capability-gap.md}。
+     *
+     * <p>内联子流程的进入<b>不发 transition 事件</b>：BPMN 里没有一条 sequenceFlow
+     * 跨容器边界（subProcess 到它的内联起始节点之间本来就没有线），
+     * {@code fireTransition} 需要一个真实 flowId，这里给不出语义正确的值。
+     */
+    private void enterSubProcess(WfContext context, WfNode node, WfExecution token, int depth) {
+        WfDefinition definition = context.getDefinition();
+        WfNode start = definition.inlineStartNode(node.getId());
+        if (start == null) {
+            // 部署期校验器会挡掉"零个或多个内联起始节点"，走到这里说明被绕过了
+            // （自定义装配、或直接调引擎不经过部署）。此时若随便挑一个进入，
+            // 症状是"另一半内联节点一次都没跑"且实例正常结束 —— 必须停成内部终止。
+            fail(context, "嵌入式 subProcess " + node.getId()
+                    + " 找不到唯一的内联起始节点（容器内无入线的节点）: "
+                    + idsOf(definition.inlineChildrenOf(node.getId()))
+                    + "。内联子流程必须恰好有一个内联起始节点");
+            return;
+        }
+        log.debug("进入嵌入式 subProcess {}: {} -> 内联起始 {}", node.getId(), node.getId(), start.getId());
+        token.setActivityId(start.getId());
+        token.setEnteredTime(new Date());
+        enter(context, depth + 1);
+    }
+
+    /**
+     * 离开嵌入式子流程 —— token 抵达内联结束事件，回到容器节点上沿它的出线走主图。
+     *
+     * <p>内联结束事件自己那条历史在这里补记：它走不到 {@link #leave}（那条路以
+     * "离开当前节点"为前提），而"一次节点访问一条历史"是本引擎的硬约定。
+     * 办理人置空与流程级 endEvent 同理由：结束不是任何一个人的动作，
+     * 留着手办人会污染"某人办过哪些单"。
+     */
+    private void leaveSubProcess(WfContext context, WfNode endNode, WfExecution token, int depth) {
+        WfDefinition definition = context.getDefinition();
+        String containerId = endNode.nestedIn();
+        WfNode container = definition.node(containerId);
+        if (container == null || container.getType() != WfNodeType.SUB_PROCESS) {
+            // nestedIn 是解析期写死的字符串，理论上恒指向一个 subProcess 节点；
+            // 这里仍要炸：容器 id 对不上时若继续走，token 会被塞到一个不是子流程的
+            // 节点上沿出线跳掉，流程"看起来跑通了"而内联内容被整段跳过。
+            fail(context, "内联结束事件 " + endNode.getId() + " 声称嵌在 " + containerId
+                    + " 里，但该 id 在流程定义 " + definition.getKey() + " 中不是 subProcess 节点"
+                    + "（找到的是: " + (container == null ? "null" : container.getType()) + "）");
+            return;
+        }
+
+        WfActivityInstance ended = context.recordActivity(endNode.getId(), endNode.getName(),
+                endNode.getType().bpmnName(), "completed");
+        ended.setAssignee(null);
+
+        log.debug("离开嵌入式 subProcess {}: 内联结束 {} -> 回到容器", containerId, endNode.getId());
+        token.setActivityId(container.getId());
+        token.setEnteredTime(new Date());
+        // 容器的历史、起过的 job、asyncAfter、出线选择全部由 leave 统一处理，
+        // 这里不重复做其中任何一件 —— 重复记一条历史的症状是轨迹上"审批了两次"。
+        leave(context, depth + 1);
+    }
+
+    /** 节点 id 列表（诊断信息用）。 */
+    private static String idsOf(List<WfNode> nodes) {
+        StringBuilder ids = new StringBuilder("[");
+        for (int i = 0; i < nodes.size(); i++) {
+            if (i > 0) {
+                ids.append(", ");
+            }
+            ids.append(nodes.get(i).getId());
+        }
+        return ids.append(']').toString();
+    }
+
+    /**
      * 按节点类型选择要走的出线。
      */
     private List<WfFlow> selectFlows(WfContext context, WfNode node, List<WfFlow> flows) {
@@ -1114,6 +1211,7 @@ public class WfEngine {
         if (siblings.isEmpty()) {
             return true;
         }
+        WfDefinition definition = context.getDefinition();
         // 本 token 的同父兄弟
         List<WfExecution> peers = new ArrayList<>();
         for (WfExecution execution : siblings) {
@@ -1127,7 +1225,7 @@ public class WfEngine {
             if (execution.getId() != null && execution.getId().equals(token.getId())) {
                 continue;
             }
-            if (samePeer(execution, token)) {
+            if (samePeer(execution, token, definition)) {
                 peers.add(execution);
             }
         }
@@ -1144,10 +1242,18 @@ public class WfEngine {
 
     /**
      * 是否为"同一批"的 token：同父，或一方是另一方的父。
+     *
+     * <p><b>同父之前先看是不是同一段图</b>：内联子流程的分支 token 与外层并行分支的
+     * token 可能同父（父 token 停在那个 subProcess 节点上），但它们分属两段互不相干的图。
+     * 只按 parentId 判定时，内层的 join 会去等外层还没办完的分支，
+     * 症状是"流程卡在子流程里，且流程图上看不出任何异常"。
      */
-    private boolean samePeer(WfExecution a, WfExecution b) {
+    private boolean samePeer(WfExecution a, WfExecution b, WfDefinition definition) {
         if (a.getId().equals(b.getId())) {
             return true;
+        }
+        if (!sameInlineScope(a, b, definition)) {
+            return false;
         }
         if (a.getParentId() != null && a.getParentId().equals(b.getId())) {
             return true;
@@ -1159,9 +1265,28 @@ public class WfEngine {
     }
 
     /**
+     * 两条 token 是否属于同一段图（同一个内联容器，或都在主图上）。
+     *
+     * <p>活动节点在定义里找不到时判 false 而不是放行：归属认不出来时把它算进
+     * 同一批，只会让某个 join 多等一条本不该等的 token（表现为流程莫名卡住）。
+     */
+    private boolean sameInlineScope(WfExecution a, WfExecution b, WfDefinition definition) {
+        if (definition == null) {
+            return false;
+        }
+        String scopeA = definition.inlineScopeOf(a.getActivityId());
+        String scopeB = definition.inlineScopeOf(b.getActivityId());
+        if (scopeA == null || scopeB == null) {
+            return false;
+        }
+        return scopeA.equals(scopeB);
+    }
+
+    /**
      * 汇合通过后，结束所有已抵达的兄弟 token。
      */
     private void collapseSiblings(WfContext context, WfExecution token) {
+        WfDefinition definition = context.getDefinition();
         for (WfExecution execution : context.getProcessExecutions()) {
             if (execution == null || execution.isEnded() || execution == token) {
                 continue;
@@ -1170,7 +1295,7 @@ public class WfEngine {
             if (execution.getId() != null && execution.getId().equals(token.getId())) {
                 continue;
             }
-            if (samePeer(execution, token)) {
+            if (samePeer(execution, token, definition)) {
                 execution.setState(WfExecution.State.ENDED);
                 context.markTouched(execution);
             }

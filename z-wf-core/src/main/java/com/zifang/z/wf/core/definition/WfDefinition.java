@@ -296,16 +296,37 @@ public class WfDefinition implements Serializable {
      *
      * <p>返回列表而不是单个：校验期要拿它和"事件起始节点"分开比对，
      * 只拿到一个的话，"有三个无条件起始"这个错误本身就没法报出来。
+     *
+     * <p><b>内联节点一律不算流程入口</b>（{@link #isInline}）：嵌入式
+     * subProcess 里的 startEvent 是"子流程的起点"，它的入口是外层那个
+     * subProcess 节点而不是这条开始事件。解析结果是扁平表，两者在"无入线"
+     * 这一项上完全一样，不排除的话画一个内联子流程就会凭空多出第二个
+     * 无条件入口，部署期报「存在多个无条件开始节点」——而作者无从下手，
+     * 因为图上确实只有一个 process 级 startEvent。
      */
     public List<WfNode> unconditionalStartNodes() {
         List<WfNode> starts = new ArrayList<>();
         for (WfNode node : nodeNodes()) {
+            if (isInline(node)) {
+                continue;
+            }
             if (node.getType() == WfNodeType.START_EVENT && !isEventTriggered(node)) {
                 starts.add(node);
             }
         }
         if (starts.isEmpty()) {
             for (WfNode node : nodeNodes()) {
+                if (isInline(node)) {
+                    continue;
+                }
+                // 退化分支只认「无入线」，而 boundaryEvent <b>天然</b>无入线 ——
+                // 它靠宿主出错 / 超时时被触发，不是流程的一步。
+                // 不排除的话，任何一个带边界事件、又不写 startEvent 的定义
+                // 都会凭空多出第二个无条件入口，部署期报「存在多个无条件开始节点」，
+                // 而作者图上确实只画了一个入口。
+                if (node.getType() == WfNodeType.BOUNDARY_EVENT) {
+                    continue;
+                }
                 if (incomingFlows(node.getId()).isEmpty() && !isEventTriggered(node)) {
                     starts.add(node);
                 }
@@ -324,6 +345,9 @@ public class WfDefinition implements Serializable {
     public List<WfNode> eventStartNodes() {
         List<WfNode> starts = new ArrayList<>();
         for (WfNode node : nodeNodes()) {
+            if (isInline(node)) {
+                continue;
+            }
             if (node.getType() == WfNodeType.START_EVENT && isEventTriggered(node)) {
                 starts.add(node);
             }
@@ -403,6 +427,155 @@ public class WfDefinition implements Serializable {
      */
     public Collection<WfNode> nodeNodes() {
         return nodes == null ? Collections.<WfNode>emptyList() : nodes;
+    }
+
+    // ==================== 嵌入式 subProcess ====================
+
+    /**
+     * 这个节点是否<b>内联</b>在某个子流程里 —— 即它属于嵌入式 subProcess 的内联子图，
+     * 而不是 {@code <process>} 主图的节点。
+     *
+     * <p>判定依据是解析期写下的 {@link WfNode#PROPERTY_NESTED_IN}：解析结果是扁平表，
+     * 父子关系不靠它无从还原。
+     *
+     * <p><b>但 {@code nestedIn} 不为空不等于内联</b>：解析器记的是"直接父元素"，
+     * 而 {@code <boundaryEvent>} 在 BPMN 里就写在宿主活动<b>内部</b> ——
+     * 挂在 userTask 上的超时边界事件，它的 nestedIn 指向那个 userTask。
+     * 所以必须再看一眼容器是不是 subProcess，否则每个边界事件都会被当成
+     * "嵌在某个 userTask 里的内联节点"。
+     */
+    public boolean isInline(WfNode node) {
+        return node != null && node.nestedIn() != null
+                && isSubProcessContainer(node.nestedIn());
+    }
+
+    private boolean isSubProcessContainer(String containerId) {
+        WfNode container = node(containerId);
+        return container != null && container.getType() == WfNodeType.SUB_PROCESS;
+    }
+
+    /**
+     * 某个容器里的内联节点。
+     *
+     * <p><b>排除 {@link WfNodeType#BOUNDARY_EVENT}</b>：boundaryEvent 在 BPMN 里是
+     * 挂在活动元素<b>内部</b>的，解析期同样给它标了 nestedIn，但它不是子流程的一步 ——
+     * 它既没有入线也没有出线，算进"内联起始/结束节点"就会把子流程的入口认成超时规则。
+     */
+    public List<WfNode> inlineChildrenOf(String containerId) {
+        List<WfNode> children = new ArrayList<>();
+        if (containerId == null) {
+            return children;
+        }
+        for (WfNode node : nodeNodes()) {
+            if (node == null || node.getType() == WfNodeType.BOUNDARY_EVENT) {
+                continue;
+            }
+            if (containerId.equals(node.nestedIn())) {
+                children.add(node);
+            }
+        }
+        return children;
+    }
+
+    /**
+     * 嵌入式子流程的<b>内联起始节点</b> —— 该容器内无入线的那个节点。
+     *
+     * <p>内联子流程没有连线把它接到容器上（BPMN 里 {@code <sequenceFlow>} 不跨容器），
+     * 引擎靠"容器内无入线的节点"来认出该从哪进入。这与 {@link #unconditionalStartNodes()}
+     * 判定"流程从哪进入"用的是同一条规则，区别只在于本方法按<b>容器</b>限定范围。
+     *
+     * <p>刻意不返回"第一个"而返回 {@code null}：容器内出现两个无入线节点时
+     * （= 两个并排的子流程入口）选哪一个都是猜，而猜错的表现是流程跑完了
+     * 另一半内联节点一次都没跑。由校验器在部署期报 ERROR 挡掉。
+     */
+    public WfNode inlineStartNode(String containerId) {
+        WfNode found = null;
+        for (WfNode node : inlineChildrenOf(containerId)) {
+            if (!incomingFlows(node.getId()).isEmpty()) {
+                continue;
+            }
+            if (found != null) {
+                return null;
+            }
+            found = node;
+        }
+        return found;
+    }
+
+    /**
+     * 嵌入式子流程的<b>内联结束节点</b> —— 该容器内无出线的那个节点。
+     *
+     * <p>与 {@link #inlineStartNode} 同样按"唯一"判定：容器内出现两个无出线节点时
+     * 返回 {@code null}，交由校验器报错，绝不静默挑一个（挑中的后果是
+     * token 在第一个"结束"处就跳出子流程，后半段永远跑不到）。
+     */
+    public WfNode inlineEndNode(String containerId) {
+        WfNode found = null;
+        for (WfNode node : inlineChildrenOf(containerId)) {
+            if (!outgoingFlows(node.getId()).isEmpty()) {
+                continue;
+            }
+            if (found != null) {
+                return null;
+            }
+            found = node;
+        }
+        return found;
+    }
+
+    /**
+     * 这个节点是不是一个<b>承载内联内容</b>的嵌入式子流程。
+     *
+     * <p>与"类型是 SUB_PROCESS"分开：解析器把两种东西都归成 subProcess ——
+     * 一种是内联的（{@code <subProcess>} 里真画了节点），另一种是空的容器配
+     * {@code calledElementKey}，按 Camunda 语义等价于 callActivity。
+     * 引擎只在有内联内容时改走内联执行路径，另一种继续交给
+     * {@link WfNodeType#CALL_ACTIVITY} 那套行为。
+     */
+    public boolean isInlineSubProcess(WfNode node) {
+        return node != null && node.getType() == WfNodeType.SUB_PROCESS
+                && !inlineChildrenOf(node.getId()).isEmpty();
+    }
+
+    /**
+     * 某个活动属于哪一段图 —— 返回它所在的内联容器 id，主图节点返回空串。
+     *
+     * <p>内联子流程是<b>图上的分界线</b>：内层的并行分支与外层的并行分支可能共用
+     * 同一条父 token（父 token 停在那个 subProcess 节点上），但它们分属两段互不相干的图。
+     * 汇合判定若只看"同父"，内层的 join 就会去等外层还没办完的分支 ——
+     * 症状是"流程卡在子流程里，且看不出任何异常"。
+     *
+     * @return 容器 id；主图节点是空串（不是 {@code null}，好让"同属主图"是一个可比较的值）；
+     *         <b>活动节点在定义里找不到时返回 {@code null}</b> —— 归属认不出来，
+     *         调用方必须显式处理，不能默认它属于主图
+     */
+    public String inlineScopeOf(String activityId) {
+        WfNode node = node(activityId);
+        if (node == null) {
+            return null;
+        }
+        String nested = node.nestedIn();
+        if (nested == null) {
+            return "";
+        }
+        WfNode container = node(nested);
+        if (container == null) {
+            // 认不出容器：归属不明，返回 null 让调用方显式处理，
+            // 不能默认它属于主图（那会让它与主图上所有 token 混成同一批）
+            return null;
+        }
+        if (container.getType() == WfNodeType.SUB_PROCESS) {
+            return nested;
+        }
+        // 容器不是 subProcess ⇒ 这是挂在某个活动上的 boundaryEvent，归属按<b>宿主</b>算。
+        //
+        // 必须递归问宿主本人落在哪一段，而不能直接判成主图：宿主同样可能嵌在
+        // 另一个 subProcess 里（"内联子流程内的活动上挂超时边界"是完全正常的写法）。
+        // 直接返回 "" 会让这条边界分支与内层的其它分支判成不同段 ——
+        // 症状是内层的并行汇合等不到这条分支，流程卡在子流程里。
+        //
+        // 递归不会成环：父链来自 DOM 的元素嵌套，XML 结构上不可能自指。
+        return inlineScopeOf(container.getId());
     }
 
     public String getKey() {
