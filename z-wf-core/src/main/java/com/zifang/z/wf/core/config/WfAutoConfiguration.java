@@ -42,6 +42,7 @@ import com.zifang.z.wf.core.service.WfVariableService;
 import com.zifang.z.wf.core.service.WfVariableQueryService;
 import com.zifang.z.wf.core.service.WfFilterService;
 import com.zifang.z.wf.core.service.WfActivityInstanceService;
+import com.zifang.z.wf.core.service.WfManagementService;
 
 /**
  * z-wf 引擎自动装配。
@@ -261,6 +262,18 @@ public class WfAutoConfiguration {
     public WfActivityInstanceService wfActivityInstanceService(
             WfPersistence persistence, WfRepositoryService repositoryService) {
         return new WfActivityInstanceService(persistence, repositoryService);
+    }
+
+    /**
+     * 引擎自省（properties / 存储清单）。纯读，不启动任何线程。
+     *
+     * <p>刻意<b>不带任何配置</b>：它只问持久层"你有哪些存储项、各多少条"，
+     * 至于底下是表还是进程内集合，由实现自己如实说。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WfManagementService wfManagementService(WfPersistence persistence) {
+        return new WfManagementService(persistence);
     }
 
     /**

@@ -382,10 +382,16 @@ advance() = leave(token) + 沿出线 enter(下一个 token)
 `GET /comments`、`/trail`、`/overview`、`/executions`
 
 **分组 / 图** `/api/wf/group`：`GET /list`、`/processes`、`/detail`（供设计器渲染）
+**引擎自省** `/api/wf/management`：`GET /properties`（版本 / schema 版本 / 存储形态）、
+`GET /tables`（名字 + 类型 + 行数）、`GET /tables/count?name=`（名字不存在报 400，不返回 0）
 **健康检查** `/api/wf/health`
 
 鉴权不在本层（由 z-ctc 统一拦截）。但 `force-complete` 与 `jump` **不做办理人校验**，
 必须由网关层限制访问——这一点写进了方法的 javadoc 与本 README。
+
+`/api/wf/management` 这组**不返回任何凭据**（连接串、账号、口令一律不给），
+但它会把**行数**摊开给调用方——多租户场景里「某租户的单据占多少行」本身就是敏感信息。
+生产部署应当按运维角色限制这个路径，别因为「它不给凭据」就当成无害接口。
 
 ---
 

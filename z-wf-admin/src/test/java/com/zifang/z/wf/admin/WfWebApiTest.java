@@ -2597,6 +2597,54 @@ class WfWebApiTest {
             + "  </process>\n"
             + "</definitions>\n";
 
+// ==================== 引擎自省端点 ====================
+
+    @Test
+    @DisplayName("自省端点：属性如实说出版本与存储形态，且不带任何凭据")
+    void managementPropertiesOverHttp() throws Exception {
+        Map<String, Object> properties = asMap(getOk("/api/wf/management/properties").get("data"));
+        assertEquals("z-wf", properties.get("engine"));
+        assertNotNull(properties.get("version"));
+        assertNotNull(properties.get("schemaVersion"));
+        // 共享 H2 ⇒ 一定是 jdbc。若这里报 in-memory，说明它根本没问持久层就答了
+        assertEquals("jdbc", properties.get("persistence"),
+                "连的是 H2，却报成不是 jdbc —— 属性是写死的而不是问出来的");
+
+        for (Map.Entry<String, Object> entry : properties.entrySet()) {
+            String key = entry.getKey().toLowerCase();
+            String value = String.valueOf(entry.getValue()).toLowerCase();
+            assertFalse(key.contains("password") || key.contains("secret")
+                            || value.contains("jdbc:") || value.contains("password"),
+                    "自省接口常被监控无差别暴露，不能顺带把连接串/凭据摊出去: "
+                            + entry.getKey() + "=" + entry.getValue());
+        }
+    }
+
+    @Test
+    @DisplayName("自省端点：存储清单带类型与行数，未知名字报 400 而不是 0")
+    void managementTablesOverHttp() throws Exception {
+        List<Map<String, Object>> tables = asList(getOk("/api/wf/management/tables").get("data"));
+        assertFalse(tables.isEmpty(), "清单不该是空的");
+        for (Map<String, Object> table : tables) {
+            assertEquals("table", table.get("kind"),
+                    "连的是 H2，底下就是表；标成 collection 会让人跑去别处找表: " + table);
+            assertNotNull(table.get("rowCount"));
+        }
+        String taskTable = String.valueOf(tables.get(0).get("name"));
+        ResponseEntity<String> count = exchange(HttpMethod.GET,
+                "/api/wf/management/tables/count?name=" + taskTable, null);
+        assertEquals(HttpStatus.OK, count.getStatusCode());
+
+        // 拼错名字必须是 400。返回 0 会把排障方向从「我拼错了」
+        // 带偏到「谁把它清空了」—— 这两种情况的处置完全相反
+        ResponseEntity<String> typo = exchange(HttpMethod.GET,
+                "/api/wf/management/tables/count?name=ZWF_PROCES", null);
+        assertEquals(HttpStatus.BAD_REQUEST, typo.getStatusCode(),
+                "拼错表名报 400，而不是安静地返回 0");
+        assertTrue(typo.getBody().contains("ZWF_PROCESS"),
+                "报错要列出合法的名字，否则调用方不知道自己还能问什么: " + typo.getBody());
+    }
+
     /** 带事件网关的测试定义，事件由 REST 端点投递。 */
     private static final String RACE_BPMN =
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"

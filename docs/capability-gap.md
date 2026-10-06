@@ -112,7 +112,7 @@
 | **Job / 定时器** `createJobQuery` / `executeJob` / `setJobRetries` | 🟡 | **本轮补上 job 机制**：`WfJob` + `ZWF_JOB` 表 + `WfJobService#executeDueJobs`（重试计数、耗尽可查）。**本轮再补外部任务**（`externalTask`）：`WfExternalTaskService` + `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制领活、`fail` 解锁+退避、重试耗尽留档不删。**异步执行也已补上**（`asyncBefore`/`asyncAfter`，`camunda:` 前缀同样识别）。**剩余**：`jobPriority`、循环定时器、异步 job 的优先级与手动触发 REST 入口 |
 | `createIncidentQuery` | 🟡 | **本轮补上** `WfIncidentService` + `WfIncidentView` + `WfIncidentQuery`，REST `GET /api/wf/incidents` 与 `/incidents/count`，并进 `GET /api/wf/process/overview`。回答的是订阅回答不了的那一半：「在等什么」与「已经没干成」必须一起给 —— 只有订阅时，"单子不动了"分不清是在耐心等还是已经炸了，而这两者处置完全不同。**故障从 job 派生，不建 Camunda 那张独立 incident 表**：故障的定义完全由 job 的 `retries` + `lastFailureTime` 决定，另存一份就多一处可能与 job 对不上，而排障时最不能容忍的就是对不上。代价见 `createHistoricIncidentQuery` 那行 |
 | `createMetricQuery`（引擎指标） | 🟡 | 只有 `getProcessStatusCounts` 一个自定义统计 |
-| `getTableCount` / `getTableNames` / `getProperties` | ❌ | |
+| `getTableCount` / `getTableNames` / `getProperties` | ✅ | **第 19 轮补上**。自省挂在 `WfPersistence` SPI 上（`getTableNames` / `getTableCount`），`WfManagementService` 负责视图与措辞，REST `GET /api/wf/management/properties` / `/tables` / `/tables/count?name=`。三条硬规矩：① **未知名抛异常不返回 0** —— 拼错表名得到"这里是空的"会把排障方向从「我拼错了」带偏到「谁把它清空了」；② JDBC 侧 `getTableNames()` **从 `DatabaseMetaData` 真查**而不是报常量 —— 常量回答"打算建哪些"，这里要回答"这个库现在真有哪些"，两者在迁移没跑时会分家；③ 视图**显式带 `kind`（table / collection）** —— 内存实现里根本没有表，不标出来运维看到 `ZWF_TASK` 会跑去数据库里找一圈。属性**刻意不含连接串/账号/口令** |
 | 诊断 / 历史级别调整 | ❌ | |
 
 ### 1.6 其余服务
@@ -315,7 +315,18 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ### P2 —— 管理便利
 
-引擎指标 · ~~流程模型图形回读~~（BPMN DI 解析 + REST 已实现，见 §1.1）· ~~消息关联 `correlate`~~（**第 16 轮补上**，见 §1.2）· ~~`getActivityInstance` 树形活动实例~~（**第 17 轮补上**，见 §1.2）
+引擎指标 · ~~流程模型图形回读~~（BPMN DI 解析 + REST 已实现，见 §1.1）· ~~消息关联 `correlate`~~（**第 16 轮补上**，见 §1.2）· ~~`getActivityInstance` 树形活动实例~~（**第 17 轮补上**，见 §1.2）· ~~`getTableCount` / `getTableNames` / `getProperties`~~（**第 19 轮补上**，见 §1.5）
+
+> 第 19 轮没有新缺陷，但逼出两处**当初差点漏掉的东西**：
+> ① **自省能力挂在哪一层**，一开始想放在 `WfManagementService` 里 `instanceof` 判断存储形态，
+>     那样"底层有什么"就得由服务层去问实现类的私有字段。放到 SPI 上之后，
+>     "底下是表还是 Map"由实现自己如实说，服务层只负责措辞 ——
+>     代价是 SPI 从 48 涨到 50 个方法，**两套实现加一个测试替身都要跟上**
+>     （编译器会替你点名所有实现者，包括测试里的替身）。
+> ② **视图必须带 `kind`**。自省接口报出 `ZWF_TASK` 而不说它是进程内集合的话，
+>     运维看到名字就会跑去数据库里找一圈，然后开始怀疑数据库。
+>     写这条注释之前我自己先踩了一次：拿 `KIND_TABLE`（"table"）去比
+>     `persistenceKind()`（"jdbc"），永远不成立，于是 **JDBC 也被标成 collection**。
 
 > 第 17 轮顺带修掉一个不属于本轮范围、但由本轮挖出来的**已发布真缺陷**：
 > `deleteHistoryBefore` 在 JDBC 上漏删执行令牌（内存实现一直会删），
@@ -326,7 +337,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 745 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 761 个测试兜着
 - 从测试与审计中逼出并修复的**真实缺陷 43 项**，其中 6 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发、
   嵌入式 `subProcess` 的内联内容永远不执行、默认流程标记两套实现不一致
@@ -1325,3 +1336,74 @@ PONG 夹具原本是从 PING 链式 replace 出来的：第二个 replace 把 ca
 守着"支持列表不许悄悄缩回去"）；后者保留**同一条约束**但换掉理由 ——
 出线指向抛事件仍然报 ERROR，只是现在报的是"它不会挂订阅"与"它没配事件引用"。
 ⇒ **约束没变、理由变了**的时候，要改的是断言的理由，不是把约束一起删掉。
+
+---
+
+### 本轮反向验证记录（引擎自省 `getTableCount` / `getTableNames` / `getProperties`）
+
+本轮补的是自省 —— 出了事第一句要问的是「你连的是哪个库、哪些表在、里面各多少行」，
+而这三句话不该只能靠人手工连上去数。`25` 条变异全红，`4` 条对照全绿。
+
+自省能力挂在 `WfPersistence` SPI 上（`getTableNames` / `getTableCount`），
+`WfManagementService` 只负责视图与措辞。代价是 SPI 从 48 涨到 50 个方法 ——
+**两套实现加一个测试替身都要跟上**，好消息是编译器会替你点名所有实现者，包括测试里的替身。
+
+**一、自己写出的一个真 bug，流出前抓住**。
+`getTables()` 里判断存储形态时我写成 `WfTableInfo.KIND_TABLE.equals(persistenceKind())`
+—— 拿 `"table"` 去比 `"jdbc"`，永远不成立，于是 **JDBC 侧也被标成 collection**，
+而那恰好是这一层存在的全部理由："自省接口骗人"。
+⇒ 这类「拿 X 的字面量去比 Y」的写法，编译期与运行期都不报错，只有真值对得上才看得出来。
+
+**二、M08 与 M20 首轮打绿 —— 同一条不变式有两处实现，我只判了一处**。
+清单里的行数有**两个**实现点：`getTables()` 构造 `WfTableInfo` 时传进去的数、
+以及 `WfTableInfo#getRowCount()` 返回的字段。而我当时**全部判据都走 `getTableCount(name)`**，
+清单这条组装路径一个断言都没有 —— 两条能各自独立地坏掉（把传入值写死 0、把 getter 写死 0）。
+⇒ 补 `listRowCountsMatchSingleCountQuery`：清单里每一项的 `rowCount`
+必须等于单独查同一个名字的结果。两条变异随即一起转红。
+⇒ 这是「**一条不变式在 N 处独立实现，判据必须 N 处**」的第 N 次复现。
+值得单独记的是它的失败模式：「清单里的行数恒为 0」与「这张表真的是空的」
+在运维眼里**长得一模一样** —— 也就是说，缺判据的那条路一旦坏掉，
+自省接口会主动把人往错误方向带。
+⇒ 与第 15 轮「没进编译路径」、第 17 轮「`-Dtest` 没覆盖到断言所在类」同属一类：
+**判据必须落在每一条会被执行到的路径上，而不是落在"我测的那个方法"上。**
+
+**三、M21 首轮打绿 —— 断的是常量引用，不是对外的字面量**。
+`tablesAreTyped` 原来写 `assertEquals(WfTableInfo.KIND_COLLECTION, info.getKind())`。
+把常量的值从 `"collection"` 改成 `"collections"`，**判据与实现同步变化**，照样绿。
+⇒ 改成断字面量 `"collection"`。理由是它**对外是契约**：REST 把这个字符串原样返回给客户端，
+而共享 H2 的 Web 测试跑不到 collection 分支（它是 JDBC），所以 core 侧必须断字面量。
+⇒ 通用形式：**断言要落在对外可见的那个值上，不要落在双方共用的那个符号上**，
+否则符号改了什么，断言就跟着改什么。
+
+**四、M17 是「变异与名字不符」，第五次**。
+我把它命名为"内存侧名单倒序返回"，实际改的是 `STORAGE_NAMES` **常量内部**的排列 ——
+而 `getTableNames()` 返回的就是那个常量本身，两边同步变化，**任何判据都不可能观测到**。
+⇒ 重写成真正想测的东西："返回处反转一份副本（不再直接暴露常量）"，随即转红。
+判据 `assertEquals(STORAGE_NAMES, memory)` 真正保护的是
+**"内存侧不许另抄一份名单"**（另抄就迟早漂），而不是顺序稳定本身 ——
+后者由不可变常量天然保证，本来就不需要判据。
+
+**五、harness 漏了一个文件，基线编译不过，而我只看到一句 `BASELINE INSTALL FAILED`**。
+worktree 的 `FILES` 清单里漏了 `WfPersistence.java`（SPI 接口），
+于是 worktree 里的 `WfManagementService` 编译报 `cannot find symbol: getTableNames()`。
+排查这一条花的时间，比把输出打出来多花的时间长得多。
+⇒ harness 在基线 install / 用例失败时**打印 mvn 输出的尾部**；
+每条变异没按预期变红时也打前几行 `[ERROR]`。
+⇒ 与第 16 轮「`PATCH NOT FOUND` 失败路径也要还原再退出」同源：
+**harness 的失败路径本身不该是信息黑洞**，否则每次排障都要手工再跑一遍构建。
+
+**六、`SCHEMA_VERSION` 的值没有判据，这是有意的**。
+`VERSION` 有（一条测试去读 pom 的 `<revision>` 钉住它，因为手写常量必然会漂），
+`SCHEMA_VERSION` 没有 —— 它的值是**人定的迁移契约**，硬编码断言只会在正常升版时制造假红。
+⇒ 把它判据缺省这件事写进注释，而不是留一条以后有人"顺手补上"的假判据。
+⇒ 它的真正不变式是"往表里加字段**不**升它，只有表被重命名或删除才升"，
+而这条只能靠跨版本比对来验，本仓没有那个设施。**承重但当前无法自证**，如实记下。
+
+**七、JDBC 侧两处刻意的选择**。
+① `getTableNames()` **从 `DatabaseMetaData` 真查**而不是报常量：
+常量回答"打算建哪些"，这里要回答"这个库现在真有哪些"，两者在迁移没跑时会分家；
+用元数据接口而不是 `INFORMATION_SCHEMA`，是因为后者的表名大小写与 schema 过滤规则跨库不一致。
+② `getTableCount` 先用 `getTableNames()` 白名单校验再拼标识符：
+**表名不可参数化**（`?` 只对值有效），而表名来自 REST 查询参数，
+所以校验来源必须是**数据库自己报的清单**，不是请求参数。
+变异 M19（去掉白名单）转红，那串 `ZWF_TASK; DROP TABLE ZWF_PROCESS` 立刻现形。

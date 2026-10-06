@@ -459,6 +459,18 @@ class UnsupportedBpmnElementTest {
         }
 
         @Override
+        public List<String> getTableNames() {
+            // 自省接口在这条用例的路径上不该被碰到。真要碰到，
+            // 说明"部署被校验拦住"这条约束已经名存实亡了
+            throw new AssertionError("校验没过就不该走到存储自省");
+        }
+
+        @Override
+        public long getTableCount(String name) {
+            throw new AssertionError("校验没过就不该走到存储自省");
+        }
+
+        @Override
         public void clear() {
         }
     }

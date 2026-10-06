@@ -1,12 +1,14 @@
 package com.zifang.z.wf.core.persistence;
 
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -1690,6 +1692,83 @@ public class JdbcWorkflowPersistence implements WfPersistence {
      * 在途流程的历史当场被删光，而那条测试原本抓不住。显式写出这一句，等于把
      * "在途"这个前提固定下来，改坏时立刻变红。
      */
+    /**
+     * 引擎自建的全部表名（按 DDL 出现顺序）。
+     *
+     * <p>与 {@code InMemoryWorkflowPersistence#STORAGE_NAMES} <b>必须完全一致</b> ——
+     * 两侧对不上意味着某种逻辑实体在一套实现里存得下、在另一套里存不下，
+     * 而那种不一致在功能上通常表现为「内存模式能查、JDBC 下查不到」。
+     * {@code JdbcWorkflowPersistenceTest} 里有一条断言把两边钉在一起。
+     */
+    public static final List<String> TABLE_NAMES = java.util.Collections.unmodifiableList(
+            java.util.Arrays.asList(
+                    "ZWF_DEFINITION", "ZWF_PROCESS", "ZWF_EXECUTION", "ZWF_TASK",
+                    "ZWF_JOB", "ZWF_ACTIVITY", "ZWF_COMMENT", "ZWF_FILTER"));
+
+    /**
+     * 表名清单，<b>从库里真查</b>而不是直接返回常量。
+     *
+     * <p>为什么不直接报常量：常量回答的是"引擎打算建哪些表"，
+     * 这里要回答的是"<b>这个库现在真的有哪些表</b>"。
+     * 两者在两种情形下会分家，而那两种都不是"常量写错了"：
+     * ① 有人手工建过部分表、{@code initialize} 被 {@code @ConditionalOnProperty} 挡掉；
+     * ② 连的是别人的库、迁移脚本只建了其中几张。
+     * 报常量会让自省接口在这种时候仍然说"八张表都在"，排障时先信了它就找不到北。
+     *
+     * <p>用 {@code DatabaseMetaData} 而不是 {@code INFORMATION_SCHEMA}：
+     * 后者的表名大小写与 schema 过滤规则在 H2 / MySQL / PostgreSQL 上各不相同，
+     * 换库就得改这段 SQL；元数据接口是 JDBC 标准，跨库一致。
+     */
+    @Override
+    public List<String> getTableNames() {
+        Connection connection = null;
+        List<String> names = new ArrayList<>();
+        try {
+            connection = dataSource.getConnection();
+            DatabaseMetaData metaData = connection.getMetaData();
+            ResultSet rs = metaData.getTables(connection.getCatalog(), null,
+                    "ZWF%", new String[]{"TABLE"});
+            try {
+                while (rs.next()) {
+                    names.add(rs.getString("TABLE_NAME"));
+                }
+            } finally {
+                rs.close();
+            }
+        } catch (SQLException e) {
+            throw new WfPersistenceException("读取表清单失败", e);
+        } finally {
+            close(connection);
+        }
+        // 排序：元数据返回的顺序由数据库决定，飘一次就让人以为"表变了"
+        Collections.sort(names);
+        return names;
+    }
+
+    /**
+     * 某张表的行数。
+     *
+     * <p><b>标识符不能参数化</b>，所以这里必须先把名字<b>校验成白名单里的一个</b>，
+     * 再拿它去拼 SQL。校验的来源是 {@link #getTableNames()} —— 即数据库自己报的清单，
+     * 不是请求参数。少这一步就是一个能拼任意 SQL 的口子：
+     * 表名来自 REST 查询参数，而 {@code ?} 占位符只对值有效、对表名无效。
+     */
+    @Override
+    public long getTableCount(String name) {
+        if (name == null || !getTableNames().contains(name)) {
+            throw new com.zifang.z.wf.core.service.WfEngineException(
+                    "库里没有这张表: " + name + "。现有的: " + getTableNames()
+                            + "。若刚改了 DDL，请确认目标库跑过 initialize()");
+        }
+        return queryOne("SELECT COUNT(*) FROM " + name, null,
+                new RowMapper<Long>() {
+                    @Override
+                    public Long map(ResultSet rs) throws SQLException {
+                        return rs.getLong(1);
+                    }
+                });
+    }
+
     @Override
     public int deleteHistoryBefore(Date before) {
         String sql = "DELETE FROM ZWF_ACTIVITY WHERE PROC_ID IN ("

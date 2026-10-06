@@ -805,6 +805,67 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         return count;
     }
 
+    /**
+     * 逻辑实体名单，**与 {@code JdbcWorkflowPersistence} 的表名一一对应**。
+     *
+     * <p>顺序固定（不是按 Map 的迭代顺序）：自省接口的输出要能直接拿去 diff，
+     * 顺序飘一次就让人以为"表变了"。
+     */
+    public static final List<String> STORAGE_NAMES = java.util.Collections.unmodifiableList(
+            java.util.Arrays.asList(
+                    "ZWF_DEFINITION", "ZWF_PROCESS", "ZWF_EXECUTION", "ZWF_TASK",
+                    "ZWF_JOB", "ZWF_ACTIVITY", "ZWF_COMMENT", "ZWF_FILTER"));
+
+    @Override
+    public List<String> getTableNames() {
+        return STORAGE_NAMES;
+    }
+
+    /**
+     * 条数。名字不认识就报错 —— 返回 0 会把"拼错了名字"说成"这里是空的"。
+     */
+    @Override
+    public long getTableCount(String name) {
+        if (name == null || !STORAGE_NAMES.contains(name)) {
+            throw new com.zifang.z.wf.core.service.WfEngineException(
+                    "内存存储里没有这个实体: " + name + "。共有: " + STORAGE_NAMES);
+        }
+        if ("ZWF_DEFINITION".equals(name)) {
+            long total = 0;
+            for (Map<Integer, WfDefinition> versions : definitions.values()) {
+                total += versions.size();
+            }
+            return total;
+        }
+        if ("ZWF_PROCESS".equals(name)) {
+            return processInstances.size();
+        }
+        if ("ZWF_EXECUTION".equals(name)) {
+            return executions.size();
+        }
+        if ("ZWF_TASK".equals(name)) {
+            return tasks.size();
+        }
+        if ("ZWF_JOB".equals(name)) {
+            return jobs.size();
+        }
+        if ("ZWF_ACTIVITY".equals(name)) {
+            long total = 0;
+            for (List<WfActivityInstance> list : activities.values()) {
+                total += list.size();
+            }
+            return total;
+        }
+        if ("ZWF_COMMENT".equals(name)) {
+            long total = 0;
+            for (List<WfComment> list : comments.values()) {
+                total += list.size();
+            }
+            return total;
+        }
+        return filters.size();
+    }
+
     @Override
     public int deleteHistoryBefore(Date before) {
         int removed = 0;
