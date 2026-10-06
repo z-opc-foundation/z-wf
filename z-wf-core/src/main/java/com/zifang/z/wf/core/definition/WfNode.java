@@ -132,10 +132,15 @@ public class WfNode implements Serializable {
      * 复杂网关的汇合方式：{@code joining}（默认，等齐再合并）还是
      * {@code competing}（穿透，各条 token 各自往下）。
      *
-     * <p><b>为什么需要它</b>：复杂网关的 join 逻辑在 Camunda 里是交给实现决定的
-     * （建模器上的 entering behavior 不导出到 XML，导出的文件里看不出来），
-     * 所以 BPMN 文件本身回答不了"这个网关是合并还是穿透"，
+     * <p><b>为什么需要它</b>：BPMN 文件本身回答不了"这个网关是合并还是穿透"，
      * 而这两种行为在图上长得一模一样。
+     * <p><b>不要以为 Camunda 能给你一个参考答案</b>：Camunda 7 与 8
+     * <b>执行期都不支持复杂网关</b>（官方论坛 2025-04：「Camunda（neither 7 nor 8）
+     * support the complex gateway during execution. Web and Desktop Modeler support
+     * the symbol for diagramming, but it's more useful for documentation that it is
+     * for execution」），而它的 BPMN 2.0 参考里网关只有 XOR / Parallel / Inclusive /
+     * Event-based 四页，没有复杂网关页。所以"从 Camunda 导出的模型"里
+     * 复杂网关的汇合行为是<b>没有来源的</b>，只能由本实现给一个确定答案。
      *
      * <p><b>为什么默认 joining</b>：改默认值等于改已上线模型的行为 ——
      * 同一个文件在升级前后走出不同的图，而没有任何提示。
@@ -146,6 +151,30 @@ public class WfNode implements Serializable {
      * 只有复杂网关两边都说得通，才把它做成可配的。
      */
     private String complexJoin;
+
+    /**
+     * 复杂网关汇合的<b>阈值</b>：攒够几条分支的 token 就放行，不必等齐。
+     *
+     * <p>对应「N 取 M 到齐」。典型场景是 2/3 会签：法务、财务、合规三路并行，
+     * 只要法务与财务都批了就继续，合规慢慢批 —— 那是 WCP-30
+     * <i>Structured Partial Join</i>。不配这个属性时是"全到齐才合并"（现有行为）。
+     *
+     * <p><b>这里只收一个正整数，不收表达式</b>，尽管 BPMN 2.0 规范把
+     * {@code activationCondition} 定义成布尔表达式：
+     * <ul>
+     *   <li>本引擎的条件求值走流程变量命名空间，而"已抵达几条"是<b>引擎内部的计数</b>，
+     *       把它塞进变量表就要占一个用户可见的名字，且迟早与业务变量撞名。
+     *       撞名的症状是某天有人建了个同名变量，阈值静默变成另一个数。</li>
+     *   <li>真正要表达的无非"够 N 条"，一个整数把它说完了；
+     *       剩下的自由度（"第一条到就走"）用 {@code activationCondition="1"} 表达即可。</li>
+     * </ul>
+     * 非法取值（空串之外的非正整数）在部署期报 ERROR，见
+     * {@code WfDefinitionValidator#validateActivationCondition}。
+     *
+     * <p><b>与 {@link #complexJoin} 互斥</b>：{@code competing} 是穿透 ——
+     * 每条 token 各自往下，根本没有"攒够几条"这个说法。
+     */
+    private String activationCondition;
 
     // ==================== 异步执行（asyncBefore / asyncAfter） ====================
 
@@ -549,6 +578,44 @@ public class WfNode implements Serializable {
      */
     public boolean isCompetingJoin() {
         return "competing".equalsIgnoreCase(complexJoin == null ? "" : complexJoin.trim());
+    }
+
+    /** 阈值原文（{@code zifang:activationCondition}），没配时为 {@code null}。 */
+    public String getActivationCondition() {
+        return activationCondition;
+    }
+
+    public void setActivationCondition(String activationCondition) {
+        this.activationCondition = activationCondition;
+    }
+
+    /**
+     * 阈值 N：攒够几条分支的 token 就放行。
+     *
+     * <p><b>没配时返回 {@link Integer#MAX_VALUE}</b> 而不是 0：
+     * 运行期拿它和"已抵达数"比，"没配"必须表现得比任何真实阈值都难满足 ——
+     * 等齐是既有行为，阈值是新增的，往宽松方向兜底才对。
+     * 返回 0 的话"没配"会变成"立刻放行"，那等于把默认语义从"全到齐"悄悄改成"不等"。
+     *
+     * <p>解析失败返回 {@code -1} 而不是兜底成某个数：非法取值在部署期就报 ERROR，
+     * 运行期拿到 -1 只会出现在校验被绕过时，而那时<b>宁可一条都别放行</b>
+     * （挂住并留痕）也不要按猜测的阈值推进流程。
+     */
+    public int activationThreshold() {
+        if (activationCondition == null || activationCondition.trim().isEmpty()) {
+            return Integer.MAX_VALUE;
+        }
+        try {
+            int n = Integer.parseInt(activationCondition.trim());
+            return n > 0 ? n : -1;
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    /** 是否配了阈值（N 取 M）。 */
+    public boolean hasActivationThreshold() {
+        return activationCondition != null && !activationCondition.trim().isEmpty();
     }
 
     public boolean isAsyncBefore() {

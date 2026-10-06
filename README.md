@@ -368,7 +368,7 @@ advance() = leave(token) + 沿出线 enter(下一个 token)
 | **排他** `exclusiveGateway` | **各自往下走，不合并**（穿透） | Camunda：joining gateway has a pass-through semantic |
 | **并行** `parallelGateway` | 等齐再合并成一条 | BPMN 2.0 |
 | **包容** `inclusiveGateway` | 等齐**确实激活了**的那些入线再合并 | BPMN 2.0 |
-| **复杂** `complexGateway` | 可配：`joining`（默认）/ `competing`（穿透） | Camunda 把这一层交给实现 |
+| **复杂** `complexGateway` | 可配：`joining`（默认）/ `competing`（穿透）；`zifang:activationCondition="N"` 表示 N 条到齐就放行 | BPMN 2.0 —— **Camunda 7/8 执行期不支持复杂网关** |
 
 ```xml
 <complexGateway id="g" zifang:complexJoin="competing"/>
@@ -566,7 +566,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 
 ## 9. 测试
 
-931 个测试，全绿（core 845 / web 16 / admin 70）。
+943 个测试，全绿（core 856 / web 16 / admin 71）。
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
@@ -583,11 +583,12 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 | **`WfEscalationTest`** | **17** | 升级的中断 / 非中断边界、广播、订阅一次性、零订阅留痕、5 类必须被挡住的配置、codec 往返 |
 | **`WfGatewayJoinSemanticsTest`** | **11** | 排他网关穿透、并行/包容仍合并、复杂网关 joining vs competing、穿透后流程仍收敛、部署期挡住、codec 往返 |
 | **`WfJobPriorityTest`** | **10** | job 优先级从节点拷贝、两套存储实现同一把尺子、存量库补列、更新时不抹掉、排序是开关 |
+| **`WfComplexGatewayThresholdTest`** | **11** | 阈值放行只合并已抵达的（不误杀在跑的任务）、晚到令牌被消费掉且留痕、不配阈值行为不变、codec 往返、4 类非法配置部署期挡住 |
 | **`WfJobTriggerTest`** | **9** | 只有时间触发型/异步型可提前触发；订阅型、事件网关竞速分支、外部任务三类**分别**说清为什么不行；job 不存在要报错；留痕要点破「停留超时」不适用、且「该响没响」不写假记录 |
 | **`WfVariableServiceTest`** | **12** | 变量读写、批量原子性、审计留痕、终态拒绝 |
 | **`UnsupportedBpmnElementTest`** | **7** | 未支持元素不许静默退化（XML + JSON 两条入口） |
 | `WfAdminEndToEndTest` | 6 | Spring 全栈 + JDBC 落库 + 示例流程端到端 |
-| `WfWebApiTest` | 64 | **真实 HTTP**（`RANDOM_PORT` 起容器）：VO 边界、分页 total、异常→状态码、变量端点 |
+| `WfWebApiTest` | 65 | **真实 HTTP**（`RANDOM_PORT` 起容器）：VO 边界、分页 total、异常→状态码、变量端点 |
 | `WfJobControllerTest` | 10 | job 运维端点的路径/参数/状态码/响应字段；`triggered=false` 仍是 200；两个 job 端点的 id 字段名一致 |
 
 > 加粗的那几个是**行为审计**而非功能测试。本项目有过三次"实现了、注册了、

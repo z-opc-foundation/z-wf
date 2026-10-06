@@ -1634,6 +1634,17 @@ class WfWebApiTest {
     }
 
     /**
+     * 某人的待办条数。
+     *
+     * <p>阈值汇合那条用例要断「决议待办恰好 1 个」，
+     * 而 {@code firstTodoId} 断不出"有几个" —— 它只取第一条。
+     */
+    private int todoCount(String userId) throws Exception {
+        Map<String, Object> page = getOk("/api/approval-center/tasks/todo?userId=" + userId);
+        return asList(asMap(page.get("data")).get("records")).size();
+    }
+
+    /**
      * 发起一张 days=1 的请假单并返回领导待办 id。
      *
      * <p>每个用例必须用<b>独有的 leaderId</b>：所有用例共享同一个 H2 库与 Spring 上下文，
@@ -1984,6 +1995,74 @@ class WfWebApiTest {
         assertTrue(asList(asMap(getOk("/api/wf/history/jobs?processInstanceId=" + processId)
                 .get("data")).get("records")).isEmpty(),
                 "清理动作应当真的把这条 job 消费掉");
+    }
+
+    /**
+     * 复杂网关的阈值汇合（2/3 会签）走真实 HTTP。
+     *
+     * <p>与 core 判据分工：core 断的是引擎的判定分支，这里断的是
+     * <b>端到端跑通 + 走的是 HTTP 而不是内部调用</b>。
+     * 特别地，晚到那条被消费掉之后<b>不该让流程卡住</b> ——
+     * 而"卡住"在 HTTP 上是查得到的（本类有流程详情端点），在内部分支上不易察觉。
+     */
+    @Test
+    @DisplayName("阈值汇合端到端：2/3 放行、晚到被消费、流程仍能走完")
+    void complexGatewayThresholdOverHttp() throws Exception {
+        String key = "restThreshold-" + (System.nanoTime() % 100000);
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"" + key + "\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"ts\"/>\n"
+                + "    <parallelGateway id=\"tfork\"/>\n"
+                + "    <userTask id=\"tlegal\" name=\"法务审\" zifang:assignee=\"th-legal\"/>\n"
+                + "    <userTask id=\"tfinance\" name=\"财务审\" zifang:assignee=\"th-finance\"/>\n"
+                + "    <userTask id=\"tcompliance\" name=\"合规审\" zifang:assignee=\"th-compliance\"/>\n"
+                + "    <complexGateway id=\"tjoin\" zifang:activationCondition=\"2\"/>\n"
+                + "    <userTask id=\"tdecide\" name=\"决议\" zifang:assignee=\"th-ceo\"/>\n"
+                + "    <endEvent id=\"te\"/>\n"
+                + "    <sequenceFlow id=\"t1\" sourceRef=\"ts\" targetRef=\"tfork\"/>\n"
+                + "    <sequenceFlow id=\"t2\" sourceRef=\"tfork\" targetRef=\"tlegal\"/>\n"
+                + "    <sequenceFlow id=\"t3\" sourceRef=\"tfork\" targetRef=\"tfinance\"/>\n"
+                + "    <sequenceFlow id=\"t4\" sourceRef=\"tfork\" targetRef=\"tcompliance\"/>\n"
+                + "    <sequenceFlow id=\"t5\" sourceRef=\"tlegal\" targetRef=\"tjoin\"/>\n"
+                + "    <sequenceFlow id=\"t6\" sourceRef=\"tfinance\" targetRef=\"tjoin\"/>\n"
+                + "    <sequenceFlow id=\"t7\" sourceRef=\"tcompliance\" targetRef=\"tjoin\"/>\n"
+                + "    <sequenceFlow id=\"t8\" sourceRef=\"tjoin\" targetRef=\"tdecide\"/>\n"
+                + "    <sequenceFlow id=\"t9\" sourceRef=\"tdecide\" targetRef=\"te\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        repositoryService.deploy(new com.zifang.z.wf.core.definition.WfXmlParser().parse(xml));
+
+        String tag = "WEB-THR-" + System.nanoTime();
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", key, "businessKey", tag, "userId", "thr-owner-" + tag))
+                .get("data");
+
+        postOk("/api/approval-center/tasks/complete", body("taskId", firstTodoId("th-legal"),
+                "userId", "th-legal", "comment", "法务同意"));
+        assertEquals(0, todoCount("th-ceo"),
+                "只到一条不该放行 —— 会签变成了一张纸");
+
+        postOk("/api/approval-center/tasks/complete", body("taskId", firstTodoId("th-finance"),
+                "userId", "th-finance", "comment", "财务同意"));
+        assertEquals(1, todoCount("th-ceo"), "凑够 2 条就放行。实际决议待办数: " + todoCount("th-ceo"));
+        assertEquals(1, todoCount("th-compliance"),
+                "合规还在办，它的待办不该被顺手结束掉");
+
+        // 晚到那条：被消费掉，既不冒出第二个决议待办，也不把流程挂死
+        postOk("/api/approval-center/tasks/complete", body("taskId", firstTodoId("th-compliance"),
+                "userId", "th-compliance", "comment", "合规同意"));
+        assertEquals(1, todoCount("th-ceo"),
+                "晚到的那条被消费掉：WCP-30 说后续使能不再把控制权往后传。"
+                        + "实际决议待办数: " + todoCount("th-ceo"));
+
+        // 流程必须还能走完 —— 消费掉晚到令牌最怕的就是把实例挂在这儿
+        postOk("/api/approval-center/tasks/complete", body("taskId", firstTodoId("th-ceo"),
+                "userId", "th-ceo", "comment", "决议通过"));
+        Map<String, Object> overview = asMap(getOk(
+                "/api/approval-center/processes/get?processInstanceId=" + processId).get("data"));
+        assertNotNull(overview.get("status"), "办结后流程详情仍应可查。实际: " + overview);
     }
 
     @Test

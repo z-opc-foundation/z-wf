@@ -279,6 +279,7 @@ public class WfDefinitionValidator {
             // 放在 outs.isEmpty() 的 continue **之前**：连出线都没有的网关
             // 写这个属性同样是无效声明，不该因为它先 WARN 掉了就不看。
             validateComplexJoin(id, node);
+            validateActivationCondition(id, node);
             List<WfFlow> outs = definition.outgoingFlows(id);
             if (outs.isEmpty()) {
                 add(WfValidationIssue.Severity.WARN, id,
@@ -407,7 +408,7 @@ public class WfDefinitionValidator {
                                 + "要么去掉判别变量改用条件，要么把出线条件去掉");
             }
         } else {
-            if (withCondition == 0) {
+            if (withCondition == 0 && !singleUnconditionalOut(outs)) {
                 add(WfValidationIssue.Severity.ERROR, id,
                         "complexGateway 既没有判别变量（" + node.getCaseVariable() + "），"
                                 + "出线也没有一条带条件 —— 两种判定方式都没有，"
@@ -421,7 +422,10 @@ public class WfDefinitionValidator {
                                 + "要么配上 zifang:caseVariable，要么把 caseValue 换成条件表达式");
             }
         }
-        if (defaultCount == 0) {
+        // **默认流只对"可能一条都不成立"的分派有意义**：
+        // 纯汇合网关（只有一条无条件出线）永远会走它，不存在"都不成立"这种情况，
+        // 而要求它配默认流等于逼作者加一条永远走不到的线。
+        if (defaultCount == 0 && !singleUnconditionalOut(outs)) {
             add(WfValidationIssue.Severity.ERROR, id,
                     "complexGateway 没有默认流。判别变量的值不匹配任何 caseValue、"
                             + "或所有出线条件都不成立时，token 会永久停留在这里，"
@@ -463,6 +467,79 @@ public class WfDefinitionValidator {
                     "complexGateway 的 zifang:complexJoin 只能是 joining（默认，"
                             + "等所有到达的 token 再合并成一条）或 competing"
                             + "（穿透，每条到达的 token 各自往下走）。实际写了 " + raw);
+        }
+    }
+
+    /**
+     * 是否是<b>纯汇合</b>的复杂网关：只有一条出线，且它无条件、也不是默认流。
+     *
+     * <p>这种网关没有分派可做 —— {@code selectFlows} 那条无条件出线永远被选中，
+     * 根本走不到「都不成立」的分支。它的复杂之处全在<b>汇合</b>侧
+     * （{@code complexJoin} / {@code activationCondition}），
+     * 那是 {@link #validateComplexJoin} 与 {@link #validateActivationCondition} 管的。
+     *
+     * <p><b>不豁免的情形</b>：出线带条件（那确实是分派，条件不成立时 token 会停）、
+     * 出线是默认流（语义不同）、出线多于一条。
+     */
+    private boolean singleUnconditionalOut(List<WfFlow> outs) {
+        if (outs.size() != 1) {
+            return false;
+        }
+        WfFlow only = outs.get(0);
+        return only.isUnconditional() && !only.isDefaultFlow()
+                && isBlank(only.getCaseValue()) && isBlank(only.getConditionExpression());
+    }
+
+    /**
+     * 复杂网关的汇合阈值 {@code zifang:activationCondition}。
+     *
+     * <p>三件事必须在部署期问出来，理由逐条说：
+     * <ol>
+     *   <li><b>只能写在复杂网关上。</b>排他恒穿透、并行/包容恒全到齐 ——
+     *       在它们身上写阈值等于写一句与引擎行为相反的话（与 complexJoin 同理）。</li>
+     *   <li><b>与 {@code complexJoin="competing"} 互斥。</b>穿透是"每条 token 各自往下"，
+     *       根本没有"攒够几条"这个概念。两者同时配时若不报错，运行期二选一，
+     *       而作者无从知道引擎选了哪个 —— 症状是"我配了 2 取 3，怎么等齐了才走"。</li>
+     *   <li><b>必须是正整数。</b>非正整数（含 0、负数、非数字）一律 ERROR 而不是退到默认值：
+     *       退到"等齐"的话症状是"我配了 1 想让第一条到就走，结果还是全等齐"，
+     *       而报错里写着"只能是正整数"，比让人自己猜要快得多。</li>
+     * </ol>
+     *
+     * <p><b>不检查阈值是否超过入线数</b>：那是运行期的数据（只激活了 2 条分支时
+     * 阈值 3 就永远等不到），而网关的入线里可能有<b>永远不会到达</b>的那几条
+     * （条件不成立、被边界事件终止）—— 拿图上的入线数去卡阈值，
+     * 会把一个完全正常的 2/3 会签模型挡在部署门外。
+     * 那种"永远等不到"的情况在运行期有明确的处理（见 {@code WfEngine}）并留痕。
+     */
+    private void validateActivationCondition(String id, WfNode node) {
+        String raw = node.getActivationCondition();
+        if (isBlank(raw)) {
+            return;
+        }
+        if (node.getType() != WfNodeType.COMPLEX_GATEWAY) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    node.getId() + " 是 " + node.getType().bpmnName()
+                            + "，没有 activationCondition 这回事。排他网关恒为穿透、"
+                            + "并行与包容网关恒为全到齐合并，都没有阈值可言。"
+                            + "要「N 条到齐就放行」，请改用 complexGateway");
+            return;
+        }
+        if (node.isCompetingJoin()) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "complexGateway 同时配了 zifang:complexJoin=\"competing\" 与 "
+                            + "zifang:activationCondition=\"" + raw + "\"，两者互斥："
+                            + "competing 是穿透（每条 token 各自往下），"
+                            + "而阈值说的是「攒够几条再合并」。要阈值就去掉 competing，"
+                            + "要穿透就去掉 activationCondition");
+            return;
+        }
+        if (node.activationThreshold() < 0) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "complexGateway 的 zifang:activationCondition 只能是正整数"
+                            + "（表示攒够几条分支的 token 就放行，不必等齐）。实际写了 " + raw
+                            + "。0 与负数会让流程永远等不齐；"
+                            + "本引擎只收整数，不收 BPMN 规范里的布尔表达式"
+                            + "（那样要把引擎内部的计数塞进流程变量命名空间，迟早与业务变量撞名）");
         }
     }
 

@@ -1286,14 +1286,34 @@ public class WfEngine {
         List<WfFlow> inFlows = definition.incomingFlows(node.getId());
 
         // ---- 汇合判定 ----
-        if (isJoin(node, inFlows) && !allSiblingsArrived(context, token, node)) {
-            log.debug("网关 {} 汇合未到齐，token 等待中", node.getId());
-            token.setState(WfExecution.State.WAITING);
-            return;
-        }
         if (isJoin(node, inFlows)) {
-            // 汇合通过：结束所有抵达的兄弟 token，执行树在此收敛
-            collapseSiblings(context, token);
+            // **阈值与全到齐必须在这里各走各的分支**：配了 activationCondition 的复杂网关
+            // 用「攒够 N 条」，其余（含所有其它网关）用「全到齐」。
+            // 两条的差别不只是判据不同 —— 合并范围也不同（阈值只合并已抵达的，
+            // 见 collapseArrived），所以不能让阈值那条落回 collapseSiblings。
+            if (node.getType() == WfNodeType.COMPLEX_GATEWAY
+                    && node.hasActivationThreshold()) {
+                JoinDecision decision = thresholdJoinDecision(context, token, node);
+                if (decision == JoinDecision.WAIT) {
+                    log.debug("复杂网关 {} 阈值未到（{}/{}），token 等待中",
+                            node.getId(), arrivedAt(context, token, node),
+                            node.activationThreshold());
+                    token.setState(WfExecution.State.WAITING);
+                    return;
+                }
+                if (decision == JoinDecision.CONSUME) {
+                    consumeLateArrival(context, token, node);
+                    return;
+                }
+                collapseArrived(context, token, node);
+            } else {
+                if (!allSiblingsArrived(context, token, node)) {
+                    log.debug("网关 {} 汇合未到齐，token 等待中", node.getId());
+                    token.setState(WfExecution.State.WAITING);
+                    return;
+                }
+                collapseSiblings(context, token);
+            }
         }
 
         // ---- 选线 ----
@@ -1328,8 +1348,10 @@ public class WfEngine {
      *       即完成合并，流程继续往下执行」—— 注意「继续往下」是<b>各自</b>往下。</li>
      * </ul>
      *
-     * <p>复杂网关没有"必然合并"这一说：Camunda 把它的 join 逻辑留给实现
-     * （建模器里的 entering behavior 不导出到 XML），所以本实现<b>默认 joining</b>
+     * <p>复杂网关没有"必然合并"这一说，而且**不能拿 Camunda 当依据** ——
+     * Camunda 7 与 8 执行期都不支持复杂网关（官方论坛 2025-04 原话：
+     * 「neither 7 nor 8」），它的 BPMN 2.0 参考里也没有复杂网关这一页。
+     * 所以本实现<b>默认 joining</b>
      * （保持既有行为不变，改了会让已上线的模型悄悄改语义），
      * 需要穿透的显式写 {@code zifang:complexJoin="competing"}。
      */
@@ -1362,12 +1384,36 @@ public class WfEngine {
      * 所以只等"确实被激活过"的兄弟。
      */
     private boolean allSiblingsArrived(WfContext context, WfExecution token, WfNode gateway) {
-        List<WfExecution> siblings = context.getProcessExecutions();
-        if (siblings.isEmpty()) {
+        List<WfExecution> peers = livePeers(context, token);
+        if (peers.isEmpty()) {
             return true;
         }
+        for (WfExecution peer : peers) {
+            if (!gateway.getId().equals(peer.getActivityId())) {
+                return false; // 还有兄弟没到
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 与本 token 同一批、且尚未结束的兄弟 token。
+     *
+     * <p>抽出来是因为「阈值放行」与「全到齐」两条判定要读同一份列表：
+     * 复制一遍的话，改了其中一份忘了另一份，症状是
+     * 「阈值配了却按全到齐等」—— 而两条都看起来合理。
+     *
+     * <p><b>peers 是按父子/同父关系找的，不是按"在不在网关上"</b>，
+     * 所以还没走到网关的兄弟也在列表里（{@code allSiblingsArrived} 正是靠这一点
+     * 判出"还有兄弟没到"）。也因此"peers 为空"是一个有意义的信号：
+     * <b>再没有兄弟能来了</b> —— 别的分支要么已合并结束、要么被边界事件终止。
+     */
+    private List<WfExecution> livePeers(WfContext context, WfExecution token) {
+        List<WfExecution> siblings = context.getProcessExecutions();
+        if (siblings.isEmpty()) {
+            return new ArrayList<>();
+        }
         WfDefinition definition = context.getDefinition();
-        // 本 token 的同父兄弟
         List<WfExecution> peers = new ArrayList<>();
         for (WfExecution execution : siblings) {
             if (execution == null || execution.isEnded()) {
@@ -1384,15 +1430,165 @@ public class WfEngine {
                 peers.add(execution);
             }
         }
-        if (peers.isEmpty()) {
-            return true;
-        }
-        for (WfExecution peer : peers) {
-            if (!gateway.getId().equals(peer.getActivityId())) {
-                return false; // 还有兄弟没到
+        return peers;
+    }
+
+    /** 已抵达本网关的 token 数（含本条），供日志与判据说明用。 */
+    private int arrivedAt(WfContext context, WfExecution token, WfNode gateway) {
+        int arrived = 1;
+        for (WfExecution peer : livePeers(context, token)) {
+            if (gateway.getId().equals(peer.getActivityId())) {
+                arrived++;
             }
         }
-        return true;
+        return arrived;
+    }
+
+    /** 汇合判定：这条 token 到了网关之后该做什么。 */
+    private enum JoinDecision {
+        /** 攒够了，合并往下走。 */
+        READY,
+        /** 还没攒够，停在这儿等。 */
+        WAIT,
+        /** 再没有兄弟能来了，这条是多余的那一条 —— 消费掉。 */
+        CONSUME
+    }
+
+    /**
+     * 复杂网关的阈值汇合判定（N 取 M）。
+     *
+     * <p>只对配了 {@code zifang:activationCondition} 的复杂网关有意义；
+     * 没配的走 {@link #allSiblingsArrived}（全到齐），那是既有行为，不动。
+     *
+     * <p>三个分支：
+     * <ul>
+     *   <li><b>已抵达数 ≥ 阈值</b> → 放行，合并<b>已抵达</b>的那些。</li>
+     *   <li><b>还有活着的兄弟正往本网关赶，但没攒够</b> → 等。</li>
+     *   <li><b>再没有分支能赶到</b> → <b>消费掉</b>。这正是 WCP-30 Structured
+     *       Partial Join 的后半句：「后续的入线使能不会再把控制权往后传」。
+     *       而不能让它穿过去：穿过去等于下游被跑第二遍（2/3 会签里就是
+     *       "决策已经作出，合规批完又触发一次"）；也不能让它一直等：
+     *       永远等不到会把流程实例挂死。</li>
+     * </ul>
+     *
+     * <p><b>为什么不需要额外持久化状态</b>：判据完全由"哪些 peer 还活着、
+     * 以及它们还赶不赶得上"推出 —— 已合并的 peer 在存储里是 {@code ENDED}，
+     * 被边界事件终止的也是 {@code ENDED}，两者都不会再出现在 {@code livePeers} 里；
+     * 而循环回同一个网关时，新一轮 fork 出来的 token 与上一轮幸存的那些
+     * <b>不是同父兄弟</b>（{@code samePeer} 认的是父子关系），所以上一轮放行过
+     * 不会让这一轮的令牌被误判成多余。不需要"第几轮"这种状态。
+     *
+     * <p><b>已知边界</b>：某条分支的上游被卡在一个永远回不来的循环里时，
+     * 它永远"还能赶到"，于是这条会一直等 —— 与并行/包容汇合同源的既有风险，
+     * 本轮没有改变它。
+     */
+    private JoinDecision thresholdJoinDecision(WfContext context, WfExecution token, WfNode gateway) {
+        int threshold = gateway.activationThreshold();
+        if (threshold < 0) {
+            // 非法取值只在校验被绕过时才会到这里。
+            // **宁可永远等也不要按猜的阈值推进** —— 挂住并留痕是能被发现的，
+            // 按猜测放行是把流程推进到一个没人批准过的状态
+            return JoinDecision.WAIT;
+        }
+        List<WfExecution> peers = livePeers(context, token);
+        WfDefinition definition = context.getDefinition();
+        int arrived = 1;
+        // **"还有没有分支在往本网关赶"**。这是本判据里最容易错的一处：
+        // 放行之后，幸存的那条 token 往下走了，而它与晚到的那条**仍是同父兄弟**
+        // （samePeer 看的是父子关系，不是"在不在网关上"）。
+        // 所以只数 peers 的话，晚到那条会看到"还有兄弟"而被判成继续等 ——
+        // 流程就此挂死，而 decide 待办恰好还是 1 个，
+        // 一条只断"下游只跑一次"的判据会**因错误的原因通过**。
+        boolean anyPending = false;
+        for (WfExecution peer : peers) {
+            if (gateway.getId().equals(peer.getActivityId())) {
+                arrived++;
+            } else if (canStillReach(definition, peer.getActivityId(), gateway.getId())) {
+                anyPending = true;
+            }
+        }
+        if (arrived >= threshold) {
+            return JoinDecision.READY;
+        }
+        if (!anyPending) {
+            return JoinDecision.CONSUME;
+        }
+        return JoinDecision.WAIT;
+    }
+
+    /**
+     * 从 {@code fromActivityId} 出发还能不能走到 {@code gatewayId}。
+     *
+     * <p>沿出线做一次广搜，<b>命中网关即返回</b>（不越过它继续走），
+     * 所以"已经过网关的 token"不会被算成"还能回来"。
+     *
+     * <p><b>认不出来时一律当成"还能到"</b>：返回 false 会让阈值网关把还在途的分支
+     * 误判成多余到达并消费掉，而误消费是不可逆的；误等的代价只是慢一点，
+     * 且真会挂死时也已经有迹可循（轨迹上看得见谁在等）。
+     */
+    private boolean canStillReach(WfDefinition definition, String fromActivityId, String gatewayId) {
+        if (definition == null || fromActivityId == null || gatewayId == null) {
+            return true;
+        }
+        if (fromActivityId.equals(gatewayId)) {
+            return true;
+        }
+        List<String> seen = new ArrayList<>();
+        List<String> queue = new ArrayList<>();
+        queue.add(fromActivityId);
+        seen.add(fromActivityId);
+        for (int i = 0; i < queue.size(); i++) {
+            String current = queue.get(i);
+            for (WfFlow flow : definition.outgoingFlows(current)) {
+                String target = flow.getTargetRef();
+                if (target == null) {
+                    continue;
+                }
+                if (gatewayId.equals(target)) {
+                    return true;
+                }
+                if (!seen.contains(target)) {
+                    seen.add(target);
+                    queue.add(target);
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 消费掉一条"多余"的到达：网关已经作过决策，这条不再往下走。
+     *
+     * <p><b>必须留痕</b>：不写的话这条分支在轨迹上凭空消失 ——
+     * 排障的人看到"合规这条怎么没结果"，而图上明明有它。
+     */
+    private void consumeLateArrival(WfContext context, WfExecution token, WfNode gateway) {
+        int threshold = gateway.activationThreshold();
+        context.recordActivity(gateway.getId(), gateway.getName(),
+                gateway.getType().bpmnName(),
+                "threshold-consumed:已攒够 " + threshold + " 条分支并放行，"
+                        + "本分支为多余到达，决策已作出，不再往下传递");
+        token.setState(WfExecution.State.ENDED);
+        context.markTouched(token);
+        log.info("复杂网关 {} 的阈值 {} 已满足，本条到达被消费掉（决策已作出）",
+                gateway.getId(), threshold);
+    }
+
+    /**
+     * 阈值放行时只合并<b>已抵达网关</b>的 peer。
+     *
+     * <p><b>不能复用 {@link #collapseSiblings}</b>：它结束的是<b>所有</b>同批 peer，
+     * 包括那些还停在上游用户任务上的。全到齐时那是对的（本来就该一起收掉），
+     * 而阈值语义下会把在跑的审批任务直接结束掉 —— 症状是
+     * 「合规的待办刚建出来就没了」，且任务表与 token 表对不上。
+     */
+    private void collapseArrived(WfContext context, WfExecution token, WfNode gateway) {
+        for (WfExecution peer : livePeers(context, token)) {
+            if (gateway.getId().equals(peer.getActivityId())) {
+                peer.setState(WfExecution.State.ENDED);
+                context.markTouched(peer);
+            }
+        }
     }
 
     /**

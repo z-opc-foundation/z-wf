@@ -361,6 +361,12 @@ public class WfXmlParser {
         node.setComplexJoin(firstNonBlank(
                 extension(element, "complexJoin"),
                 camundaAttribute(element, "complexJoin")));
+        // 阈值同样读两种前缀。Camunda 那边其实用不上这个名字（BPMN 规范的
+        // activationCondition 在 Camunda 里不执行），但同一份建模工具的导出习惯
+        // 摆在那里，两个前缀都认的成本是一行，而漏认的成本是"配了不生效"
+        node.setActivationCondition(firstNonBlank(
+                extension(element, "activationCondition"),
+                camundaAttribute(element, "activationCondition")));
         // 异步两个方向都读 zifang: 与 camunda: 两个前缀：Camunda 导出的模型带的是
         // camunda:asyncBefore，照搬过来却因为前缀不同而不被识别，用户会以为
         // "z-wf 不支持异步" —— 而它其实支持。async 是 Camunda 里最常被直接沿用的扩展之一。
