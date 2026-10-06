@@ -58,6 +58,18 @@ public class WfXmlParser {
     /** 写了 messageEventDefinition / signalEventDefinition 却没给 name/ref。 */
     public static final String PROPERTY_EVENT_MISSING_REF = "zifang:eventMissingRef";
 
+    /**
+     * {@code conditionalEventDefinition} 里的条件表达式。
+     *
+     * <p>存成 <b>文本</b>而不是编译后的表达式：条件在<b>事件到达那一刻</b>求值，
+     * 而那一刻的流程变量与建订阅时不同（审批金额、当前审批人往往在等待期间才定下来）。
+     * 存成文本也才留得下"作者到底写了什么"，部署期报语法错时报得出原文。
+     */
+    public static final String PROPERTY_EVENT_CONDITION = "zifang:eventCondition";
+
+    /** 写了 {@code conditionalEventDefinition} 却没给 {@code <condition>}（或给了空白）。 */
+    public static final String PROPERTY_EVENT_CONDITION_EMPTY = "zifang:eventConditionEmpty";
+
     /** BPMN 2.0 模型命名空间。 */
     private static final String BPMN_NS = "http://www.omg.org/spec/BPMN/20100524/MODEL";
 
@@ -329,6 +341,35 @@ public class WfXmlParser {
     }
 
     /**
+     * 解析 {@code conditionalEventDefinition}。
+     *
+     * <p><b>条件与事件定义是"叠加"关系而不是"二选一"</b>：
+     * BPMN 里 {@code <intermediateCatchEvent>} 只挂一种事件定义，
+     * 但本仓把它当成「在消息 / 信号 / 定时器之上再加一道门槛」——
+     * 条件式事件在真实流程里的用法几乎都是「超时 3 天<b>而且</b>金额超过 1 万才提醒」，
+     * 那个「而且」需要事件类型与条件并存，照 BPMN 的互斥规则写不出来。
+     *
+     * <p>所以挂了两者时**不报错**：报错等于逼作者二选一，而二选一的结果
+     * 是"要么没条件、要么没有事件类型" —— 两种都答非所问。
+     * 互斥仍然是隐含的（conditional 不带任何事件类型时，部署期由
+     * {@code PROPERTY_EVENT_MISSING_REF} 那条路报出来）。
+     */
+    private void parseConditionalDefinition(Element element, WfNode node) {
+        Element conditionalDef = childElement(element, "conditionalEventDefinition");
+        if (conditionalDef == null) {
+            return;
+        }
+        String condition = childText(conditionalDef, "condition");
+        if (condition == null || condition.trim().isEmpty()) {
+            // 留痕而不是留空：条件事件没有条件 = 这一格永远等不到，
+            // 而报出来的错必须指向"你忘了写 <condition>"而不是"事件定义不完整"
+            node.getProperties().put(PROPERTY_EVENT_CONDITION_EMPTY, "conditionalEventDefinition");
+            return;
+        }
+        node.getProperties().put(PROPERTY_EVENT_CONDITION, condition.trim());
+    }
+
+    /**
      * 解析 {@code messageEventDefinition} / {@code signalEventDefinition}。
      *
      * <p>两者互斥，同时出现时按 properties 记下来交校验器报错 —— 静默挑一个
@@ -340,6 +381,7 @@ public class WfXmlParser {
     private void parseEventDefinition(Element element, WfNode node) {
         Element messageDef = childElement(element, "messageEventDefinition");
         Element signalDef = childElement(element, "signalEventDefinition");
+        parseConditionalDefinition(element, node);
         if (messageDef != null) {
             node.setMessageName(messageDef.getAttribute("messageRef"));
             if (node.getMessageName() == null || node.getMessageName().trim().isEmpty()) {

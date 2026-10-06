@@ -1561,11 +1561,23 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             return fireTimerBoundary(job);
         }
         if (isEventGatewayJob(job.getType())) {
-            return fireEventGatewayBranch(job, "system", "timer:事件网关分支 " + node.getId()
-                    + " 的定时器到点（已等 " + WfTimerSupport.describeDuration(
-                    System.currentTimeMillis() - (job.getCreateTime() == null
-                            ? System.currentTimeMillis() : job.getCreateTime().getTime()))
-                    + "）");
+            try {
+                return fireEventGatewayBranch(job, "system", "timer:事件网关分支 " + node.getId()
+                        + " 的定时器到点（已等 " + WfTimerSupport.describeDuration(
+                        System.currentTimeMillis() - (job.getCreateTime() == null
+                                ? System.currentTimeMillis() : job.getCreateTime().getTime()))
+                        + "）");
+            } catch (WfConditionalEventBlockedException blocked) {
+                // 定时器**静默跳过**，不往上抛：它是引擎自己在跑，
+                // 条件不成立就是「这次到点不算数」，那完全正常。
+                // 抛出去会让一个正常到点的定时器 job 变成失败并重试，
+                // 而它永远不会成功 —— 重试耗尽后还会被记成一条故障，
+                // 于是「条件不满足」变成了「流程出故障」，两件不相干的事。
+                // 留痕由 conditionAllowsThisEvent 写（评论里写着条件原文）。
+                log.info("事件网关分支 {} 的定时器到点但条件不成立，跳过：{}",
+                        node.getId(), blocked.getMessage());
+                return false;
+            }
         }
         return fireTimerBoundary(job);
     }
@@ -1586,6 +1598,84 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                 : job.getCreateTime().getTime());
         return fireEventBoundary(job, "timer:节点 " + job.getAttachedToRef() + " 停留超时（已等 "
                 + WfTimerSupport.describeDuration(waitedMillis) + "）") != null;
+    }
+
+    /**
+     * 这一格的条件式事件，这次事件到达时条件是否为真。
+     *
+     * <p><b>没有 {@code conditionalEventDefinition} 就恒为真</b> ——
+     * 绝大多数捕获事件不写条件，走的是普通路径。
+     *
+     * <p><b>求值点在「事件到达这一刻」，不在建订阅的时候。</b>
+     * 这一条是条件式事件全部价值所在：审批金额、当前审批人、已过天数
+     * 往往都是**等待期间**才定下来的，
+     * 建订阅时求值等于用还没发生的事实决定分支 ——
+     * 而症状是「金额明明超了却不提醒」，且流程图上看不出任何异常。
+     *
+     * <p>用 {@link WfContext#getVariable} 取值而不是直接读实例变量表：
+     * 并行分支上每条 token 各有局部变量（会签人的集合、该分支的当前审批人），
+     * 条件引用它们时应当看到<b>这一条</b>的，而不是流程级的那一份。
+     *
+     * <p>条件为假时<b>留痕</b>：写一条评论说明"条件不满足、这次不算它赢"。
+     * 留痕是"不静默"的兑现方式 —— 排障的人看到「提醒没来」时，
+     * 需要能从轨迹上直接读出「条件当时是假的」，
+     * 而不是自己再去猜那个变量当时是多少。
+     */
+    /** 这一格的条件原文；没写 {@code conditionalEventDefinition} 返回 {@code null}。 */
+    private String conditionOf(WfNode catchEvent) {
+        Object raw = catchEvent == null ? null : catchEvent.getProperties()
+                .get(com.zifang.z.wf.core.definition.WfXmlParser.PROPERTY_EVENT_CONDITION);
+        return raw == null ? null : String.valueOf(raw);
+    }
+
+    private boolean conditionAllowsThisEvent(WfContext context, WfNode catchEvent, String reason) {
+        String condition = conditionOf(catchEvent);
+        if (condition == null) {
+            return true;
+        }
+        java.util.Map<String, Object> variables = new java.util.HashMap<>();
+        WfProcessInstance instance = context.getProcessInstance();
+        if (instance != null && instance.getVariables() != null) {
+            variables.putAll(instance.getVariables());
+        }
+        WfExecution token = context.getCurrentExecution();
+        if (token != null && token.getVariables() != null) {
+            variables.putAll(token.getVariables());
+        }
+        boolean allows = evaluateEventCondition(condition, variables);
+        if (!allows) {
+            persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                    instance == null ? null : instance.getId(), "system", "job",
+                    "事件网关分支 " + catchEvent.getId() + " 的条件不成立（"
+                            + condition + "），本次事件不算它赢，继续等待。"
+                            + "触发来源：" + reason));
+            log.info("流程 {} 事件网关分支 {}：条件 [{}] 不成立，本次不算它赢",
+                    instance == null ? "?" : instance.getId(), catchEvent.getId(), condition);
+        }
+        return allows;
+    }
+
+    /**
+     * 求事件条件的值。
+     *
+     * <p><b>求值异常判为「条件不成立」而不是「放行」</b>：
+     * 条件写错（变量名拼错、语法错）时放行，等于把一条本该继续等的分支
+     * 提前推进去了 —— 而流程就此走错，且没有任何报错。
+     * 反过来判为不成立只是"这次不算它赢"，流程还停在那儿等人处理，
+     * 症状是「提醒没来」，而后一条至少有迹可循（轨迹上写着条件不成立）。
+     *
+     * <p>用 {@code evaluateStrict} 而不是 {@code evaluate}：后者的 {@code failOpen}
+     * 是全局配置，而这里的不放行是**这条分支自己的性质**，
+     * 不该被宿主应用的配置改掉。
+     */
+    private boolean evaluateEventCondition(String condition,
+                                           java.util.Map<String, Object> variables) {
+        try {
+            return engine.getExpressionEvaluator().evaluateStrict(condition, variables);
+        } catch (RuntimeException e) {
+            log.warn("事件条件求值失败，判为不成立: [{}] / {}", condition, e.getMessage());
+            return false;
+        }
     }
 
     /**
@@ -1860,18 +1950,32 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         WfNode catchEvent = definition.node(job.getElementId());
         WfNode gateway = gatewayOf(definition, catchEvent);
 
+        // context 只建对象、不落库也不改状态，**提在 deleteJob 之前**是为了让
+        // 「条件不满足」这条路不必先把订阅删掉 ——
+        // 条件式事件等的是"下一次事件到达时条件为真"，订阅没了就永远等不到了
+        WfContext context = newContext(definition, instance, token);
+        context.setProcessExecutions(
+                persistence.findExecutionsByProcessInstance(instance.getId()));
+        if (!conditionAllowsThisEvent(context, catchEvent, reason)) {
+            // 刻意**不删 job、不推进、不作废兄弟分支**：这一格还在等，
+            // 只是这一次事件不算它赢。抛出去由调用路径分别处置 ——
+            // 消息/信号要把它变成一条说清原因的错（否则会落到
+            // 「没有等待消息」那句上，把排障方向带偏到「没人订阅」），
+            // 定时器则该静默跳过（它本来就是引擎自己在跑）。
+            fireJobExecuted(definition, instance.getId(), job, false);
+            throw new WfConditionalEventBlockedException(catchEvent.getId(),
+                    conditionOf(catchEvent), reason);
+        }
+
         // 先删再推进：与 WfJobService#fire、completeExternalTask 同一顺序。
         // 并发投递时后到的那次会落到上面那道"token 已挪走"的闸门，
         // 而不是把同一条分支走两遍。
         persistence.deleteJob(job.getId());
 
-        WfContext context = newContext(definition, instance, token);
         // 触发者要一路带进轨迹与评论：事件网关的竞速结果事后追责时，
         // "这条分支是谁的消息选中的"是第一个要回答的问题
         context.setAuthenticatedUserId(userId == null || userId.trim().isEmpty()
                 ? "system" : userId);
-        context.setProcessExecutions(
-                persistence.findExecutionsByProcessInstance(instance.getId()));
 
         int cancelled = gateway == null ? 0 : cancelSiblingBranches(context, definition, gateway,
                 catchEvent.getId());
@@ -2014,15 +2118,29 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         }
         WfProcessInstance advanced = null;
         int fired = 0;
+        // 被条件挡住的分支：有人在等，但这一次不算它赢。
+        // **必须与「压根没人等」分开报** —— 两者的处置完全相反
+        // （前者去看那个变量当时是多少，后者去建流程），
+        // 合成一句「没反应」会把排障方向带偏，而且没人会想到去看条件。
+        List<String> blocked = new ArrayList<>();
         for (WfJob job : persistence.queryJobs(query.setPageNum(1).setPageSize(500))) {
             if (!wanted.equals(job.getSubscriptionName())) {
                 continue;
             }
-            if (fireEventGatewayBranch(job, userId, type.outcomePrefix() + type.getLabel()
-                    + " [" + wanted + "]" + (comment == null ? "" : "：" + comment))) {
-                fired++;
-                advanced = requireInstance(job.getProcessInstanceId());
+            try {
+                if (fireEventGatewayBranch(job, userId, type.outcomePrefix() + type.getLabel()
+                        + " [" + wanted + "]" + (comment == null ? "" : "：" + comment))) {
+                    fired++;
+                    advanced = requireInstance(job.getProcessInstanceId());
+                }
+            } catch (WfConditionalEventBlockedException blockedEx) {
+                blocked.add(blockedEx.getMessage());
             }
+        }
+        if (fired == 0 && !blocked.isEmpty()) {
+            throw new WfEngineException(type.getLabel() + " [" + wanted + "] 到了，"
+                    + "但没有一条事件网关分支的条件成立，它们仍在等待：\n  "
+                    + String.join("\n  ", blocked));
         }
         if (fired > 0) {
             log.info("{} [{}] 唤醒 {} 个事件网关分支", type.getLabel(), wanted, fired);

@@ -453,10 +453,20 @@ public class WfDefinitionValidator {
     private void validateCatchEvent(WfDefinition definition, String id, WfNode node,
                                     List<WfFlow> inFlows) {
         if (!node.hasEventDefinition()) {
+            // 带了 conditionalEventDefinition 时要点出「条件不提供事件类型」：
+            // 作者很可能以为条件式事件自己就能等，而这句话是唯一能纠正那个误解的地方。
+            // 不点的话报错只说"没有任何事件定义"，读起来像"条件式事件在本引擎里完全没被识别"。
             add(WfValidationIssue.Severity.ERROR, id,
                     "中间捕获事件没有任何事件定义（messageEventDefinition / "
                             + "signalEventDefinition / timerEventDefinition），"
-                            + "它在图上是一条永远等不到的死路");
+                            + "它在图上是一条永远等不到的死路"
+                            + (node.getProperties()
+                                    .containsKey(WfXmlParser.PROPERTY_EVENT_CONDITION)
+                                    ? "。注意它写的是 conditionalEventDefinition —— "
+                                    + "条件只是「在某个事件类型之上再加一道门槛」，"
+                                    + "**不提供事件类型**：它回答「够不够格」，"
+                                    + "不回答「等什么」。要等什么仍要配 message / signal / timer 之一"
+                                    : ""));
         } else if (node.isTimerEvent() && !isGatewayBranch(definition, node, inFlows)) {
             // 定时器只有**作为事件网关的分支**时才支持。
             // 孤立的定时器捕获事件（流程里直接写一个"等 5 分钟再继续"的节点）
@@ -479,6 +489,8 @@ public class WfDefinitionValidator {
                             + "signalEventDefinition，以及作为事件网关分支的 "
                             + "timerEventDefinition");
         }
+        // 条件式事件的两条硬规矩
+        validateConditionalEvent(id, node);
         if (inFlows.size() != 1) {
             add(WfValidationIssue.Severity.ERROR, id,
                     "中间捕获事件必须恰好有 1 条入线，当前有 " + inFlows.size() + " 条。"
@@ -493,6 +505,48 @@ public class WfDefinitionValidator {
             add(WfValidationIssue.Severity.WARN, id,
                     "中间捕获事件 " + id + " 不是从事件网关进来的，"
                             + "它会一直等到事件到达为止，且不会与任何其他分支互斥");
+        }
+    }
+
+    /**
+     * 条件式捕获事件（{@code conditionalEventDefinition}）的两条硬规矩。
+     *
+     * <p><b>① 条件为空 ⇒ ERROR。</b>条件式事件没有条件 = 这一格永远等不到 ——
+     * 与"没有事件类型"是同一种死路，但指向的错处不同，
+     * 所以分开报（作者可能以为 `conditionalEventDefinition` 本身就能等）。
+     *
+     * <p><b>② 边界事件上不许挂条件 ⇒ ERROR。</b>
+     * 边界事件在本引擎里是<b>打断型</b>的（宿主待办作废、token 走补偿分支），
+     * 而条件式事件是<b>竞速型</b>的语义（不满足就不算它赢、继续等）。
+     * 两套语义叠在一起时，"条件不满足"的边界事件该怎么办没有答案：
+     * 按竞速理解，它该继续等 —— 但边界事件此刻正要把宿主打断，
+     * "继续等"意味着这次打断被静默取消，而宿主的 token 已经被拉走了。
+     * ⇒ 与「抛事件不许挂边界事件」同一条判据：**语义不同的两件事不能叠**。
+     */
+    private void validateConditionalEvent(String id, WfNode node) {
+        if (node.getProperties().containsKey(WfXmlParser.PROPERTY_EVENT_CONDITION_EMPTY)) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "中间捕获事件 " + id + " 写了 conditionalEventDefinition "
+                            + "却没给 <condition>（或给了空白）。"
+                            + "条件式事件没有条件就是一条永远等不到的死路，"
+                            + "而且症状与「没等任何事件」完全一样（都是不走），"
+                            + "从轨迹上分不出来。"
+                            + "另外 conditional 只是「在某个事件类型之上再加一道门槛」，"
+                            + "它自己**不提供事件类型** —— 还得配 messageEventDefinition / "
+                            + "signalEventDefinition / timerEventDefinition 之一，"
+                            + "否则这一格在等一个谁也说不清的东西");
+        }
+        if (node.getType() == WfNodeType.BOUNDARY_EVENT
+                && node.getProperties().containsKey(WfXmlParser.PROPERTY_EVENT_CONDITION)) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "边界事件 " + id + " 上写了 conditionalEventDefinition，本实现不支持。"
+                            + "本实现的边界事件是**打断型**的（宿主待办作废、token 走补偿分支），"
+                            + "而条件式事件是**竞速型**语义（条件不满足就不算它赢、继续等）。"
+                                    + "两者叠加时「条件不满足」该怎么办没有答案："
+                                    + "按竞速理解它该继续等，可边界事件此刻正要打断宿主 —— "
+                                    + "「继续等」等于把这次打断静默取消，而宿主 token 已被拉走。"
+                                    + "要表达「超时了但金额不大就当没超时」，"
+                                    + "请把条件放到事件网关的分支上（那里本来就是竞速语义）");
         }
     }
 
@@ -561,7 +615,14 @@ public class WfDefinitionValidator {
         if (node.isTimerEvent()) {
             return "timerEventDefinition（定时器捕获）";
         }
-        return "conditionalEventDefinition / escalationEventDefinition 等未支持的捕获事件";
+        // 落到这里说明 message / signal / timer 三种都没有 ——
+        // conditionalEventDefinition **不提供事件类型**（它只是在某个事件类型之上
+        // 再加一道门槛，"等什么"仍然得由 message / signal / timer 回答），
+        // 所以不能拿它顶替事件类型，报错要说到这一点。
+        // escalationEventDefinition 则仍未支持。
+        return node.getProperties().containsKey(WfXmlParser.PROPERTY_EVENT_CONDITION)
+                ? "只有 conditionalEventDefinition（条件）而没有任何事件类型"
+                : "escalationEventDefinition 等未支持的捕获事件";
     }
 
     /**
@@ -622,6 +683,8 @@ public class WfDefinitionValidator {
      * </ul>
      */
     private void validateBoundaryEvent(WfNode node, WfDefinition definition) {
+        // 条件式事件在边界上不成立（打断型 vs 竞速型语义互斥），与 catch 事件共用同一段校验
+        validateConditionalEvent(node.getId(), node);
         if (isBlank(node.getAttachedToRef())) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
                     "boundaryEvent 缺少 attachedToRef，不知道挂在哪个节点上");
