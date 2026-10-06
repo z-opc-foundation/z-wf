@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import org.slf4j.Logger;
@@ -32,6 +33,7 @@ import com.zifang.z.wf.core.model.WfJobType;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfProcessStatus;
 import com.zifang.z.wf.core.model.WfTask;
+import com.zifang.z.wf.core.persistence.WfMessageCorrelation;
 import com.zifang.z.wf.core.persistence.WfPersistence;
 import com.zifang.z.wf.core.persistence.WfProcessInstanceQuery;
 import com.zifang.z.wf.core.persistence.WfJobQuery;
@@ -709,6 +711,257 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                     + "。请把消息名改得更具体，或改用 broadcastSignal 表达广播语义");
         }
         return completeTask(matched.get(0).getId(), userId, comment, variables);
+    }
+
+    /**
+     * 候选：一条"正在等某条消息"的执行点。
+     *
+     * <p>三类等待形态在数据上长得完全不一样（事件网关分支与消息边界是 job，
+     * 接收任务是 task），但对"这条消息该唤醒谁"这个问题来说，
+     * 它们只需要回答同样的三件事：属于哪条流程实例、是哪一条等待记录、
+     * 以及用来做执行级变量匹配的 executionId。
+     * 把它们统一成这一层，是为了让 {@link #correlate} 与 {@link #triggerMessage}
+     * <b>共用同一份候选定义</b> —— 两者的差别只该是"多几个筛选条件"，
+     * 候选集本身一旦分叉，"correlate 找不到但 triggerMessage 能触发"就是 bug。
+     */
+    private static final class MessageCandidate {
+
+        /** 等待形态，出现在歧义报错的诊断里。 */
+        private final String kind;
+
+        private final String processInstanceId;
+
+        /** job id 或 task id —— 报错要能点名到具体哪一条，不能只说"匹配到 2 个"。 */
+        private final String targetId;
+
+        /** 执行级变量匹配用；接收任务可能没有。 */
+        private final String executionId;
+
+        private final WfJob job;
+
+        private final WfTask task;
+
+        private MessageCandidate(String kind, String processInstanceId, String targetId,
+                                 String executionId, WfJob job, WfTask task) {
+            this.kind = kind;
+            this.processInstanceId = processInstanceId;
+            this.targetId = targetId;
+            this.executionId = executionId;
+            this.job = job;
+            this.task = task;
+        }
+
+        @Override
+        public String toString() {
+            return kind + "(" + processInstanceId + "/" + targetId + ")";
+        }
+    }
+
+    /**
+     * 消息关联：<b>不给出流程实例 id，由引擎自己找到那条该被唤醒的流程</b>。
+     *
+     * <p>对应 Camunda 的 {@code RuntimeService#createMessageCorrelation(...).correlate()}。
+     * 与 {@link #triggerMessage} 的差别只有一个：候选集要多过几道筛选。
+     * 候选集本身来自同一份定义，所以两者的行为只在"找不到目标"时才分岔 ——
+     * {@code triggerMessage} 要求调用方给出 id，{@code correlate} 替它找。
+     *
+     * <p><b>零条与多条都报错，且分开说</b>：零条时把"有多少条被条件筛掉了"一并报出来
+     * —— 「没有任何流程在等这条消息」与「有 3 条在等，但业务键对不上」是两种完全不同的
+     * 故障，合并成一句"没找到"会让排查从零开始。
+     * 多条时列出每条候选的形态与 id：点对点消息必须能决定触发哪一个，
+     * 随机挑一条等于把一条消息投给了错误的单，而这类错误事后极难发现。
+     *
+     * <p><b>刻意不做 {@code correlateAll}</b>：唤醒全部的语义已由
+     * {@link #broadcastSignal} 覆盖，两套并行的「唤醒全部」只会让调用方
+     * 不知道该用哪个，而它们的差别（一个点名消息一个广播信号）
+     * 本来就该在方法名上就说清楚。
+     *
+     * <p><b>匹配条件不产生任何副作用</b>：{@code variables} /
+     * {@code localVariables} 只用来挑出那一条候选，<b>不回写流程变量</b>。
+     * 两个理由，第二个是主因：
+     * <ul>
+     *   <li><b>三条候选路径必须一致。</b> 候选有事件网关分支、消息边界、接收任务三种，
+     *       而只有接收任务那条的触发入口（{@link #completeTask}）接受变量。
+     *       让"条件顺便写回去"只对三分之一的路径生效，等于同一次关联请求
+     *       会因命中形态不同而产生不同的副作用 —— 调用方无法预判，
+     *       也无法在只跑过其中一种形态的测试里发现。</li>
+     *   <li><b>条件写错时不该顺手污染数据。</b> 匹配条件常直接来自外部消息体
+     *       （ERP 回执、MQ payload），把未经校验的外部字段灌进流程状态，
+     *       等于让"配错了"从一次可回滚的报错变成一次已经落库的数据损坏。
+     *       真要写入，让调用方显式调 {@code WfVariableService#setVariables}。</li>
+     * </ul>
+     * 与 Camunda 的 {@code correlate(processVariables)} 有这一处差别，是有意为之。
+     *
+     * @param userId  触发人（记入评论与轨迹）
+     * @param comment 触发说明
+     * @return 被触发的流程实例
+     * @throws WfEngineException 消息名为空、零候选、或多于一条候选
+     */
+    public WfProcessInstance correlate(WfMessageCorrelation criteria, String userId,
+                                       String comment) {
+        if (criteria == null) {
+            throw new WfEngineException("关联条件不能为空");
+        }
+        criteria.requireMessageName();
+        String messageName = criteria.getMessageName().trim();
+
+        List<MessageCandidate> waiting = waitingCandidates(messageName,
+                criteria.getProcessInstanceId());
+        if (waiting.isEmpty()) {
+            throw new WfEngineException("没有任何流程在等消息 [" + messageName + "]"
+                    + (criteria.getProcessInstanceId() == null ? "" : "（流程实例 "
+                            + criteria.getProcessInstanceId() + "）"));
+        }
+
+        List<MessageCandidate> matched = new ArrayList<>();
+        for (MessageCandidate candidate : waiting) {
+            if (matches(candidate, criteria)) {
+                matched.add(candidate);
+            }
+        }
+        if (matched.isEmpty()) {
+            // 关键诊断：把「有 N 条在等但都没匹配上」这件事说出来，
+            // 否则调用方只知道没找到，却不知道该去调条件还是该去查为什么没人在等
+            throw new WfEngineException("有 " + waiting.size() + " 条流程在等消息 [" + messageName
+                    + "]，但没有一条满足关联条件 " + criteria.describe()
+                    + "。在等的候选: " + waiting
+                    + "。变量匹配要求值完全相等（键不存在算不匹配，不等于「值为 null」）");
+        }
+        if (matched.size() > 1) {
+            throw new WfEngineException("消息 [" + messageName + "] 匹配到 " + matched.size()
+                    + " 条流程，点对点关联无法决定触发哪一条: " + matched
+                    + "（条件 " + criteria.describe() + "）。"
+                    + "请把条件写得更具体，或改用 broadcastSignal 表达广播语义");
+        }
+
+        MessageCandidate winner = matched.get(0);
+        log.info("消息关联命中: {}，条件 {}", winner, criteria.describe());
+        if (winner.task != null) {
+            // 刻意<b>不</b>把匹配用的变量回写：见 correlate 方法注释里「条件不产生副作用」那段。
+            return completeTask(winner.task.getId(), userId, comment, null);
+        }
+        if (winner.job.getType() == WfJobType.EVENT_MESSAGE) {
+            fireEventGatewayBranch(winner.job, userId, "消息关联 [" + messageName + "]"
+                    + (comment == null ? "" : "：" + comment));
+            return requireInstance(winner.job.getProcessInstanceId());
+        }
+        WfProcessInstance instance = fireEventBoundary(winner.job, "消息关联 [" + messageName + "]"
+                + (comment == null ? "" : "：" + comment));
+        if (instance == null) {
+            // fireEventBoundary 在 token 已不在宿主节点上时返回 null（按已办结处理）。
+            // 关联已经选定了这一条，却没能推进 —— 必须在调用方看到 null 之前就停住，
+            // 否则"关联成功"与"流程真的动了"之间会隔一个空。
+            throw new WfEngineException("消息关联选中了 " + winner
+                    + "，但触发时它已不满足条件（token 离开了宿主节点），未发生任何推进");
+        }
+        return instance;
+    }
+
+    /**
+     * 一条候选是否满足关联条件。
+     *
+     * <p>变量的比较用 {@code Object.equals}，<b>不做类型宽松</b>：
+     * {@code 1} 与 {@code "1"} 判为不等。理由是审批变量要经 JSON 往返，
+     * 数字变字符串是常态，可宽松比较一旦判等，调用方就永远查不出
+     * 「为什么这条消息配上了另一条单」—— 而错配一条审批单的后果远大于匹配失败。
+     * 键不存在算不匹配，而不是「值为 null」：这两种情况在排障时要分开看。
+     */
+    private boolean matches(MessageCandidate candidate, WfMessageCorrelation criteria) {
+        // 只查一次：三类条件各自查一遍的话，同一条候选最多会读三次同一行，
+        // 而候选数在"消息名写得太泛"时会有几十条 —— 那正是最需要报错的场景，
+        // 不该在这里先付三倍读。
+        WfProcessInstance instance = null;
+        if (notBlankText(criteria.getBusinessKey()) || notBlankText(criteria.getDefinitionKey())
+                || !criteria.getVariables().isEmpty()) {
+            instance = persistence.findProcessInstance(candidate.processInstanceId);
+            if (instance == null) {
+                return false;
+            }
+        }
+        if (notBlankText(criteria.getBusinessKey())) {
+            if (!criteria.getBusinessKey().trim().equals(instance.getBusinessKey())) {
+                return false;
+            }
+        }
+        if (notBlankText(criteria.getDefinitionKey())) {
+            if (!criteria.getDefinitionKey().trim().equals(instance.getDefinitionKey())) {
+                return false;
+            }
+        }
+        if (!criteria.getVariables().isEmpty()) {
+            if (!valuesEqual(instance.getVariables(), criteria.getVariables())) {
+                return false;
+            }
+        }
+        // 实例已查过就不再重复用上面的引用 —— 上面任一条件不满足就直接 return 了，
+        // 走到这里说明 instanceLoaded 为 true 且 instance 非空。
+        if (!criteria.getLocalVariables().isEmpty()) {
+            if (candidate.executionId == null) {
+                return false;
+            }
+            WfExecution execution = persistence.findExecution(candidate.executionId);
+            if (execution == null
+                    || !valuesEqual(execution.getVariables(), criteria.getLocalVariables())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean valuesEqual(Map<String, Object> actual, Map<String, Object> wanted) {
+        if (actual == null) {
+            return false;
+        }
+        for (Map.Entry<String, Object> entry : wanted.entrySet()) {
+            // containsKey 与 Objects.equals 都要：
+            // 少了 containsKey，条件里写 k=null 就会匹配上"根本没有 k"的流程 ——
+            // 那是两种不同的状态，排障时必须分开看；
+            // 少了 Objects.equals（直接 entry.getValue().equals(...)），
+            // 条件里写 k=null 会在匹配前先抛 NPE，把"条件写错"报成"引擎内部错误"。
+            if (!actual.containsKey(entry.getKey())
+                    || !Objects.equals(entry.getValue(), actual.get(entry.getKey()))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean notBlankText(String value) {
+        return value != null && !value.trim().isEmpty();
+    }
+
+    /**
+     * 收集全部"正在等这条消息"的候选。
+     *
+     * <p>三类等待形态按 {@link #triggerMessage} 里的同一顺序列出
+     * （事件网关分支 → 消息边界 → 接收任务），不是为了"优先触发某个"，
+     * 而是为了<b>歧义时报错的顺序稳定</b>：同一条消息同时被边界与接收任务等着的
+     * 情况很少，但一旦发生，报错里那几行的先后不该取决于 map 的迭代顺序。
+     */
+    private List<MessageCandidate> waitingCandidates(String messageName, String processInstanceId) {
+        List<MessageCandidate> candidates = new ArrayList<>();
+        WfJobQuery query = new WfJobQuery().setPageNum(1).setPageSize(500);
+        if (processInstanceId != null) {
+            query.setProcessInstanceId(processInstanceId);
+        }
+        for (WfJob job : persistence.queryJobs(query.setType(WfJobType.EVENT_MESSAGE))) {
+            if (messageName.equals(job.getSubscriptionName())) {
+                candidates.add(new MessageCandidate("事件网关分支", job.getProcessInstanceId(),
+                        job.getId(), job.getExecutionId(), job, null));
+            }
+        }
+        for (WfJob job : persistence.queryJobs(new WfJobQuery().setType(WfJobType.MESSAGE)
+                .setPageNum(1).setPageSize(500).setProcessInstanceId(processInstanceId))) {
+            if (messageName.equals(job.getSubscriptionName())) {
+                candidates.add(new MessageCandidate("消息边界", job.getProcessInstanceId(),
+                        job.getId(), job.getExecutionId(), job, null));
+            }
+        }
+        for (WfTask task : findWaitingReceiveTasks(messageName, processInstanceId)) {
+            candidates.add(new MessageCandidate("接收任务", task.getProcessInstanceId(),
+                    task.getId(), task.getExecutionId(), null, task));
+        }
+        return candidates;
     }
 
     /**

@@ -62,7 +62,7 @@
 | `createEventSubscriptionQuery` | ✅ | **本轮补上** `WfSubscriptionService` + `WfSubscriptionView`（放 core 不放 web：订阅查询通常由独立部署的监控/运维服务消费，放 web 会把它拖进 Spring MVC 运行时）。REST `GET /api/wf/subscriptions` 与 `/subscriptions/count`，并**并进 `GET /api/wf/process/overview`**。回答的是"这条单子怎么不动了"——在等消息的流程没有待办、轨迹没动、也不报错，没有这张表就只能翻 XML 猜。**job 类型归并成"等什么"**（message/signal/timer/external/async）同时**保留原 jobType** 以区分"打断"与"竞速"；竞速分支额外带 `gatewayId`，让人看得出几条是同一次竞速。**超过扫描上限（2000）直接报错**而不是给一份看起来完整的截断列表 |
 | `getActivityInstance`（树形活动实例） | 🟡 | 有扁平轨迹 `getTrail`，没有 Camunda 的树形结构 |
 | `messageEventReceived` / `signalEventReceived` | ✅ | `triggerMessage`（点对点）/ `broadcastSignal`（广播），**本轮补上 REST**：`POST /api/wf/process/message` 与 `POST /api/wf/process/signal`。此前只有 Java 入口，纯 HTTP 的调用方根本没法投递事件，事件网关等于对它们不存在。一个端点同时能叫醒三种等待者（事件网关分支 / 消息边界订阅 / receiveTask），谁先判决定了这条事件落到哪种语义上 |
-| `correlate`（关联消息到执行） | ❌ | |
+| `correlate`（关联消息到执行） | ✅ | **第 16 轮补上** `WfRuntimeService#correlate(WfMessageCorrelation, userId, comment)` + `WfMessageCorrelation`，REST `POST /api/wf/process/message/correlate`。与 `triggerMessage` 的差别**只有一个**：调用方手里只有业务键与业务字段，引擎自己找到那条该被唤醒的单 —— 而"收到 ERP 回执、发一条消息、按单号配"才是消息驱动集成的常态。条件四选：业务键 / 定义 key / 流程级变量 / 执行级变量，全是「与」，不设即不参与。**候选集与 `triggerMessage` 共用同一份定义**（`waitingCandidates`），两者的差别只该是「多几道筛选」，候选定义一旦分叉，"correlate 找不到但 triggerMessage 能触发"就是 bug。**「没人在等」与「有 N 条在等但都没匹配上」分开报**：合并成一句"没找到"会让调用方不知道自己该去调条件还是该去查为什么没人在等；多条时列出每条候选的形态与 id，不静默挑一条。**变量比较用 `Object.equals`，不做类型宽松**（`1` 与 `"1"` 判不等），且**键不存在不等于「值为 null」**。**匹配条件不产生任何副作用**（不回写流程/任务变量）—— 三类候选的触发入口并不都接受变量，只让三分之一的路径生效等于同一次请求因命中形态不同而结果不同；且条件常直接来自外部消息体，把未经校验的外部字段灌进流程状态会让「配错了」从一次报错变成一次数据损坏。**刻意不做 `correlateAll`**（唤醒全部已由 `broadcastSignal` 覆盖）与 `withoutVariables()` 开关 |
 | `getBusinessKey` / `setProcessInstanceName` | 🟡 | businessKey 有；流程名称没有 |
 
 ### 1.3 TaskService
@@ -306,13 +306,13 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ### P2 —— 管理便利
 
-引擎指标 · ~~流程模型图形回读~~（BPMN DI 解析 + REST 已实现，见 §1.1）
+引擎指标 · ~~流程模型图形回读~~（BPMN DI 解析 + REST 已实现，见 §1.1）· ~~消息关联 `correlate`~~（**第 16 轮补上**，见 §1.2）
 
 ---
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 696 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 720 个测试兜着
 - 从测试与审计中逼出并修复的**真实缺陷 42 项**，其中 6 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发、
   嵌入式 `subProcess` 的内联内容永远不执行、默认流程标记两套实现不一致
@@ -1072,3 +1072,74 @@ M15 的判据从"断言类型"收紧到"断言消息落在版本不存在那道�
 ⇒ 与第 14 轮那两种（打完补丁没恢复 / 补丁文本没跟上代码变化）并列，
 **「变异没生效」有三个来源：没打上、没恢复、没进编译路径**，
 而三者在结果上都长得像"判据没区分力"。
+
+### 本轮反向验证记录（消息关联 `correlate`）
+
+**20 条变异全红 + 2 条对照全绿**，720 个测试，逐类 `@Test` 与 surefire 零差异。
+
+**一、写代码时自己先证伪了一次：「匹配条件回写」是不是死代码**（对应第 0 问）。
+初版把 `criteria.getVariables()` 传给了 `completeTask`。第一反应是
+"匹配条件要求每个键都存在于流程变量且值相等，所以回写必然是 no-op"——
+**这个推理是错的**，而且错在一个我本该先查的地方：
+`completeTask` 写的是 `task.getVariables()`（**任务级**）与执行上下文，
+不是 `instance.getVariables()`（流程级）。两个不同的 Map，回写有真实副作用。
+⇒ 由此定下本轮最要紧的一条设计：**匹配条件一律不回写**。
+理由有两条，第二条是主因：① 三类候选的触发入口里**只有接收任务那条接受变量**，
+让"条件顺便写回去"只对三分之一的路径生效，同一次关联请求会因命中形态不同
+而产生不同的副作用 —— 调用方无法预判，也无法在只跑过一种形态的测试里发现；
+② 条件常直接来自外部消息体（ERP 回执、MQ payload），
+把未经校验的外部字段灌进流程状态，等于让「配错了」从一次可回滚的报错
+变成一次已经落库的数据损坏。
+⇒ 与第 10 轮那条「基准不能是被断言对象自己导出的量」同源：
+**一个动作若在"匹配成功"这个前提下可证明无效果，它就不是实现，是幻觉。**
+
+**二、判据的「短路」把一条缺陷藏住了（M07，首轮打绿）**。
+`valuesEqual` 写成 `!actual.containsKey(k) || !Objects.equals(...)` 之后，
+我把变异改成 `entry.getValue().equals(...)`（条件值为 null 时 NPE），
+**全套测试照样绿**。查下来是我的判据数据不对：
+`absentKeyIsNotNullValue` 造的是"流程里**没有** remark"，
+而 `containsKey` 返回 false 时 `||` **短路**，`entry.getValue().equals(...)`
+根本不会被求值 ⇒ NPE 那条路径在这个输入下**可证明不可达**。
+补的判据是**另一种输入**：流程里**有** `remark="已填"`，条件却要 `remark=null` ——
+此时 `containsKey` 为 true，才真的走到比较那一步。
+⇒ 这正是第 0 问的教科书形态，而且**它发生在自己写的判据上，不是在别人写的代码上**：
+断言里那个"看起来覆盖了 null"的用例，实际只覆盖了 null 走不到的分支。
+⇒ **补一条判据之前先问「这条路径在这个输入下可达吗」**；
+造完判据数据后，**把被测代码的那条实际求值路径再走一遍**，而不是凭字段名想当然。
+
+**三、变异 harness 自己污染基线：还原时用错了来源**。
+第一次全量跑，`M15` 因为补丁串里引号写成 `「」`（代码里是 `"`）
+而 `PATCH NOT FOUND` 退出 —— **退出前没还原 worktree**。
+下一次运行开头做 `snapshot()`，而它是**从 worktree 自己**拷"原始"，
+于是把上一轮的变异当成了基线。症状是**基线红**，
+看起来像"尺子坏了"，实际上尺子好好的、上一轮已经跑完了。
+⇒ 两处修正：**`snapshot()` 改从主仓取 pristine**（worktree 永远是派生物），
+失败路径也必须还原再退出。
+⇒ 这是「变异没生效」三个来源（没打上 / 没恢复 / 没进编译路径）之外的**第四种**：
+**没还原，而且还原的来源本身是脏的**。它不表现为"某条变异打不红"，
+而表现为"基线红" ⇒ **基线红必须单开一条归因分支，不能并进"判据没区分力"。**
+同轮还因 worktree 里残留的旧 `.class` 撞出一次同样的假象，
+给每条变异的命令加上 `clean` 才把它从归因里彻底排除。
+
+**四、判据配平：同一条不变式在 N 处独立实现，判据必须 N 处**。
+Controller 里把 DTO 字段拷进 `WfMessageCorrelation` 的那段有 **6 个独立拷贝点**
+（messageName / processInstanceId / businessKey / definitionKey / variables / localVariables），
+而我第一版 REST 用例只走了其中 3 个。
+⇒ 若把 `setLocalVariables(...)` 改成 `setLocalVariables(null)`，
+核心层的 18 条用例**一条都不会红**（它们不走 Controller），
+只跑到 3 个字段的 web 用例也照样绿。
+⇒ 补了 3 条 web 用例（businessKey / definitionKey / processInstanceId），
+最终 M16–M20 五条"Controller 不传某个字段"的变异全部转红。
+⇒ 与第 9 轮那条（内存 / JDBC 双实现必须各有判据）同源，
+**这次的 N 是"同一个 DTO 的 N 个字段"** ——
+字段越多的映射层，越容易只测自己最先想到的那几个。
+
+**五、被测代码在这个输入下可证明无效果的那一段，测试怎么写**。
+`correlate` 里"选定后推不动必须报错"那个分支（`fireEventBoundary` 返回 null），
+在正常链路上**构造不出来**：token 离开宿主节点与订阅 job 被撤是同一笔事务里的事。
+⇒ 判据里**直接造那条"撤得慢了一步"的 job**（复制真 job，把 `executionId`
+指向一个不存在的 token），并把这件事写进注释 ——
+否则下一个读代码的人会以为这条分支是随手加的。
+⇒ 与第 15 轮那条同族，但形态更极端：那里是"变异打不红所以要问可达性"，
+这里是**"要测一条不可达分支，只能从持久层直接造状态"**。
+可造（因为 `saveJob` 是公开的）就要造；不可造就要明说没覆盖，不要假装覆盖了。

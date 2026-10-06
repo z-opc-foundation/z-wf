@@ -652,6 +652,109 @@ public final class WfRequests {
     }
 
     /**
+     * 消息关联：不给流程实例 id，由引擎自己找到那条该被唤醒的流程。
+     *
+     * <p>与 {@link EventDelivery} 的差别就在 {@code processInstanceId} 上 ——
+     * 那个是"我知道是哪一条"，这个是"我只知道业务键与业务字段，你去找"。
+     * 两者字段不共用一个类：{@code EventDelivery} 的 variables 是
+     * <b>随事件带进流程</b>的载荷，本类的 variables 是
+     * <b>用来匹配</b>的条件，合并成一个类会让调用方分不清自己那份
+     * variables 到底会被写入还是只被读取。
+     */
+    public static class MessageCorrelation implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        /** 消息名，对应 {@code messageRef}。必填。 */
+        private String messageName;
+
+        /** 可选，进一步限定在某个流程实例内。 */
+        private String processInstanceId;
+
+        /** 可选，按业务键匹配（{@code WfProcessInstance#getBusinessKey}）。 */
+        private String businessKey;
+
+        /** 可选，按流程定义 key 匹配。 */
+        private String definitionKey;
+
+        /** 可选，流程级变量相等匹配；<b>只读不写</b>。 */
+        private Map<String, Object> variables;
+
+        /** 可选，执行级变量相等匹配；<b>只读不写</b>。 */
+        private Map<String, Object> localVariables;
+
+        /** 触发人，记入评论与轨迹。 */
+        private String userId;
+
+        /** 写进评论的一句话说明。 */
+        private String comment;
+
+        public String getMessageName() {
+            return messageName;
+        }
+
+        public void setMessageName(String messageName) {
+            this.messageName = messageName;
+        }
+
+        public String getProcessInstanceId() {
+            return processInstanceId;
+        }
+
+        public void setProcessInstanceId(String processInstanceId) {
+            this.processInstanceId = processInstanceId;
+        }
+
+        public String getBusinessKey() {
+            return businessKey;
+        }
+
+        public void setBusinessKey(String businessKey) {
+            this.businessKey = businessKey;
+        }
+
+        public String getDefinitionKey() {
+            return definitionKey;
+        }
+
+        public void setDefinitionKey(String definitionKey) {
+            this.definitionKey = definitionKey;
+        }
+
+        public Map<String, Object> getVariables() {
+            return variables;
+        }
+
+        public void setVariables(Map<String, Object> variables) {
+            this.variables = variables;
+        }
+
+        public Map<String, Object> getLocalVariables() {
+            return localVariables;
+        }
+
+        public void setLocalVariables(Map<String, Object> localVariables) {
+            this.localVariables = localVariables;
+        }
+
+        public String getUserId() {
+            return userId;
+        }
+
+        public void setUserId(String userId) {
+            this.userId = userId;
+        }
+
+        public String getComment() {
+            return comment;
+        }
+
+        public void setComment(String comment) {
+            this.comment = comment;
+        }
+    }
+
+    /**
      * 保存筛选器的新建 / 修改。
      *
      * <p>新建与修改共用一个 DTO，靠"有没有 filterId"区分 ——

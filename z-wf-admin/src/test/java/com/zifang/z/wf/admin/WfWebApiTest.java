@@ -2246,6 +2246,248 @@ class WfWebApiTest {
                 "落选分支没被作废的话实例永远结束不了 —— 这条断言是竞速是否生效的最终判据");
     }
 
+    // ==================== 消息关联端点 ====================
+
+    @Test
+    @DisplayName("消息关联端点：不给流程实例 id，按业务变量配到唯一那条")
+    void messageCorrelateByVariableOverHttp() throws Exception {
+        String tag = "WEB-COR-" + System.nanoTime();
+        postOk("/api/wf/definitions/deploy", body("key", "webCorrelate",
+                "xml", CORRELATE_RECEIVE_BPMN));
+
+        // 两条单等同一个消息名，业务变量不同 ——
+        // 这正是消息驱动集成的常态：ERP 只知道单号，不知道流程实例 id
+        Map<String, Object> varsA = new HashMap<>();
+        varsA.put("orderNo", tag + "-A");
+        Map<String, Object> varsB = new HashMap<>();
+        varsB.put("orderNo", tag + "-B");
+        String pidA = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webCorrelate", "businessKey", tag + "-A",
+                        "userId", "cor-alice", "variables", varsA)).get("data");
+        String pidB = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webCorrelate", "businessKey", tag + "-B",
+                        "userId", "cor-bob", "variables", varsB)).get("data");
+
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("orderNo", tag + "-B");
+        Map<String, Object> hit = asMap(postOk("/api/wf/process/message/correlate",
+                body("messageName", "erpPaid", "variables", vars,
+                        "userId", "erp-callback", "comment", "ERP 回执")).get("data"));
+
+        assertEquals("COMPLETED", hit.get("status"),
+                "配到的那条应当已经跑完，实际=" + hit.get("status"));
+        assertEquals(pidB, hit.get("processInstanceId"),
+                "必须配到 B 单，不能配到 A 单 —— 配错单据是这类端点最贵的故障");
+
+        // A 单必须一动不动：它在 history 里查不到（只有已办结的才在）
+        assertTrue(asList(asMap(getOk("/api/wf/history/processes?businessKey=" + tag + "-A")
+                .get("data")).get("records")).isEmpty(),
+                "A 单不该被这次关联带走 —— 只配了 B 的单号");
+        assertEquals(1, asList(asMap(getOk("/api/wf/history/processes?businessKey=" + tag + "-B")
+                .get("data")).get("records")).size(), "B 单应当已办结");
+
+        assertEquals("ACTIVE", instanceStatus(pidA), "A 单必须仍在 ACTIVE");
+    }
+
+    @Test
+    @DisplayName("消息关联端点：配不上与没人在等分开报，且都是 400")
+    void messageCorrelateFailuresAreDistinguishable() throws Exception {
+        String tag = "WEB-CORF-" + System.nanoTime();
+        postOk("/api/wf/definitions/deploy", body("key", "webCorrelateFail",
+                "xml", CORRELATE_RECEIVE_BPMN));
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("orderNo", tag + "-1");
+        postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webCorrelateFail", "businessKey", tag + "-1",
+                        "userId", "corf-alice", "variables", vars));
+
+        Map<String, Object> wrong = new HashMap<>();
+        wrong.put("orderNo", tag + "-does-not-exist");
+        ResponseEntity<String> filtered = exchange(HttpMethod.POST,
+                "/api/wf/process/message/correlate",
+                body("messageName", "erpPaid", "variables", wrong, "userId", "erp"));
+        assertEquals(HttpStatus.BAD_REQUEST, filtered.getStatusCode(),
+                "配不上必须是 400，让 ERP 知道这条回执没送达，而不是 500 让它无限重试");
+        assertTrue(filtered.getBody().contains("没有一条满足关联条件"),
+                "有人在等但配不上，报错要这么说，否则调用方会去查「为什么没人等」: "
+                        + filtered.getBody());
+
+        ResponseEntity<String> none = exchange(HttpMethod.POST,
+                "/api/wf/process/message/correlate",
+                body("messageName", "nobodyWaitsThis", "userId", "erp"));
+        assertEquals(HttpStatus.BAD_REQUEST, none.getStatusCode());
+        assertTrue(none.getBody().contains("没有任何流程在等"),
+                "没人等是另一种故障，必须与「配不上」分开说: " + none.getBody());
+
+        ResponseEntity<String> blank = exchange(HttpMethod.POST,
+                "/api/wf/process/message/correlate",
+                body("messageName", "   ", "userId", "erp"));
+        assertEquals(HttpStatus.BAD_REQUEST, blank.getStatusCode());
+        assertTrue(blank.getBody().contains("消息名不能为空"),
+                "消息名是唯一的必填项，漏填要直接点名: " + blank.getBody());
+    }
+
+    @Test
+    @DisplayName("消息关联端点：执行级变量能把同一个实例里的两条同名等待分开")
+    void messageCorrelateByLocalVariablesOverHttp() throws Exception {
+        String tag = "WEB-CORL-" + System.nanoTime();
+        postOk("/api/wf/definitions/deploy", body("key", "webCorrelateLocal",
+                "xml", CORRELATE_PARALLEL_BPMN));
+        String pid = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webCorrelateLocal", "businessKey", tag,
+                        "userId", "corl-alice")).get("data");
+
+        // 前置条件：一个实例里有两条同名等待，不加条件必然报歧义
+        List<Map<String, Object>> waiting = openTasksOf(pid);
+        assertEquals(2, waiting.size(), "并行两条分支都该在等消息，实际 " + waiting.size());
+        ResponseEntity<String> bare = exchange(HttpMethod.POST,
+                "/api/wf/process/message/correlate",
+                body("messageName", "channelDone", "userId", "ops"));
+        assertEquals(HttpStatus.BAD_REQUEST, bare.getStatusCode(),
+                "不加条件时同名等待分不开，必须报错而不是挑一条");
+
+        // 给 A 通道的分支挂一个局部变量：只有执行级变量能把两条分开
+        Map<String, Object> branchVars = new HashMap<>();
+        branchVars.put("channel", "A");
+        postOk("/api/wf/process/branch-variables",
+                body("taskId", waiting.get(0).get("id"), "values", branchVars,
+                        "userId", "ops"));
+
+        Map<String, Object> local = new HashMap<>();
+        local.put("channel", "A");
+        Map<String, Object> hit = asMap(postOk("/api/wf/process/message/correlate",
+                body("messageName", "channelDone", "localVariables", local,
+                        "userId", "ops")).get("data"));
+        assertEquals(pid, hit.get("processInstanceId"));
+
+        List<Map<String, Object>> left = openTasksOf(pid);
+        assertEquals(1, left.size(), "只该叫醒被命中的那条分支，实际剩 " + left.size());
+        assertEquals("waitB", left.get(0).get("definitionId"),
+                "剩的应当是没配上的那条分支，实际=" + left.get(0).get("definitionId"));
+    }
+
+    @Test
+    @DisplayName("消息关联端点：按业务键配")
+    void messageCorrelateByBusinessKeyOverHttp() throws Exception {
+        String tag = "WEB-CORBK-" + System.nanoTime();
+        postOk("/api/wf/definitions/deploy", body("key", "webCorrelateBk",
+                "xml", CORRELATE_RECEIVE_BPMN));
+        String pidA = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webCorrelateBk", "businessKey", tag + "-A",
+                        "userId", "bk-alice")).get("data");
+        postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webCorrelateBk", "businessKey", tag + "-B",
+                        "userId", "bk-bob")).get("data");
+
+        Map<String, Object> hit = asMap(postOk("/api/wf/process/message/correlate",
+                body("messageName", "erpPaid", "businessKey", tag + "-B",
+                        "userId", "erp")).get("data"));
+        assertEquals("COMPLETED", hit.get("status"), "按业务键配的那条应当已跑完");
+        assertEquals("ACTIVE", instanceStatus(pidA), "A 单必须仍在 ACTIVE");
+    }
+
+    @Test
+    @DisplayName("消息关联端点：按流程定义 key 配 —— 两个定义等同一个消息名时")
+    void messageCorrelateByDefinitionKeyOverHttp() throws Exception {
+        String tag = "WEB-CORDK-" + System.nanoTime();
+        postOk("/api/wf/definitions/deploy", body("key", "webCorrelateDk",
+                "xml", CORRELATE_RECEIVE_BPMN));
+        // 只差流程 id 的孪生定义，消息名刻意相同：
+        // 只留一条消息名时，发消息的服务根本分不清该叫醒哪套流程
+        String twinXml = CORRELATE_RECEIVE_BPMN.replace("webCorrelateProcess",
+                "webCorrelateTwinProcess");
+        postOk("/api/wf/definitions/deploy", body("key", "webCorrelateDkTwin",
+                "xml", twinXml));
+        postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webCorrelateDk", "businessKey", tag + "-base",
+                        "userId", "dk-base"));
+        postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webCorrelateDkTwin", "businessKey", tag + "-twin",
+                        "userId", "dk-twin"));
+
+        Map<String, Object> hit = asMap(postOk("/api/wf/process/message/correlate",
+                body("messageName", "erpPaid", "definitionKey", "webCorrelateDkTwin",
+                        "userId", "erp")).get("data"));
+        assertEquals("webCorrelateDkTwin", hit.get("definitionKey"),
+                "必须配到孪生定义那条流程上");
+    }
+
+    @Test
+    @DisplayName("消息关联端点：限定流程实例 id 可解歧义")
+    void messageCorrelateScopedByProcessInstanceIdOverHttp() throws Exception {
+        String tag = "WEB-CORPID-" + System.nanoTime();
+        postOk("/api/wf/definitions/deploy", body("key", "webCorrelatePid",
+                "xml", CORRELATE_RECEIVE_BPMN));
+        String pidA = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webCorrelatePid", "businessKey", tag + "-A",
+                        "userId", "pid-alice")).get("data");
+        String pidB = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webCorrelatePid", "businessKey", tag + "-B",
+                        "userId", "pid-bob")).get("data");
+
+        ResponseEntity<String> ambiguous = exchange(HttpMethod.POST,
+                "/api/wf/process/message/correlate",
+                body("messageName", "erpPaid", "userId", "erp"));
+        assertEquals(HttpStatus.BAD_REQUEST, ambiguous.getStatusCode(),
+                "两条同名等待不给限定时必须报歧义，不许挑一条");
+
+        Map<String, Object> hit = asMap(postOk("/api/wf/process/message/correlate",
+                body("messageName", "erpPaid", "processInstanceId", pidA,
+                        "userId", "erp")).get("data"));
+        assertEquals(pidA, hit.get("processInstanceId"));
+        assertEquals("ACTIVE", instanceStatus(pidB), "B 单必须仍在 ACTIVE");
+    }
+
+    private List<Map<String, Object>> openTasksOf(String processInstanceId) throws Exception {
+        return asList(asMap(getOk("/api/wf/process/overview?processInstanceId=" + processInstanceId)
+                .get("data")).get("openTasks"));
+    }
+
+    private String instanceStatus(String processInstanceId) throws Exception {
+        return String.valueOf(asMap(asMap(getOk(
+                "/api/wf/process/overview?processInstanceId=" + processInstanceId)
+                .get("data")).get("process")).get("status"));
+    }
+
+    /** 一个 receiveTask：ERP 付款回执。 */
+    private static final String CORRELATE_RECEIVE_BPMN =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+            + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+            + "  <process id=\"webCorrelateProcess\" isExecutable=\"true\">\n"
+            + "    <startEvent id=\"wcs\"/>\n"
+            + "    <receiveTask id=\"wcWait\" name=\"等 ERP 回执\" zifang:messageName=\"erpPaid\"/>\n"
+            + "    <endEvent id=\"wce\"/>\n"
+            + "    <sequenceFlow id=\"wcf1\" sourceRef=\"wcs\" targetRef=\"wcWait\"/>\n"
+            + "    <sequenceFlow id=\"wcf2\" sourceRef=\"wcWait\" targetRef=\"wce\"/>\n"
+            + "  </process>\n"
+            + "</definitions>\n";
+
+    /**
+     * 并行两条分支等同一个消息名 —— 只有执行级变量能把它们分开。
+     *
+     * <p>两条候选同属一个实例，流程级变量对它们一视同仁；
+     * 任何基于流程变量的实现都会得到「两条都匹配」进而报歧义。
+     */
+    private static final String CORRELATE_PARALLEL_BPMN =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+            + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+            + "  <process id=\"webCorrelateParallelProcess\" isExecutable=\"true\">\n"
+            + "    <startEvent id=\"wps\"/>\n"
+            + "    <parallelGateway id=\"wpg\"/>\n"
+            + "    <receiveTask id=\"waitA\" name=\"A 通道\" zifang:messageName=\"channelDone\"/>\n"
+            + "    <receiveTask id=\"waitB\" name=\"B 通道\" zifang:messageName=\"channelDone\"/>\n"
+            + "    <endEvent id=\"wpe1\"/>\n"
+            + "    <endEvent id=\"wpe2\"/>\n"
+            + "    <sequenceFlow id=\"wpf1\" sourceRef=\"wps\" targetRef=\"wpg\"/>\n"
+            + "    <sequenceFlow id=\"wpf2\" sourceRef=\"wpg\" targetRef=\"waitA\"/>\n"
+            + "    <sequenceFlow id=\"wpf3\" sourceRef=\"wpg\" targetRef=\"waitB\"/>\n"
+            + "    <sequenceFlow id=\"wpf4\" sourceRef=\"waitA\" targetRef=\"wpe1\"/>\n"
+            + "    <sequenceFlow id=\"wpf5\" sourceRef=\"waitB\" targetRef=\"wpe2\"/>\n"
+            + "  </process>\n"
+            + "</definitions>\n";
+
     /** 带事件网关的测试定义，事件由 REST 端点投递。 */
     private static final String RACE_BPMN =
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"

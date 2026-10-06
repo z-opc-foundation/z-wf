@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.zifang.util.core.meta.Result;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfProcessInstance;
+import com.zifang.z.wf.core.persistence.WfMessageCorrelation;
 import com.zifang.z.wf.core.service.WfEngineException;
 import com.zifang.z.wf.core.service.WfHistoryService;
 import com.zifang.z.wf.core.service.WfRepositoryService;
@@ -99,6 +100,39 @@ public class WfProcessOperationController {
         WfProcessInstance instance = runtimeService.triggerMessage(request.getName(),
                 request.getProcessInstanceId(), request.getUserId(),
                 request.getVariables(), request.getComment());
+        return Result.success(viewMapper.toProcessView(instance));
+    }
+
+    /**
+     * 消息关联：<b>不给流程实例 id，由引擎自己找到那条该被唤醒的流程</b>。
+     *
+     * <p>与 {@code /message} 的区别不是"多几个可选字段"，而是<b>调用方手里有什么</b>：
+     * {@code /message} 要求你已经知道是哪一条流程实例；本端点面向的是
+     * 「收到 ERP 回执，发一条 {@code erpDone}，按业务键与业务字段去找那条在等它的单」
+     * 这种消息驱动集成的常态 —— 那时调用方手里只有业务键，没有任何引擎侧 id。
+     *
+     * <p><b>零匹配与多匹配都报错，且分开说</b>：「没有任何流程在等这条消息」
+     * 与「有 3 条在等但业务键对不上」是两种完全不同的故障，合并成一句
+     * "没找到"会让排查从零开始。多匹配时列出候选，不静默挑一条。
+     *
+     * <p><b>与 {@code /signal} 不构成一对</b>：唤醒全部的语义只有广播信号一个入口，
+     * 刻意没有做「correlateAll」。
+     */
+    @PostMapping("/message/correlate")
+    @Operation(summary = "015_消息关联：不给流程实例 id，按业务键 / 变量由引擎找到那条单")
+    public Result<WfViews.ProcessInstanceView> correlateMessage(
+            @RequestBody WfRequests.MessageCorrelation request) {
+        if (request == null) {
+            throw new WfEngineException("请求体不能为空");
+        }
+        WfMessageCorrelation criteria = new WfMessageCorrelation(request.getMessageName())
+                .setProcessInstanceId(request.getProcessInstanceId())
+                .setBusinessKey(request.getBusinessKey())
+                .setDefinitionKey(request.getDefinitionKey())
+                .setVariables(request.getVariables())
+                .setLocalVariables(request.getLocalVariables());
+        WfProcessInstance instance = runtimeService.correlate(criteria, request.getUserId(),
+                request.getComment());
         return Result.success(viewMapper.toProcessView(instance));
     }
 
