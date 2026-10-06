@@ -132,6 +132,8 @@ public final class WfDefinitionCodec {
         private String linkName;
         private String topic;
         private String caseVariable;
+
+        private String complexJoin;
         private boolean asyncBefore;
         private boolean asyncAfter;
         private String resultVariable;
@@ -315,6 +317,14 @@ public final class WfDefinitionCodec {
 
         public void setCaseVariable(String caseVariable) {
             this.caseVariable = caseVariable;
+        }
+
+        public String getComplexJoin() {
+            return complexJoin;
+        }
+
+        public void setComplexJoin(String complexJoin) {
+            this.complexJoin = complexJoin;
         }
 
         public boolean isAsyncBefore() {
@@ -634,6 +644,7 @@ public final class WfDefinitionCodec {
             gn.setDecisionRefVersion(node.getDecisionRefVersion());
             gn.setMapDecisionResult(node.getMapDecisionResult());
             gn.setCaseVariable(node.getCaseVariable());
+            gn.setComplexJoin(node.getComplexJoin());
             gn.setAsyncBefore(node.isAsyncBefore());
             gn.setAsyncAfter(node.isAsyncAfter());
             gn.setMultiInstance(node.isMultiInstance());
@@ -734,6 +745,7 @@ public final class WfDefinitionCodec {
             node.setDecisionRefVersion(gn.getDecisionRefVersion());
             node.setMapDecisionResult(gn.getMapDecisionResult());
             node.setCaseVariable(gn.getCaseVariable());
+            node.setComplexJoin(gn.getComplexJoin());
             node.setAsyncBefore(gn.isAsyncBefore());
             node.setAsyncAfter(gn.isAsyncAfter());
             node.setMultiInstance(gn.isMultiInstance());

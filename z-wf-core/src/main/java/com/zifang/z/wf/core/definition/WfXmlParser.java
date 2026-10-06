@@ -356,6 +356,11 @@ public class WfXmlParser {
         node.setCaseVariable(firstNonBlank(
                 extension(element, "caseVariable"),
                 camundaAttribute(element, "caseExpression")));
+        // 复杂网关的汇合方式。与 caseVariable 一样读两种前缀：
+        // 它同样是"Camunda 建模器上有、导出时可能留下"的扩展。
+        node.setComplexJoin(firstNonBlank(
+                extension(element, "complexJoin"),
+                camundaAttribute(element, "complexJoin")));
         // 异步两个方向都读 zifang: 与 camunda: 两个前缀：Camunda 导出的模型带的是
         // camunda:asyncBefore，照搬过来却因为前缀不同而不被识别，用户会以为
         // "z-wf 不支持异步" —— 而它其实支持。async 是 Camunda 里最常被直接沿用的扩展之一。

@@ -1305,10 +1305,42 @@ public class WfEngine {
 
     /**
      * 是否是汇合点（多条入线且入线来自不同源节点）。
+     *
+     * <p><b>三种网关的汇合语义并不相同，而先前这条判定压根不看节点类型</b> ——
+     * 只要"多条入线 + 多个来源"就一律合并。并行/包容这样合并是对的，
+     * 排他网关这样合并是<b>错的</b>，症状是两条并行 token 被压成一条：
+     * 「法务审」与「财务审」并行结束后经排他网关进入下一步，
+     * 本引擎只建一条待办，而 Camunda 建两条 —— 从 Camunda 导入的模型
+     * 会静默少掉一条分支，且流程图上与图上没有任何提示。
+     *
+     * <p>依据（三个独立来源说法一致，故当成确定语义而不是某一版的实现细节）：
+     * <ul>
+     *   <li>Camunda 官方：「An exclusive gateway can also be used to join multiple
+     *       incoming flows... A joining gateway has a <b>pass-through semantic</b>.
+     *       It doesn't merge the incoming concurrent flows like a parallel gateway.」</li>
+     *   <li>Camunda 社区版对同一个模型的回答：排他网关处「the tokens will <b>not
+     *       join</b>」，各自继续往下。</li>
+     *   <li>中文实践总结：排他网关「作为 join 的含义：只要有一个前置分支到达后，
+     *       即完成合并，流程继续往下执行」—— 注意「继续往下」是<b>各自</b>往下。</li>
+     * </ul>
+     *
+     * <p>复杂网关没有"必然合并"这一说：Camunda 把它的 join 逻辑留给实现
+     * （建模器里的 entering behavior 不导出到 XML），所以本实现<b>默认 joining</b>
+     * （保持既有行为不变，改了会让已上线的模型悄悄改语义），
+     * 需要穿透的显式写 {@code zifang:complexJoin="competing"}。
      */
     private boolean isJoin(WfNode node, List<WfFlow> inFlows) {
         if (inFlows.size() <= 1) {
             return false;
+        }
+        if (node.getType() == WfNodeType.EXCLUSIVE_GATEWAY) {
+            return false;
+        }
+        if (node.getType() == WfNodeType.COMPLEX_GATEWAY) {
+            // **两条都要在这里给答案，不许落到下面那条常规判定上**：
+            // competing 是"穿透"，而下面那条判的是"要不要合并"，
+            // 让它落下去等于穿透根本没发生 —— 而那种写法看起来是实现了的。
+            return !node.isCompetingJoin();
         }
         Set<String> sources = new HashSet<>();
         for (WfFlow flow : inFlows) {

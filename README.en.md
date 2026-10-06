@@ -261,6 +261,34 @@ runtimeService.broadcastSignal("orderPaid", "system", vars, comment);
 Two methods rather than a boolean flag, because "I thought I woke one" should fail to
 compile, not fail silently in production.
 
+### Gateway join semantics: the three kinds differ
+
+| Gateway | What happens to arriving tokens | Basis |
+|---|---|---|
+| **Exclusive** `exclusiveGateway` | **Each passes through on its own** — no merge | Camunda: "a joining gateway has a pass-through semantic" |
+| **Parallel** `parallelGateway` | Wait for all, then merge into one | BPMN 2.0 |
+| **Inclusive** `inclusiveGateway` | Wait for the incoming flows that actually activated, then merge | BPMN 2.0 |
+| **Complex** `complexGateway` | Configurable: `joining` (default) / `competing` (pass-through) | Camunda leaves this to the implementation |
+
+```xml
+<complexGateway id="g" zifang:complexJoin="competing"/>
+```
+
+> ⚠️ **Behaviour change (round 27)**: `isJoin` previously looked only at
+> "more than one incoming flow from more than one source" and **never at the node
+> type**, so an *exclusive* gateway merged parallel tokens too. The symptom was a
+> model imported from Camunda silently losing one parallel branch — with "legal
+> review" and "finance review" finishing in parallel and passing through an exclusive
+> gateway, this engine created **one** task where Camunda creates two. It now matches
+> Camunda: **models that relied on an exclusive gateway to merge two parallel branches
+> will see an extra downstream step after upgrading**. To express a merge in Camunda,
+> use a parallel or inclusive gateway — that is what they are for.
+
+`joining` is the default for the complex gateway on purpose: changing a default would
+silently change the behaviour of already-deployed models, with the same file producing a
+different diagram before and after an upgrade and no warning at all. An invalid value —
+and writing this attribute on an exclusive/parallel gateway — is an ERROR at deploy time.
+
 ---
 
 ## Persistence
@@ -279,7 +307,7 @@ converts between them, so the storage layout can evolve without touching engine 
 
 ## Testing
 
-889 tests, all green (core 815 / web 6 / admin 68). `mvn -o clean install`.
+900 tests, all green (core 826 / web 6 / admin 68). `mvn -o clean install`.
 
 Six of the test classes are **behaviour audits** rather than feature tests —
 one per node type and one per extension-point callback. This project shipped

@@ -361,6 +361,30 @@ advance() = leave(token) + 沿出线 enter(下一个 token)
    漏存症状是"任务已办结但 token 仍停在原节点"。
 4. **推进深度上限 512**，防病态图把栈打爆。
 
+### 网关的汇合语义：三种网关本来就不同
+
+| 网关 | 到达的 token 怎么办 | 依据 |
+|---|---|---|
+| **排他** `exclusiveGateway` | **各自往下走，不合并**（穿透） | Camunda：joining gateway has a pass-through semantic |
+| **并行** `parallelGateway` | 等齐再合并成一条 | BPMN 2.0 |
+| **包容** `inclusiveGateway` | 等齐**确实激活了**的那些入线再合并 | BPMN 2.0 |
+| **复杂** `complexGateway` | 可配：`joining`（默认）/ `competing`（穿透） | Camunda 把这一层交给实现 |
+
+```xml
+<complexGateway id="g" zifang:complexJoin="competing"/>
+```
+
+> ⚠️ **行为变更（第 27 轮）**：此前 `isJoin` 只看「多条入线 + 多个来源」而**不看节点类型**，
+> 于是**排他网关也把并行 token 合并了**。症状是从 Camunda 导入的模型静默少掉一条
+> 并行分支——「法务审」与「财务审」并行结束后经排他网关进入下一步，本引擎只建**一条**
+> 待办而 Camunda 建两条。现在已对齐 Camunda：**靠排他网关"合并"两条并行分支的模型，
+> 升级后下游会多出一次办理**。想在 Camunda 里表达合并，请用并行或包容网关——
+> 那本来就是它们的作用。
+
+复杂网关默认 `joining` 是刻意的：改默认值等于让已上线的模型悄悄换语义，
+而同一个文件在升级前后走出不同的图、没有任何提示。非法取值与「在排他/并行网关上写这个
+属性」都在部署期报 ERROR。
+
 **完成判定放在 service 层、基于存储层真实状态**（全部 token ENDED **且** 无未完成任务），
 不放引擎内——引擎看不见别的请求建的 token 与任务，而那正是多节点部署的常态。
 
@@ -500,7 +524,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 
 ## 9. 测试
 
-889 个测试，全绿（core 815 / web 6 / admin 68）。
+900 个测试，全绿（core 826 / web 6 / admin 68）。
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
@@ -515,6 +539,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 | **`WfBpmnErrorTest`** | **13** | 错误边界路由、作废待办、5 类必须被挡住的配置 |
 | **`WfMessageTriggerTest`** | **9** | 消息唤醒 / 信号广播 / 歧义报错 / 不误伤人工任务 |
 | **`WfEscalationTest`** | **17** | 升级的中断 / 非中断边界、广播、订阅一次性、零订阅留痕、5 类必须被挡住的配置、codec 往返 |
+| **`WfGatewayJoinSemanticsTest`** | **11** | 排他网关穿透、并行/包容仍合并、复杂网关 joining vs competing、穿透后流程仍收敛、部署期挡住、codec 往返 |
 | **`WfVariableServiceTest`** | **12** | 变量读写、批量原子性、审计留痕、终态拒绝 |
 | **`UnsupportedBpmnElementTest`** | **7** | 未支持元素不许静默退化（XML + JSON 两条入口） |
 | `WfAdminEndToEndTest` | 6 | Spring 全栈 + JDBC 落库 + 示例流程端到端 |

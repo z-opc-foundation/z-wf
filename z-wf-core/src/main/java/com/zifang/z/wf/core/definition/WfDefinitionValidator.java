@@ -272,6 +272,13 @@ public class WfDefinitionValidator {
             if (node == null || node.getType() == null || !node.getType().isGateway()) {
                 continue;
             }
+            // complexJoin 要对**每一个网关**跑一次，包括排他与并行 ——
+            // 它在那些网关上同样要报错（恒定语义的东西没有可配项），
+            // 而挂在 validateComplexGateway 里就只有复杂网关够得着，
+            // 于是"我在排他网关上写了穿透"被静默放过。
+            // 放在 outs.isEmpty() 的 continue **之前**：连出线都没有的网关
+            // 写这个属性同样是无效声明，不该因为它先 WARN 掉了就不看。
+            validateComplexJoin(id, node);
             List<WfFlow> outs = definition.outgoingFlows(id);
             if (outs.isEmpty()) {
                 add(WfValidationIssue.Severity.WARN, id,
@@ -419,6 +426,43 @@ public class WfDefinitionValidator {
                     "complexGateway 没有默认流。判别变量的值不匹配任何 caseValue、"
                             + "或所有出线条件都不成立时，token 会永久停留在这里，"
                             + "而流程不会报任何错");
+        }
+    }
+
+    /**
+     * 复杂网关的汇合方式取值。
+     *
+     * <p><b>非法取值必须报错而不是退到默认值</b>：兜底方向虽然选了更保守的 joining
+     * （理由见 {@code WfNode#isCompetingJoin}），但那是给"绕过校验"兜底的。
+     * 部署期直接放过的话，作者把 {@code competing} 拼成 {@code compete}
+     * 之后拿到的是"我明明写了穿透，怎么还是合并了"，而报错里只有一条是可选值清单，
+     * 没有第二条路径要查。
+     *
+     * <p><b>单入线的网关不报</b>：它没有"汇合"可言，写什么都不影响行为，
+     * 为此挡下部署是误伤。
+     */
+    private void validateComplexJoin(String id, WfNode node) {
+        String raw = node.getComplexJoin();
+        if (isBlank(raw)) {
+            return;
+        }
+        String value = raw.trim();
+        if (node.getType() != WfNodeType.COMPLEX_GATEWAY) {
+            // 只有复杂网关两边都说得通。并行/包容恒为合并、排他恒为穿透，
+            // 让人在这些网关上写这个属性，等于写一句与引擎行为相反的话
+            add(WfValidationIssue.Severity.ERROR, id,
+                    node.getId() + " 是 " + node.getType().bpmnName()
+                            + "，没有 complexJoin 这回事。排他网关恒为穿透"
+                            + "（对齐 Camunda：joining gateway has a pass-through semantic），"
+                            + "并行与包容网关恒为合并。"
+                            + "要在合并与穿透之间选，请改用 complexGateway");
+            return;
+        }
+        if (!"joining".equalsIgnoreCase(value) && !"competing".equalsIgnoreCase(value)) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "complexGateway 的 zifang:complexJoin 只能是 joining（默认，"
+                            + "等所有到达的 token 再合并成一条）或 competing"
+                            + "（穿透，每条到达的 token 各自往下走）。实际写了 " + raw);
         }
     }
 

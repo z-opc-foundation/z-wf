@@ -128,6 +128,25 @@ public class WfNode implements Serializable {
      */
     private String caseVariable;
 
+    /**
+     * 复杂网关的汇合方式：{@code joining}（默认，等齐再合并）还是
+     * {@code competing}（穿透，各条 token 各自往下）。
+     *
+     * <p><b>为什么需要它</b>：复杂网关的 join 逻辑在 Camunda 里是交给实现决定的
+     * （建模器上的 entering behavior 不导出到 XML，导出的文件里看不出来），
+     * 所以 BPMN 文件本身回答不了"这个网关是合并还是穿透"，
+     * 而这两种行为在图上长得一模一样。
+     *
+     * <p><b>为什么默认 joining</b>：改默认值等于改已上线模型的行为 ——
+     * 同一个文件在升级前后走出不同的图，而没有任何提示。
+     * 需要穿透的显式写 {@code zifang:complexJoin="competing"}。
+     *
+     * <p><b>不是所有网关都需要它</b>：排他网关恒为穿透（对齐 Camunda，
+     * 理由见 {@code WfEngine#isJoin}），并行/包容恒为合并。
+     * 只有复杂网关两边都说得通，才把它做成可配的。
+     */
+    private String complexJoin;
+
     // ==================== 异步执行（asyncBefore / asyncAfter） ====================
 
     /**
@@ -508,6 +527,28 @@ public class WfNode implements Serializable {
 
     public void setCaseVariable(String caseVariable) {
         this.caseVariable = caseVariable;
+    }
+
+    /** 复杂网关的汇合方式原文（{@code joining} / {@code competing}）。 */
+    public String getComplexJoin() {
+        return complexJoin;
+    }
+
+    public void setComplexJoin(String complexJoin) {
+        this.complexJoin = complexJoin;
+    }
+
+    /**
+     * 复杂网关是否走穿透式汇合。
+     *
+     * <p><b>只认 {@code competing} 这一个值</b>，其余一律当 joining：
+     * 拼错（{@code compete} / {@code nonJoining}）时静默走 joining，
+     * 症状是"我明明写了穿透，怎么还是合并了"。校验器会对非法取值报 ERROR，
+     * 所以这个"静默"只在校验被绕过时才会发生 —— 而兜底方向必须选**更保守**的那个：
+     * joining 与本引擎的既有行为一致，competing 才是新的那个。
+     */
+    public boolean isCompetingJoin() {
+        return "competing".equalsIgnoreCase(complexJoin == null ? "" : complexJoin.trim());
     }
 
     public boolean isAsyncBefore() {
