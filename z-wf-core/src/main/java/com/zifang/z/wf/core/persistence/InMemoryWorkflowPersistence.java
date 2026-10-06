@@ -1106,7 +1106,19 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         // 到期时刻正序：执行器要的是"最早到点的先做"，顺序错了会饿死靠后的 job。
         // 到期时刻相同时按 id 排，否则 ConcurrentHashMap 的遍历顺序会随机化，
         // 同一批 job 在不同 JVM 上得到不同的执行顺序。
+        //
+        // 优先级排序是**开关控制的叠加**：开了它之后同级仍按到期时刻正序，
+        // 再相同才按 id —— 两套实现必须给出同一个顺序，
+        // 而"同级随机"会让同一批 job 在内存与 JDBC 上跑出不同结果，
+        // 那是最难查的一类不一致（开发期内存全绿，上线 JDBC 偶发乱序）。
+        final boolean byPriority = query != null && query.isOrderedByPriority();
         matched.sort((a, b) -> {
+            if (byPriority) {
+                int p = Integer.compare(b.getPriority(), a.getPriority());
+                if (p != 0) {
+                    return p;
+                }
+            }
             Date ta = a.getDuedate();
             Date tb = b.getDuedate();
             if (ta == null || tb == null) {

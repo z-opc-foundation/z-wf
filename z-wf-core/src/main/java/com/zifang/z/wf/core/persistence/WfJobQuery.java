@@ -39,6 +39,19 @@ public class WfJobQuery {
      */
     private String topic;
 
+    /**
+     * 是否按优先级从高到低取。{@code null}/{@code false} = 保持既有顺序。
+     *
+     * <p><b>做成开关而不是默认行为</b>：改默认顺序会让所有既有的 job 查询
+     * （定时器扫描、消息订阅消费、故障排查）都改顺序，而它们各自的"正确顺序"
+     * 并不相同 —— 定时器要的是「最早到点的先做」，按优先级排会让它饿死靠后的 job。
+     * 要按优先级排的只有队列语义明确的那几类（目前是异步 job）。
+     *
+     * <p>优先级相同时仍按到期时刻正序，再相同才按 id ——
+     * **同级不许变成随机顺序**，否则同一批 job 在不同机器上跑出不同结果。
+     */
+    private Boolean orderByPriority;
+
     private int pageNum = 1;
 
     private int pageSize = 50;
@@ -113,6 +126,20 @@ public class WfJobQuery {
     public WfJobQuery setPageSize(int pageSize) {
         this.pageSize = pageSize < 1 ? 50 : pageSize;
         return this;
+    }
+
+    public Boolean getOrderByPriority() {
+        return orderByPriority;
+    }
+
+    public WfJobQuery setOrderByPriority(Boolean orderByPriority) {
+        this.orderByPriority = orderByPriority;
+        return this;
+    }
+
+    /** 是否启用了优先级排序（null 与 false 同义）。 */
+    public boolean isOrderedByPriority() {
+        return Boolean.TRUE.equals(orderByPriority);
     }
 
     public int getOffset() {

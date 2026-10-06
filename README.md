@@ -402,6 +402,35 @@ advance() = leave(token) + 沿出线 enter(下一个 token)
 
 ---
 
+### job 的优先级
+
+`zifang:priority` 有**两个出口**，读的是同一个数字：
+
+```xml
+<userTask id="approve" zifang:assignee="boss"
+          zifang:asyncBefore="true" zifang:priority="90"/>
+```
+
+- **任务优先级** —— 待办列表里谁排前面，给人看。
+- **job 优先级** —— 队列里谁先被取走执行，给执行器看。异步 job 积压时
+  "加急的先办"是刚需，所以 `WfJobQuery#setOrderByPriority(true)` 打开后按
+  **priority desc → due asc → job id asc** 取。
+
+两者不另配：各配各的会出现「待办里排最前、流程却最后才跑」。
+
+**排序是开关控制的，不是默认行为** —— 定时器要的是"最早到点的先做"，
+默认就按优先级排会让靠后的定时器饿死。同优先级时仍按到期时刻正序，
+同级不变成随机顺序（随机的话每次跑的顺序都不一样，没法复现）。
+
+内存与 JDBC **必须给出同一个顺序**；不一致的症状是"开发期跑内存全绿、
+换 JDBC 之后偶发乱序"，日志里没有任何异常。
+
+升级既有库时会自动补建 `ZWF_JOB.PRIORITY` 列（`CREATE TABLE IF NOT EXISTS`
+对已存在的表不加列）。补出来的列在存量行上是 NULL，而默认优先级是 50 ——
+不补的症状是"升级前排队的 job 全变成最低优先级"。
+
+---
+
 ## 5. 持久化
 
 `WfPersistence` SPI（25 个方法）两套实现：
@@ -524,7 +553,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 
 ## 9. 测试
 
-900 个测试，全绿（core 826 / web 6 / admin 68）。
+910 个测试，全绿（core 836 / web 6 / admin 68）。
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
@@ -540,6 +569,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 | **`WfMessageTriggerTest`** | **9** | 消息唤醒 / 信号广播 / 歧义报错 / 不误伤人工任务 |
 | **`WfEscalationTest`** | **17** | 升级的中断 / 非中断边界、广播、订阅一次性、零订阅留痕、5 类必须被挡住的配置、codec 往返 |
 | **`WfGatewayJoinSemanticsTest`** | **11** | 排他网关穿透、并行/包容仍合并、复杂网关 joining vs competing、穿透后流程仍收敛、部署期挡住、codec 往返 |
+| **`WfJobPriorityTest`** | **10** | job 优先级从节点拷贝、两套存储实现同一把尺子、存量库补列、更新时不抹掉、排序是开关 |
 | **`WfVariableServiceTest`** | **12** | 变量读写、批量原子性、审计留痕、终态拒绝 |
 | **`UnsupportedBpmnElementTest`** | **7** | 未支持元素不许静默退化（XML + JSON 两条入口） |
 | `WfAdminEndToEndTest` | 6 | Spring 全栈 + JDBC 落库 + 示例流程端到端 |

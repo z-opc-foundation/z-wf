@@ -110,7 +110,7 @@
 
 | Camunda 能力 | z-wf | 说明 |
 |---|---|---|
-| **Job / 定时器** `createJobQuery` / `executeJob` / `setJobRetries` | 🟡 | **本轮补上 job 机制**：`WfJob` + `ZWF_JOB` 表 + `WfJobService#executeDueJobs`（重试计数、耗尽可查）。**本轮再补外部任务**（`externalTask`）：`WfExternalTaskService` + `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制领活、`fail` 解锁+退避、重试耗尽留档不删。**异步执行也已补上**（`asyncBefore`/`asyncAfter`，`camunda:` 前缀同样识别）。**剩余**：`jobPriority`、循环定时器、异步 job 的优先级与手动触发 REST 入口 |
+| **Job / 定时器** `createJobQuery` / `executeJob` / `setJobRetries` | 🟡 | **本轮补上 job 机制**：`WfJob` + `ZWF_JOB` 表 + `WfJobService#executeDueJobs`（重试计数、耗尽可查）。**本轮再补外部任务**（`externalTask`）：`WfExternalTaskService` + `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制领活、`fail` 解锁+退避、重试耗尽留档不删。**异步执行也已补上**（`asyncBefore`/`asyncAfter`，`camunda:` 前缀同样识别）。**第 28 轮补上 job 优先级**：`zifang:priority` 有了第二个出口 —— 原来它只决定"待办列表里谁排前面"（给人看），现在同时决定"队列里谁先被取走执行"（给执行器看）。**剩余**：异步 job 的 exclusive（跨 job 互斥，需要新的持久化状态）、手动触发 REST 入口。~~循环定时器 / `jobPriority`~~ —— 已实现，见上一行与下一行 |
 | `createIncidentQuery` | 🟡 | **本轮补上** `WfIncidentService` + `WfIncidentView` + `WfIncidentQuery`，REST `GET /api/wf/incidents` 与 `/incidents/count`，并进 `GET /api/wf/process/overview`。回答的是订阅回答不了的那一半：「在等什么」与「已经没干成」必须一起给 —— 只有订阅时，"单子不动了"分不清是在耐心等还是已经炸了，而这两者处置完全不同。**故障从 job 派生，不建 Camunda 那张独立 incident 表**：故障的定义完全由 job 的 `retries` + `lastFailureTime` 决定，另存一份就多一处可能与 job 对不上，而排障时最不能容忍的就是对不上。代价见 `createHistoricIncidentQuery` 那行 |
 | `createMetricQuery`（引擎指标） | 🟡 | 只有 `getProcessStatusCounts` 一个自定义统计 |
 | `getTableCount` / `getTableNames` / `getProperties` | ✅ | **第 19 轮补上**。自省挂在 `WfPersistence` SPI 上（`getTableNames` / `getTableCount`），`WfManagementService` 负责视图与措辞，REST `GET /api/wf/management/properties` / `/tables` / `/tables/count?name=`。三条硬规矩：① **未知名抛异常不返回 0** —— 拼错表名得到"这里是空的"会把排障方向从「我拼错了」带偏到「谁把它清空了」；② JDBC 侧 `getTableNames()` **从 `DatabaseMetaData` 真查**而不是报常量 —— 常量回答"打算建哪些"，这里要回答"这个库现在真有哪些"，两者在迁移没跑时会分家；③ 视图**显式带 `kind`（table / collection）** —— 内存实现里根本没有表，不标出来运维看到 `ZWF_TASK` 会跑去数据库里找一圈。属性**刻意不含连接串/账号/口令** |
@@ -154,7 +154,7 @@
 | `complexGateway` | ✅ | **第 25 轮补上条件分派**。两种判定方式，**由网关自己有没有判别变量决定**，混用部署期报错：**取值分派**（配了 `zifang:caseVariable`，出线带 `zifang:caseValue`，`camunda:caseExpression` 同样识别）走第一条匹配的线、**只走一条**；**条件分派**（不配判别变量，出线带 BPMN 的 `<conditionExpression>`）按 **BPMN 2.0 对复杂网关的定义**，**条件成立的线全部激活**，一条都不成立才走默认流。此前出线上的 `<conditionExpression>` **被完全忽略** —— 一条只带条件的线永远选不中、流程静默落到默认线，而校验器还会在「它与 caseValue 同时配」时报错，让人以为这个属性是有意义的（这是本轮修掉的真缺陷）。**多条激活不会让汇合死锁**：汇合判定数的是"确实已激活的兄弟 token"而非图上入线总数，没被选中的线根本不产生 token。求值沿用 fail-closed（引用未定义变量判不成立）。**第 27 轮补上汇合侧**：复杂网关的 join 逻辑 Camunda 交给实现（建模器上的 entering behavior 不导出到 XML，导出的文件里看不出来），所以本实现做成可配 —— **`zifang:complexJoin="joining"`（默认，等齐再合并）或 `"competing"`（穿透，各条 token 各自往下）**。**默认 joining 是刻意的**：改默认值等于让已上线的模型悄悄换语义，而同一个文件在升级前后走出不同的图、没有任何提示。非法取值部署期 ERROR 而不是退到默认值（退而求其次的方向选了 joining，但那是给绕过校验兜底的）。在排他/并行网关上写这个属性同样报 ERROR —— 那三个网关的汇合语义是恒定的，写这句话等于写一句与引擎行为相反的话。**剩余**：「N 取 M 到齐才放行」这类带阈值的汇合（现在只有全到齐与各走各的两种） |
 | `transaction` / `adHocSubProcess` | ❌ | 同上，报错挡住 |
 | **定时器** `timerEventDefinition` | ✅ | 三种都实现了：`timeDuration`（PT5M / P1DT2H / P1Y）、`timeDate`（2026-12-31T18:00:00Z）、**`timeCycle`（第 13 轮补上）**，都可写 `${变量}` 由流程实例决定时限。**边界定时器（打断）与事件网关定时器分支（竞速）都已接上执行器**（`TIMER` / `EVENT_TIMER` 两种 job 类型，`WfJobService#executeDueJobs` 逐类型各扫一遍）。**`timeCycle` 的限制**：只支持用在**非中断型边界事件**上（`R3/PT1H` / `R/PT10M` / `P1D/T1H` / 带显式起始时刻的写法都支持），因为只有非中断型才有"下一周期可以提醒"的宿主；无界写法 `R/PT10M` 有 100 次的硬上限兜底 |
-| **异步** `asyncBefore` / `asyncAfter` | 🟡 | ✅ 已实现：`zifang:` 与 `camunda:` 双前缀；`ASYNC_BEFORE`/`ASYNC_AFTER` 两个 job 类型 + `WfJobService#executeAsyncJobs`。**剩余**：异步 job 的优先级（`asyncBefore` 配 exclusive/priority）、多实例+异步（部署期已挡）。~~`timeCycle` 循环定时器~~ —— 已于第 13 轮实现，见上一行 |
+| **异步** `asyncBefore` / `asyncAfter` | 🟡 | ✅ 已实现：`zifang:` 与 `camunda:` 双前缀；`ASYNC_BEFORE`/`ASYNC_AFTER` 两个 job 类型 + `WfJobService#executeAsyncJobs`。**第 28 轮补上优先级**：`WfJob.priority` 从宿主节点拷入，`WfJobQuery#setOrderByPriority` 开启后按 **priority desc, duedate asc, job_id asc** 排序，内存与 JDBC **必须给出同一个顺序**（不一致的症状是「开发期内存全绿、换 JDBC 之后偶发乱序」，日志里没有任何异常）。**排序是开关控制的而不是默认行为** —— 定时器要的是"最早到点的先做"，默认就按优先级排会让靠后的定时器饿死。前置与后置分两次查（`WfJobQuery` 的 type 是单值），拼起来之后**要按同一把尺子重排一遍**，否则变成「前半段有序、后半段有序、合起来乱序」。**存量库要补 `PRIORITY` 列**：`CREATE TABLE IF NOT EXISTS` 对已存在的表不加列，而补出来的列在存量行上是 NULL、`rs.getInt` 读成 0（默认优先级是 50）——不补列的症状是「升级前排队的 job 全变成最低优先级」，没有任何报错。**剩余**：异步 job 的 exclusive、多实例+异步（部署期已挡）。~~`timeCycle` 循环定时器~~ —— 已于第 13 轮实现，见上一行 |
 | **外部任务** `externalTask` / `ExternalTaskService` | ✅ | `serviceTask` + `zifang:topic` 标注（`<externalTask>` 不是 BPMN 2.0 元素，Camunda 同样靠标注在 serviceTask 上）。原子"选出+上锁"、租约制、`fail` 解锁+退避、重试耗尽留档。REST 7 端点在 `/api/wf/external-tasks` |
 | `errorRef` / `errorEventDefinition` | ✅ | 见上。**刻意不支持「空 errorRef = 捕获所有错误」**——宽泛捕获会把不相关异常也吸走，让本该崩的流程继续走 |
 | **`escalationCode`** / `escalationEventDefinition` | ✅ | **第 26 轮原生实现**：抛升级事件 + 升级边界事件（中断型与非中断型都走通了）。匹配键是 `escalationRef` 本身，**不解析 `<escalation>` 元素**（那一层目前没有任何语义需要它）。**单独一个 `WfJobType.ESCALATION` 而不是并进 SIGNAL** —— 投递方式一样（广播），但可被投的人不同，猜错的后果是「把一条升级当成普通信号处理」：分支醒了、待办还挂着，而作者以为已经升级过。**升级实际做的事是打断宿主**（待办作废、token 搬到边界上），**"换给谁办"取决于边界的出线节点上写了谁**，引擎不替作者决定（Camunda 那层 `escalationConfig` 本实现没有，不假装有）。`WfRuntimeService#escalate(code, user, comment)` 是与 `broadcastSignal` 并列的公共入口，**零订阅返回空列表而不是报错**，但要写评论留痕。**互斥三条**：与消息/信号/定时器同时配一律部署期 ERROR —— 其中**与定时器互斥是最要紧的一条**：`isTimerBoundary()` 只看 `timerType` 有没有被设，而运行期升级走的是订阅型分支（`duedate` 留空），两边对同一个节点给出两套判定，于是「超时 3 天自动升级」会变成一个**既不报错、也不到期的哑定时器**。**不支持 Camunda 的 `escalationTimer`（到期自动升级）**，要它得在同一个 job 上同时表达"按名字触发"与"到期触发"，触发方就必须去猜「这条是不是已经到期了」（与 `EVENT_TIMER` 那条同源）。**升级捕获事件（中间捕获）明确报 ERROR**：捕获时 token 已经停在那个节点上，而 BPMN 要求的是"在原地再长出一条 token 沿出线走下去"，原 token 留在原地；现有三种捕获全是"把停着的 token 搬走"，硬套会得到「原 token 被搬走且没有第二条」的**看起来能跑的错语义** |
@@ -399,13 +399,14 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 900 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 910 个测试兜着
 - 从测试与审计中逼出并修复的**真实缺陷 51 项**（43 项截至第 21 轮 + 第 22 轮的
   `zifang:resultVariable` 读错载体 1 项 + 第 23 轮 DMN 的 3 项
   + 第 24 轮的 `camunda:resultVariable` 前缀读不到 1 项
   + 第 25 轮复杂网关出线条件被忽略 1 项
   + 第 26 轮升级边界配定时器得到哑表 1 项
-  + 第 27 轮排他网关把并行 token 合并 1 项），
+  + 第 27 轮排他网关把并行 token 合并 1 项
+  —— 第 28 轮（job 优先级）是**补缺口，没有新缺陷**），
   其中 **9 项**属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发、
   嵌入式 `subProcess` 的内联内容永远不执行、默认流程标记两套实现不一致、
@@ -1949,3 +1950,45 @@ incoming concurrent flows like a parallel gateway」；Camunda 社区版对同�
 **"没 grep 到"和"不存在"在屏幕上长得一模一样**，
 而支撑否定结论的每一次 grep 都要能看到退出码或命中数，别只看有没有输出。
 （与第 26 轮那次一样：**否定结论看起来最有证据，也最容易被直接采信**。）
+
+（与第 26 轮那次一样：**否定结论看起来最有证据，也最容易被直接采信**。）
+
+### 本轮反向验证记录（job 的优先级，第 28 轮）
+
+11 条变异全红 + 2 条对照全绿。**本轮没有新缺陷**（是补缺口），但反向验证照样抓出两处判据自身的问题。
+
+**一、`CREATE TABLE IF NOT EXISTS` 对已存在的表不加列 —— 这不是理论问题**
+
+第一版只改了 `initialize()` 里的建表语句，加了 `PRIORITY` 列。
+`JdbcWorkflowPersistenceTest` 里那条「存量订阅名回填」用例立刻红：
+`Column "PRIORITY" not found`。而 2.0.0 已发布，**存量库是真实存在的**，
+所以这不是测试的问题，是上线就会炸的问题。
+
+修法是照既有的 `addJobColumnIfMissing` 补列。**为什么必须补而不是靠读 NULL 兜**：
+补出来的列在存量行上是 NULL，`rs.getInt` 读成 0，而默认优先级是 50 ——
+于是升级前排队的 job 全变成"最低优先级"，症状是**加急的单子插到队尾**，且没有任何报错。
+
+⇒ 与既有的 `CYCLE_INDEX` 补列是同一件事：**给已发布的表加字段，
+"改建表语句"和"补既有表"是两件事**，后者不做的话开发期永远看不到（开发期库都是新建的）。
+
+**二、两条变异打绿，暴露的是判据量错了面**
+
+`J09`（去掉执行器查询上的 `setOrderByPriority`）打绿：我建了 `RecordingPersistence`
+记录每次查询有没有带开关，**却忘了断它** —— 记录了不用等于没记。
+补一条断「前置与后置**两次**查询都带开关」（只断一次的话去掉另一处照样绿，
+因为那是两次独立的查询）。
+
+`J10`（去掉拼接后的重排）打绿：这个更隐蔽。夹具里 BEFORE 段恰好只有一条、
+且优先级最高，于是：
+
+- 不重排 = `[前置 80] + [后置 70, 后置 1]` = `[80, 70, 1]`
+- 重排后 = `[80, 70, 1]`
+
+**两种实现给出同一个顺序**，于是"有没有重排"这条断言**因错误的原因通过**。
+改成后置那条取 95（高过前置的 80）之后，两条路才给出不同的结果。
+
+⇒ 与本项目内已记的「夹具的形状必须与它问的问题一一对应」是同一条，
+且这是**同一个陷阱的第二次出现**：被断的那个位置恰好只放了一个元素，
+于是"分两段"与"整体处理"给出同样的结果。
+⇒ 判别式补一条：**断言"整体处理 vs 分段处理"的差别时，
+分段里必须有元素能与另一段交错**，否则两种实现分不开。

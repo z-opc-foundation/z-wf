@@ -171,17 +171,47 @@ public class WfJobService {
                 .setDueBefore(now)
                 .setType(com.zifang.z.wf.core.model.WfJobType.ASYNC_BEFORE)
                 .setRetriesExhausted(Boolean.FALSE)
+                // **只有异步 job 启用优先级排序**：队列积压时"加急的先办"是审批的刚需，
+                // 而定时器要的是"最早到点的先做"—— 按优先级排会让靠后的定时器饿死
+                .setOrderByPriority(Boolean.TRUE)
                 .setPageNum(1).setPageSize(max));
         // 后置的单独查一次再拼上：WfJobQuery 的 type 是单值而不是集合，
-        // 加"多类型"支持会让这个查询对象多出一个只在两处用到的字段
-        for (WfJob job : persistence.queryJobs(new WfJobQuery()
+        // 加"多类型"支持会让这个查询对象多出一个只在两处用到的字段。
+        // **拼接会破坏优先级顺序**：两次查询各自内部有序，合起来就不再是全局有序。
+        // 前置与后置各有各的续跑动作，合在一个列表里就意味着同一批里两半的相对顺序是随机的。
+        // 所以下面改用"整体重新按同一把尺子排一遍"，而不是直接 addAll。
+        java.util.List<WfJob> after = persistence.queryJobs(new WfJobQuery()
                 .setDueBefore(now)
                 .setType(com.zifang.z.wf.core.model.WfJobType.ASYNC_AFTER)
                 .setRetriesExhausted(Boolean.FALSE)
-                .setPageNum(1).setPageSize(max))) {
-            due.add(job);
-        }
+                .setOrderByPriority(Boolean.TRUE)
+                .setPageNum(1).setPageSize(max));
+        due.addAll(after);
+        sortByPriorityThenDuedate(due);
         return due;
+    }
+
+    /**
+     * 优先级降序、同级按到期时刻正序、仍然同级按 id。
+     *
+     * <p><b>这条尺子必须与两套存储实现的 {@code queryJobs} 排序逐字一致</b>：
+     * 内存与 JDBC 在同一个查询里给出的顺序要是不同，
+     * 症状就是「开发期全绿、换 JDBC 之后偶发乱序」，日志里没有任何异常。
+     */
+    private void sortByPriorityThenDuedate(java.util.List<WfJob> jobs) {
+        java.util.Collections.sort(jobs, (a, b) -> {
+            int p = Integer.compare(b.getPriority(), a.getPriority());
+            if (p != 0) {
+                return p;
+            }
+            java.util.Date ta = a.getDuedate();
+            java.util.Date tb = b.getDuedate();
+            if (ta == null || tb == null) {
+                return a.getId().compareTo(b.getId());
+            }
+            int cmp = ta.compareTo(tb);
+            return cmp != 0 ? cmp : a.getId().compareTo(b.getId());
+        });
     }
 
     /**

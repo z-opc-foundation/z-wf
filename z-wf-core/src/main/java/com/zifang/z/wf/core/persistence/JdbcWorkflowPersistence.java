@@ -219,6 +219,9 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 + "SUBSCRIPTION_NAME VARCHAR(128),"
                 + "CREATE_TIME TIMESTAMP,"
                 + "LAST_FAIL_TIME TIMESTAMP,"
+                // job 优先级（第 28 轮）。与 CYCLE_INDEX 分列的理由同源：
+                // 两者都是"与 RETRIES 无关的另一个数"，挤在一列会互相覆盖
+                + "PRIORITY INT DEFAULT 50,"
                 + "REV INT,"
                 + "PRIMARY KEY (JOB_ID))");
 
@@ -372,6 +375,12 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         // 对循环 job 则是「从头响过 0 次」，于是 R3/PT1H 会一直以为还能再响两次。
         // 所以必须补列，而不是靠 NULL 兜。
         addJobColumnIfMissing(connection, "CYCLE_INDEX INT");
+
+        // 优先级（第 28 轮）。**必须补列，不能靠读 NULL 兜**：
+        // 存量行补出来是 NULL，`rs.getInt` 会读成 0，而默认优先级是 50 ——
+        // 于是升级前排队的 job 全部变成"最低优先级"，且没有任何报错，
+        // 表现是"加急的单子插到队尾去了"。
+        addJobColumnIfMissing(connection, "PRIORITY INT DEFAULT 50");
     }
 
     /**
@@ -2303,7 +2312,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         if (exists) {
             int affected = update("UPDATE ZWF_JOB SET RETRIES=?, CYCLE_INDEX=?, EXCEPTION_MSG=?, "
                             + "LAST_FAIL_TIME=?, DUEDATE=?, JOB_TYPE=?, TOPIC=?, LOCKED_BY=?, "
-                            + "LOCK_AT=?, SUBSCRIPTION_NAME=?, REV=? WHERE JOB_ID=? AND REV=?",
+                            + "LOCK_AT=?, SUBSCRIPTION_NAME=?, PRIORITY=?, REV=? WHERE JOB_ID=? AND REV=?",
                     job.getRetries(), job.getCycleIndex(), job.getExceptionMessage(),
                     timestamp(job.getLastFailureTime()), timestamp(job.getDuedate()),
                     // 类型必须跟着 UPDATE 走。只写 INSERT 的话，任何对已有 job 的
@@ -2317,6 +2326,9 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                     // 而流程推进会先把 job 查出来改一改再存回去，
                     // 漏掉这一列等于每次更新都把订阅名抹成 null
                     job.getSubscriptionName(),
+                    // 优先级必须跟着 UPDATE 走：流程推进会把 job 查出来改一改再存回去，
+                    // 漏掉这一列等于每次更新都把优先级抹回默认值
+                    job.getPriority(),
                     job.getRevision(), job.getId(), job.getRevision() - 1);
             if (affected == 0) {
                 throw new WfOptimisticLockException("job", job.getId(), job.getRevision() - 1);
@@ -2330,8 +2342,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                     "INSERT INTO ZWF_JOB (JOB_ID, PROC_ID, EXEC_ID, ELEMENT_ID, ATTACHED_TO, "
                             + "JOB_TYPE, TOPIC, LOCKED_BY, LOCK_AT, DUEDATE, RETRIES, "
                             + "CYCLE_INDEX, EXCEPTION_MSG, SUBSCRIPTION_NAME, CREATE_TIME, "
-                            + "LAST_FAIL_TIME, REV) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                            + "LAST_FAIL_TIME, PRIORITY, REV) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
             try {
                 int i = 1;
                 ps.setString(i++, job.getId());
@@ -2350,6 +2362,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 ps.setString(i++, job.getSubscriptionName());
                 ps.setTimestamp(i++, timestamp(job.getCreateTime()));
                 ps.setTimestamp(i++, timestamp(job.getLastFailureTime()));
+                ps.setInt(i++, job.getPriority());
                 ps.setInt(i, job.getRevision());
                 ps.executeUpdate();
             } finally {
@@ -2432,7 +2445,16 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         appendJobFilters(sql, args, query);
         // 到期时刻正序 + id 兜底：执行器要"最早到点的先做"，
         // 同一时刻的多个 job 顺序随机会让日志对不上，也不好复现
-        sql.append(" ORDER BY DUEDATE ASC, JOB_ID ASC LIMIT ? OFFSET ?");
+        //
+        // 优先级排序是开关控制的叠加，且**顺序必须与内存实现逐字一致**
+        // （priority desc, duedate asc, job_id asc）。两边不一致的症状最阴：
+        // 开发期跑内存全绿，上线换 JDBC 之后偶发乱序，日志里看不出任何异常。
+        if (query != null && query.isOrderedByPriority()) {
+            sql.append(" ORDER BY PRIORITY DESC, DUEDATE ASC, JOB_ID ASC");
+        } else {
+            sql.append(" ORDER BY DUEDATE ASC, JOB_ID ASC");
+        }
+        sql.append(" LIMIT ? OFFSET ?");
         args.add(query == null || query.getPageSize() <= 0 ? 50 : query.getPageSize());
         args.add(query == null ? 0 : query.getOffset());
         return queryList(sql.toString(), args.toArray(), jobMapper);
@@ -2526,6 +2548,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             job.setSubscriptionName(rs.getString("SUBSCRIPTION_NAME"));
             job.setCreateTime(date(rs.getTimestamp("CREATE_TIME")));
             job.setLastFailureTime(date(rs.getTimestamp("LAST_FAIL_TIME")));
+            job.setPriority(rs.getInt("PRIORITY"));
             job.setRevision(rs.getInt("REV"));
             return job;
         }

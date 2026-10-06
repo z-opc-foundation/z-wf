@@ -87,6 +87,22 @@ public class WfJob implements Serializable {
 
     public static final int DEFAULT_RETRIES = 3;
 
+    /**
+     * 优先级，取自宿主节点的 {@code zifang:priority}。
+     *
+     * <p><b>与 {@code WfTask#priority} 共用同一个来源但不是同一个东西</b>：
+     * 任务优先级决定「待办列表里谁排前面」，那是给人看的；
+     * job 优先级决定「队列里谁先被取走执行」，那是给执行器看的。
+     * 一个加急单子的两个节点常常要写两遍同一个数 —— 所以它们从同一个字段拷贝，
+     * 而不是各配各的（配两遍的话，改了其中一个就会出现「待办很急但流程不急」）。
+     *
+     * <p><b>本字段目前只有异步 job 真的按它排序</b>
+     * （见 {@code WfJobQuery#setOrderByPriority}）。
+     * 其它 job 类型建的时候也会把它拷上，但查询不启用排序 ——
+     * 字段先备着、用上再开，比"要用了再回来加字段"省一轮迁移。
+     */
+    private int priority = com.zifang.z.wf.core.definition.WfNode.DEFAULT_PRIORITY;
+
     /** 最近一次失败的异常信息，排障时直接看得到为什么它不执行。 */
     private String exceptionMessage;
 
@@ -245,6 +261,14 @@ public class WfJob implements Serializable {
 
     public int getCycleIndex() {
         return cycleIndex;
+    }
+
+    public int getPriority() {
+        return priority;
+    }
+
+    public void setPriority(int priority) {
+        this.priority = priority;
     }
 
     public void setCycleIndex(int cycleIndex) {

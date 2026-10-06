@@ -291,6 +291,40 @@ and writing this attribute on an exclusive/parallel gateway — is an ERROR at d
 
 ---
 
+### Job priority
+
+`zifang:priority` has **two outlets** and they read the same number:
+
+```xml
+<userTask id="approve" zifang:assignee="boss"
+          zifang:asyncBefore="true" zifang:priority="90"/>
+```
+
+- **Task priority** — who sorts first in the to-do list. For humans.
+- **Job priority** — who is picked off the queue first. For the executor. When
+  async jobs back up, "urgent first" is a hard requirement, so
+  `WfJobQuery#setOrderByPriority(true)` switches the order to
+  **priority desc → due asc → job id asc**.
+
+They are not configured separately: doing so produces "top of the to-do list but
+last in the queue".
+
+**Ordering is opt-in, not the default** — timers want "oldest due first", and
+sorting them by priority starves the ones further back. Equal priorities still
+fall back to due date; equal *everything* never becomes random, because a random
+order cannot be reproduced.
+
+In-memory and JDBC **must produce the same order**; when they disagree the symptom
+is "green on memory in development, occasionally scrambled on JDBC" with nothing
+in the log.
+
+Upgrading an existing database automatically adds `ZWF_JOB.PRIORITY`
+(`CREATE TABLE IF NOT EXISTS` does not add columns to a table that already
+exists). The added column is NULL on existing rows while the default priority is
+50 — without it, every job queued before the upgrade reads back as lowest priority.
+
+---
+
 ## Persistence
 
 Abstracted behind a 25-method SPI. Two implementations ship:
@@ -307,7 +341,7 @@ converts between them, so the storage layout can evolve without touching engine 
 
 ## Testing
 
-900 tests, all green (core 826 / web 6 / admin 68). `mvn -o clean install`.
+910 tests, all green (core 836 / web 6 / admin 68). `mvn -o clean install`.
 
 Six of the test classes are **behaviour audits** rather than feature tests —
 one per node type and one per extension-point callback. This project shipped

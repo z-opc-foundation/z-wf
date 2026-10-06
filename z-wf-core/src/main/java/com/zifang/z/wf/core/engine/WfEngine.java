@@ -1229,6 +1229,10 @@ public class WfEngine {
         job.setType(type);
         job.setDuedate(new java.util.Date());
         job.setCreateTime(new java.util.Date());
+        // 优先级从宿主节点拷过来而不是另配一个：加急单子通常在图上写一次
+        // zifang:priority，让任务的排序与队列的取用顺序对得上。
+        // 两处各配各的话，会出现「待办里排最前、流程却最后才跑」
+        job.setPriority(node.getPriority());
         job.setRetries(com.zifang.z.wf.core.model.WfJob.DEFAULT_RETRIES);
         return job;
     }
