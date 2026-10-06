@@ -96,6 +96,23 @@ public class WfDefinitionValidator {
                     add(WfValidationIssue.Severity.ERROR, node.getId(),
                             "serviceTask 需要 delegateClass 或 delegateExpression 之一"
                                     + "（或改用 zifang:topic 交给外部 worker）");
+                } else if (!isBlank(node.getDelegateClass())
+                        && !isBlank(node.getDelegateExpression())) {
+                    // **Camunda 明确要求互斥**（官方 BPMN 2.0 参考 Service Task 一节：
+                    // 「the three extensions camunda:class, camunda:expression, and
+                    // camunda:delegateExpression are mutually exclusive. The process
+                    // engine will use only one.」）
+                    // 不报的话运行期只会挑其中一个（见 WfDelegateRegistry，
+                    // 那里取的是 delegateExpression），于是"我明明写了类名却
+                    // 一直没执行"，而图上与轨迹上都看不出原因。
+                    // 与上面 topic/delegate、复杂网关 caseValue/conditionExpression
+                    // 是同一条纪律，之前唯独漏了这里。
+                    add(WfValidationIssue.Severity.ERROR, node.getId(),
+                            "serviceTask 同时配了 delegateClass 与 delegateExpression，"
+                                    + "只能留一个。Camunda 对 camunda:class / camunda:expression / "
+                                    + "camunda:delegateExpression 也是这个要求（三者互斥，"
+                                    + "引擎只用其中一个）。本实现会用 delegateExpression，"
+                                    + "delegateClass 永远不会被执行");
                 }
             }
             // topic 写在非 serviceTask 上：引擎在 enter 里对任何节点都会先看 topic，

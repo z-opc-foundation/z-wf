@@ -63,7 +63,15 @@ public class WfNode implements Serializable {
     /** serviceTask：delegate 实现类的全限定名。 */
     private String delegateClass;
 
-    /** serviceTask：delegate Bean 的 EL 表达式（优先于 {@link #delegateClass}）。 */
+    /**
+     * serviceTask：delegate Bean 的 EL 表达式。
+     *
+     * <p><b>与 {@link #delegateClass} 互斥</b>（Camunda 对
+     * {@code camunda:class} / {@code camunda:expression} / {@code camunda:delegateExpression}
+     * 是同样的要求），同时配会在部署期报错。
+     * 之所以要拦：运行期只会挑其中一个，而"我明明写了类名却一直没执行"
+     * 在图上与轨迹上都看不出原因。
+     */
     private String delegateExpression;
 
     /** scriptTask：EL 表达式脚本。 */

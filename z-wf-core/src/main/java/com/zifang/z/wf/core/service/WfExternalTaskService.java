@@ -40,7 +40,13 @@ public class WfExternalTaskService {
     private static final Logger log = LoggerFactory.getLogger(WfExternalTaskService.class);
 
     /**
-     * 默认租约 5 分钟（与 Camunda 的 DefaultLockTime 一致）。
+     * 默认租约 5 分钟。
+     *
+     * <p><b>不要把这个数字说成对齐 Camunda</b> —— Camunda 官方文档里取活时锁时长是
+     * {@code .topic("x", 60L * 1000L)} 由调用方<b>显式指定</b>的，
+     * 文档中查不到「5 分钟默认」这条规定（第 31 轮查过）。
+     * 本仓给出默认值是因为 worker 侧的常见用法是"不传就用默认"，
+     * 而 Camunda 要求每次都写死；这是一个**有意的 API 形状差异**，不是对齐结果。
      *
      * <p>取值标准是"盖住一次外部调用"，不是"盖住绝大多数"：
      * 一旦租约短于调用耗时，故障就变成重复执行，那是比卡住严重得多的问题。

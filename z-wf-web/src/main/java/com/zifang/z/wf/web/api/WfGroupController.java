@@ -22,8 +22,11 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 /**
  * 流程分组 Controller —— 基于定义的 category 做分组管理。
  *
- * <p>基址 {@code /api/wf/group}，对齐 z-camuda 的 {@code GroupController}（那里是
- * Camunda Category，本仓用定义上的 {@code category} 字段，语义相同但不需要额外存储）。
+ * <p>基址 {@code /api/wf/group}，形状对齐 z-camuda 的 {@code GroupController}
+ * （那里基于 Camunda Category）。<b>但两者不等价</b>：Camunda 的 Category 是
+ * <b>独立持久化实体</b>、可被多套定义引用、有自己的查询与 ID；
+ * 本仓只是定义上的一个 {@code category} <b>字符串字段</b>，改分组要改定义、
+ * 也没有"按分组查定义"的独立身份。写成「语义相同」会把后者的限制藏起来。
  *
  * @author zifang
  */

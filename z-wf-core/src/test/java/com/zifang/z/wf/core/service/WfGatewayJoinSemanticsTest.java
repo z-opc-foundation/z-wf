@@ -42,8 +42,11 @@ import com.zifang.z.wf.core.persistence.WfTaskQuery;
  *   <li><b>并行与包容恒为合并</b>，不该被这次改动带跑。</li>
  *   <li><b>复杂网关两边都说得通</b>，所以做成可配：默认 {@code joining}
  *       （保持既有行为，改默认等于改已上线模型），显式 {@code competing} 才是穿透。
- *       Camunda 把复杂网关的 join 逻辑留给实现，建模器上的 entering behavior
- *       不导出到 XML，所以 BPMN 文件本身回答不了这个问题。</li>
+ *       <b>这条注释原先把「BPMN 文件回答不了汇合语义」归因为 Camunda 把该层留白，
+ *       第 30 轮查出那也是错的</b>：Camunda 7/8 执行期根本不执行复杂网关
+ *       （官方论坛 2025-04「neither 7 nor 8」；官方 BPMN 2.0 参考的网关目录里
+ *       没有复杂网关页）。文件回答不了这个问题，但原因不是 Camunda 留白，
+ *       而是<b>压根没有参考实现可依</b>。</li>
  * </ol>
  *
  * <p><b>穿透不等于能收敛</b>：两条 token 各自走到结束事件，流程必须仍能正常终结，

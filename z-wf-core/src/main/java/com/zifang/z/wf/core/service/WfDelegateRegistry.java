@@ -14,9 +14,16 @@ import com.zifang.z.wf.core.engine.delegate.WfJavaDelegate;
  * Delegate 解析器 —— 把 serviceTask 节点上的 {@code delegateClass} /
  * {@code delegateExpression} 解析成可执行的 {@link WfJavaDelegate}。
  *
- * <p>解析顺序（与 Camunda 一致）：{@code delegateExpression} 优先于 {@code delegateClass}。
- * 先表达式后类，是因为 Spring 环境下按 Bean 名取实现（表达式）比按全限定名反射更可控
- * —— 类名可以在流程定义里被篡改成任意有副作用的类，Bean 名不行。
+ * <p><b>「表达式优先于类」是本实现的兜底顺序，Camunda 没有这条规则</b> ——
+ * 第 31 轮查出这里原先把它说成了对齐 Camunda，那是错的。Camunda 官方 BPMN 2.0 参考
+ * Service Task 一节写的是：<b>「the three extensions camunda:class, camunda:expression,
+ * and camunda:delegateExpression are mutually exclusive. The process engine will use
+ * only one.」</b>也就是说 Camunda 不给优先级，它要求<b>只能配一个</b>。
+ * <p>本实现同样在部署期把两者同时配的情况报 ERROR（见
+ * {@code WfDefinitionValidator}），所以这条顺序**只在校验被绕过时才会被读到**：
+ * 先表达式后类，是因为 Spring 环境下按 Bean 名取实现比按全限定名反射更可控 ——
+ * 类名可以在流程定义里被篡改成任意有副作用的类，Bean 名不行。
+ * 与 {@code WfNode#isCompetingJoin} 同型：兜底方向必须选**更保守**的那个。
  *
  * <p>实例缓存：同一类 delegate 只实例化一次（无状态单例约定）。
  * 若业务方需要每次新建，让实现类自己别假设是单例，或在 {@link #register} 时显式说明。
