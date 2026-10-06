@@ -67,9 +67,14 @@ extension namespace carries approval semantics that standard BPMN has no slot fo
 `subProcess` · `callActivity` · `boundaryEvent`
 
 **Unsupported BPMN elements fail loudly at deploy time.** Elements the engine does not
-implement (`transaction`, `adHocSubProcess`, `dataObject`, `escalationEventDefinition`, …)
+implement (`transaction`, `adHocSubProcess`, `dataObject`, `compensationEventDefinition`, …)
 are parsed permissively so the file can be read at all, but the resulting node is tagged with
 its original element name and the validator reports an **ERROR**, which blocks `deploy`.
+Escalation is the interesting case: `escalationEventDefinition` **is** implemented for throw
+and boundary events, and the *catch* form is rejected by its own dedicated ERROR (see
+"Escalation events" below) — it is not lumped into this generic list, because lumping it
+would tell an author their escalation is unknown when in fact the throw and boundary halves
+work today.
 
 This is deliberate. Silently degrading an event-based gateway to a plain task is not a loss of
 precision — it replaces an automatic event race with "create a task and wait for a human",
@@ -189,6 +194,40 @@ BPMN's "empty errorRef catches everything" is deliberately **rejected**: a broad
 catch swallows unrelated exceptions and lets a process that should have died keep
 running. You must name the error you intend to catch.
 
+### Escalation events
+
+```java
+runtimeService.escalate("overdue", "system", "no decision in time, escalating");
+```
+
+An escalation looks almost exactly like a signal — both broadcast, both match by name —
+but the consequence is the opposite. A signal wakes one branch; an escalation
+**interrupts the host** (its open task is cancelled and the token moves onto the boundary).
+They are therefore **two separate job types behind two separate entry points**, not one
+entry point with a boolean switch, so a caller reading its own code can tell whether it
+is notifying or interrupting.
+
+**Who picks it up next is decided by the boundary's outgoing node**, not by the engine —
+Camunda's `escalationConfig` layer does not exist here, and claiming otherwise would be false.
+`cancelActivity="false"` gives the non-interrupting form: the host task stays open and a
+parallel escalation branch starts. **Zero subscribers is not an error** (same convention as
+throwing a signal), but it is recorded in the process comments.
+
+Rejected at deploy time:
+
+- Alongside `messageEventDefinition` / `signalEventDefinition` /
+  `timerEventDefinition` ⇒ ERROR. **The timer case matters most**: the timer check only
+  reads the `timerType` field while an escalation runs down the subscription branch, so the
+  same node gets two different verdicts and mixing them yields a timer that neither fires
+  nor reports anything.
+- As an intermediate catch event ⇒ ERROR. What is missing there is the ability to grow a
+  **second** token out of one already parked on the node; all three existing catch kinds
+  *move* the parked token instead, so bolting one on yields "the parked token was moved and
+  no second one appeared" — wrong semantics that still runs. **Escalation throw and boundary
+  events are supported**; only the catch half is missing.
+- Camunda's `escalationTimer` (escalate automatically when due) is not supported — that is
+  the "escalate after N days" spelling at the top of this section.
+
 ---
 
 ## Runtime
@@ -240,7 +279,7 @@ converts between them, so the storage layout can evolve without touching engine 
 
 ## Testing
 
-188 tests, all green. `mvn -o clean install`.
+889 tests, all green (core 815 / web 6 / admin 68). `mvn -o clean install`.
 
 Six of the test classes are **behaviour audits** rather than feature tests —
 one per node type and one per extension-point callback. This project shipped

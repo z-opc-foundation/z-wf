@@ -1116,9 +1116,15 @@ public class WfRuntimeService implements WfSubProcessLauncher {
     /**
      * 消费全部匹配订阅。
      *
-     * <p>订阅的名字存在 job 的 exceptionMessage 里（见 WfContext#startTimerJobs），
-     * SQL 查不出来，只能按类型捞回来在内存里比对。订阅的量级是"在办的单数"，
-     * 审批系统里通常只有同时在办的那几十上百条，够用。
+     * <p>订阅的名字存在 job 的 {@code subscriptionName} 字段里，不是 {@code exceptionMessage}
+     * （后者要和"失败原因"共用，而排障视图需要同时看到这两个值，见 {@code WfJob#subscriptionName}）。
+     * 名字没有独立成列所以 SQL 查不出来，只能按类型捞回来在内存里比对；
+     * 订阅的量级是"在办的单数"，审批系统里通常只有同时在办的那几十上百条，够用。
+     *
+     * <p>本方法<b>不按 duedate 过滤</b>：三条订阅路径（{@link #MESSAGE} / {@link #SIGNAL} /
+     * {@link WfJobType#ESCALATION}）建 job 时 duedate 一律为 null，"已到期"不是它们的状态。
+     * 真正的到期触发走定时器扫描器那条路（{@link #TIMER}），两条路不共用 job 类型 ——
+     * 共用的话这里就必须开始判 duedate，而那是 {@link WfJobType#EVENT_TIMER} 里记过的坑。
      */
     private List<WfProcessInstance> fireAllSubscriptions(WfJobType type, String eventName,
                                                          String userId, String comment,
@@ -2853,8 +2859,13 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         WfProcessInstance source = event.getSourceProcessInstanceId() == null ? null
                 : persistence.findProcessInstance(event.getSourceProcessInstanceId());
         String comment = "抛事件节点 " + event.getSourceActivityId()
-                + " 投递" + (event.getKind() == WfPendingEvent.Kind.SIGNAL ? "信号 " : "消息 ")
+                + " 投递" + (event.getKind() == WfPendingEvent.Kind.SIGNAL ? "信号 "
+                : event.getKind() == WfPendingEvent.Kind.ESCALATION ? "升级 " : "消息 ")
                 + event.getEventName();
+        if (event.getKind() == WfPendingEvent.Kind.ESCALATION) {
+            deliverEscalation(event, source, comment);
+            return;
+        }
         if (event.getKind() == WfPendingEvent.Kind.SIGNAL) {
             List<WfProcessInstance> advanced = broadcastSignalOrNull(event.getEventName(),
                     source == null ? "system" : source.getStartUserId(),
@@ -2884,6 +2895,55 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             persistence.saveComment(new WfComment(idGenerator.nextCommentId(), source.getId(),
                     "system", "event", comment
                             + (hit == null ? "（当前没有订阅者）" : "（已被 " + hit.getId() + " 接走）")));
+        }
+    }
+
+    /**
+     * 按 escalationCode 升级所有在等的流程实例。
+     *
+     * <p>与 {@link #broadcastSignal} 的差别只有一处，但那一处正是要害：
+     * 信号叫醒一条分支，升级<b>打断宿主</b>（待办作废、token 沿边界出线走）。
+     * 所以它不并进广播，而是单独一个入口 —— 让调用方在代码里就能看出
+     * 自己正在做的是"通知"还是"打断"。
+     *
+     * <p>注意它<b>不替作者换人</b>：打断之后沿边界自己的出线走下去，
+     * 那一段该派给谁由出线上写的 assignee 决定。
+     *
+     * <p>零个订阅者返回空列表而**不报错**：与抛信号同一条约定。
+     *
+     * @return 被升级的流程实例（可能为空）
+     */
+    public List<WfProcessInstance> escalate(String escalationCode, String userId,
+                                            String comment) {
+        if (escalationCode == null || escalationCode.trim().isEmpty()) {
+            throw new WfEngineException("升级码不能为空 —— "
+                    + "没有它就没有「升级给谁」这个答案");
+        }
+        return fireAllSubscriptions(WfJobType.ESCALATION, escalationCode, userId, comment);
+    }
+
+    /**
+     * 升级投递：按 escalationCode 叫醒<b>所有</b>在等的升级边界订阅。
+     *
+     * <p><b>与信号广播的区别在于后果</b>：信号叫醒的是一条分支，
+     * 而升级会去打断宿主（待办作废、token 搬到边界上）。
+     * 所以它单独走一条投递路径，
+     * 而不是复用 {@link #broadcastSignal} —— 复用的话两者的差别只剩一个
+     * "名字长得像不像"，而那个差别对应的是完全不同的业务后果。
+     *
+     * <p><b>零个订阅者不是错误</b>：与抛信号同一条约定 ——
+     * 升级是"我发出一条事实"，有没有人在等不改变它该继续往下走。
+     * 但要留痕（写评论），免得它变成一次无人知晓的静默。
+     */
+    private void deliverEscalation(WfPendingEvent event, WfProcessInstance source,
+                                   String comment) {
+        List<WfProcessInstance> escalated = escalate(event.getEventName(),
+                source == null ? "system" : source.getStartUserId(), comment);
+        log.info("{}：升级 {} 个流程实例", comment, escalated.size());
+        if (source != null) {
+            persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                    source.getId(), "system", "event", comment
+                            + "（升级 " + escalated.size() + " 个流程实例）"));
         }
     }
 

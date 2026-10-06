@@ -30,22 +30,28 @@ public class WfThrowEventBehavior implements WfActivityBehavior {
     public WfTask execute(WfContext context, WfNode node, WfExecution execution) {
         boolean hasSignal = notBlank(node.getSignalName());
         boolean hasMessage = notBlank(node.getMessageName());
-        if (hasSignal && hasMessage) {
+        boolean hasEscalation = notBlank(node.getEscalationCode());
+        int kinds = (hasSignal ? 1 : 0) + (hasMessage ? 1 : 0) + (hasEscalation ? 1 : 0);
+        if (kinds > 1) {
             throw new WfEngineException("抛事件节点 " + node.getId()
-                    + " 同时配了信号 " + node.getSignalName() + " 与消息 " + node.getMessageName()
-                    + "。两者语义不同（广播 / 点对点），不能挑一个生效 —— "
-                    + "请拆成两个节点");
+                    + " 同时配了多种事件（signalRef=" + node.getSignalName()
+                    + " / messageRef=" + node.getMessageName()
+                    + " / escalationRef=" + node.getEscalationCode()
+                    + "）。三者语义不同（广播叫醒 / 点对点 / 打断宿主），不能挑一个生效 —— "
+                    + "请拆成三个节点");
         }
-        if (!hasSignal && !hasMessage) {
+        if (kinds == 0) {
             // 不静默当穿透放过：那会让这一步看起来执行成功了，而它其实什么也没发。
             // 现象是"流程跑完了但下游没动"，排查时最难想到的是这一步本身没配事件名
             throw new WfEngineException("抛事件节点 " + node.getId()
-                    + " 没有配 signalRef 或 messageRef，抛不出任何东西。"
+                    + " 没有配 signalRef / messageRef / escalationRef，抛不出任何东西。"
                     + "请补上事件引用，或改用 sendTask 调业务方实现");
         }
         WfPendingEvent.Kind kind = hasSignal
-                ? WfPendingEvent.Kind.SIGNAL : WfPendingEvent.Kind.MESSAGE;
-        String eventName = hasSignal ? node.getSignalName() : node.getMessageName();
+                ? WfPendingEvent.Kind.SIGNAL
+                : hasMessage ? WfPendingEvent.Kind.MESSAGE : WfPendingEvent.Kind.ESCALATION;
+        String eventName = hasSignal ? node.getSignalName()
+                : hasMessage ? node.getMessageName() : node.getEscalationCode();
         WfProcessInstance instance = context.getProcessInstance();
         context.addPendingEvent(new WfPendingEvent(kind, eventName, node.getId(),
                 instance == null ? null : instance.getId(),

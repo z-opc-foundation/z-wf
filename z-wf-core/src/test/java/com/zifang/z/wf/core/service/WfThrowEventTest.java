@@ -439,9 +439,19 @@ class WfThrowEventTest {
 
         WfEngineException noRef = assertThrows(WfEngineException.class,
                 () -> behavior.execute(contextOf(), bare, token()));
-        assertTrue(noRef.getMessage().contains("没有配 signalRef 或 messageRef"),
+        // 这里不断"signalRef 或 messageRef"这种措辞：第 26 轮加了 escalationRef 之后
+        // 文案必然变，判据跟着措辞改一轮就等于白写。真正要钉的是两件事 ——
+        // ① 它认出了"这一步什么也没发"，② 它把**所有**可能的事件引用都列了出来，
+        //    少列一个就等于教作者"这个属性不用配"。
+        assertTrue(noRef.getMessage().contains("抛不出任何东西"),
                 "静默放过会让这一步看起来执行成功了，而它其实什么也没发。实际: "
                         + noRef.getMessage());
+        for (String ref : new String[]{"signalRef", "messageRef", "escalationRef"}) {
+            assertTrue(noRef.getMessage().contains(ref),
+                    "没配任何事件引用的提示里必须提到 " + ref
+                            + "，少提一个等于告诉作者这个属性可以不配。实际: "
+                            + noRef.getMessage());
+        }
 
         WfEngineException conflict = assertThrows(WfEngineException.class,
                 () -> behavior.execute(contextOf(), both, token()));
@@ -462,8 +472,17 @@ class WfThrowEventTest {
 
         WfDefinitionException both = assertThrows(WfDefinitionException.class,
                 () -> repository.deploy(new WfXmlParser().parse(THROW_BOTH_BPMN)));
-        assertTrue(both.getMessage().contains("signalRef"),
-                "同时配两个要点名其中一个，且说清语义不同: " + both.getMessage());
+        // 不断 signalRef：第 26 轮加了 escalationRef 之后措辞必然变，
+        // 判据跟着措辞改一轮就等于白写。要钉的是"它认出了这是二选一"，
+        // 以及"三种可能的事件引用都被列了出来"（少列一个等于教作者可以不配）
+        assertTrue(both.getMessage().contains("挑一个生效"),
+                "同时配多个要点名不能挑一个：挑了的话作者以为自己写的那条生效了。实际: "
+                        + both.getMessage());
+        for (String ref : new String[]{"signalRef", "messageRef", "escalationRef"}) {
+            assertTrue(both.getMessage().contains(ref),
+                    "冲突提示里必须列出全部三种可能的事件引用（" + ref + "）。实际: "
+                            + both.getMessage());
+        }
 
         WfDefinitionException boundary = assertThrows(WfDefinitionException.class,
                 () -> repository.deploy(new WfXmlParser().parse(THROW_WITH_BOUNDARY_BPMN)));

@@ -81,6 +81,20 @@ public class WfNode implements Serializable {
     private String signalName;
 
     /**
+     * 升级码（{@code escalationEventDefinition} 的 {@code escalationRef}）。
+     *
+     * <p>与 {@link #signalName} 分开：信号名是"叫醒谁"，升级码是"**打断谁**" ——
+     * 后者会把宿主上的待办作废、token 搬到边界上（换人办的话得在边界出线上写 assignee，
+     * 引擎不替作者决定）。共用一个字段的话，收到信号的那条分支与收到升级的那条分支
+     * 在图上一模一样，而引擎的处理完全相反。
+     *
+     * <p>BPMN 里它引的是一个 {@code <escalation>} 定义；本实现只取那个定义的
+     * {@code id} 当匹配键（{@code escalationRef} 的直接取值），
+     * 不解析 {@code <escalation>} 元素本身 —— 那一层目前没有任何语义需要它。
+     */
+    private String escalationCode;
+
+    /**
      * 链接名（{@code linkEventDefinition}），对应 BPMN 的 {@code @name}。
      *
      * <p><b>不复用 {@link #name}</b>：{@code name} 是"给人看的节点名"，
@@ -303,7 +317,8 @@ public class WfNode implements Serializable {
 
     /** 三种边界里任意一种（都是"宿主停着时可能被外部打断"）。 */
     public boolean isEventBoundary() {
-        return isTimerBoundary() || isMessageBoundary() || isSignalBoundary();
+        return isTimerBoundary() || isMessageBoundary() || isSignalBoundary()
+                || isEscalationEvent();
     }
 
     // ==================== 事件定义（边界事件与中间捕获事件共用） ====================
@@ -330,13 +345,20 @@ public class WfNode implements Serializable {
     }
 
     /**
-     * 本节点是否带任意一种事件定义 —— 也就是"它在等什么"。
+     * 本节点是否带任意一种事件定义 —— 也就是"它在等什么 / 要抛什么"。
      *
-     * <p>中间捕获事件靠它决定该挂哪种订阅；校验器靠它判断一个没有事件定义的
-     * 捕获事件是不是"永远等不到"，那等价于一条死路。
+     * <p>校验器靠它判断一个没有事件定义的捕获事件是不是"永远等不到"，
+     * 那等价于一条死路。
+     *
+     * <p><b>包含 {@link #isEscalationEvent()}，尽管升级捕获并不被支持</b>：
+     * 这条判定回答的是"作者有没有写事件定义"，不是"本引擎等不等得住"。
+     * 少算一种的话，一个只写了 {@code escalationEventDefinition} 的捕获事件会落到
+     * 「没有任何事件定义」那条兜底报错上，作者会以为自己的写法没被识别，
+     * 而真正的原因（升级捕获暂不支持，且缺的是哪一块）就永远说不出口了。
+     * 支持与否由 {@code WfDefinitionValidator#validateCatchEvent} 单独判。
      */
     public boolean hasEventDefinition() {
-        return isMessageEvent() || isSignalEvent() || isTimerEvent();
+        return isMessageEvent() || isSignalEvent() || isTimerEvent() || isEscalationEvent();
     }
 
     /**
@@ -761,6 +783,19 @@ public class WfNode implements Serializable {
 
     public void setSignalName(String signalName) {
         this.signalName = signalName;
+    }
+
+    public String getEscalationCode() {
+        return escalationCode;
+    }
+
+    public void setEscalationCode(String escalationCode) {
+        this.escalationCode = escalationCode;
+    }
+
+    /** 升级事件定义（{@code escalationEventDefinition}）。 */
+    public boolean isEscalationEvent() {
+        return !isBlank(escalationCode);
     }
 
     public String getLinkName() {

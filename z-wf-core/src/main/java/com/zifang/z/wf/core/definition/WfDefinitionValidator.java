@@ -546,11 +546,15 @@ public class WfDefinitionValidator {
     }
 
     /**
-     * 中间抛出事件：必须抛得出东西，且不能挂边界事件。
+     * 中间抛出事件：必须抛得出东西（三选一），且不能挂边界事件。
      *
-     * <p><b>必须给事件引用</b>：没有 {@code signalRef} 也没有 {@code messageRef} 时，
-     * 节点在运行期会抛异常。若放到部署期不管，一份"抛了个空"的流程能部署成功，
-     * 跑到那一步才炸 —— 而作者看到的是"部署没问题"，排查方向会先跑到引擎上去。
+     * <p><b>必须给事件引用</b>：{@code signalRef} / {@code messageRef} /
+     * {@code escalationRef} 三个一个都不给时，节点在运行期会抛异常。
+     * 若放到部署期不管，一份"抛了个空"的流程能部署成功，跑到那一步才炸 ——
+     * 而作者看到的是"部署没问题"，排查方向会先跑到引擎上去。
+     *
+     * <p><b>只能给一个</b>：三者后果不同（广播叫醒 / 点对点 / 打断宿主），
+     * 挑一个生效等于让作者以为自己写的那条没生效。
      *
      * <p><b>不得挂边界事件</b>：抛事件是<b>穿透</b>的 —— token 抵达即投出去并继续往下走，
      * 它在这个节点上不会停留。BPMN 允许给中间事件挂边界事件，
@@ -560,18 +564,25 @@ public class WfDefinitionValidator {
     private void validateThrowEvent(WfDefinition definition, String id, WfNode node) {
         boolean hasSignal = !isBlank(node.getSignalName());
         boolean hasMessage = !isBlank(node.getMessageName());
-        if (!hasSignal && !hasMessage) {
+        boolean hasEscalation = !isBlank(node.getEscalationCode());
+        // 三种事件按**配了几个**判，不是一串两两组合：
+        // 写成 signal&&message / signal&&escalation / message&&escalation 的话，
+        // 三者同时配只会命中第一条，于是"两个都配了升级"这种错法反而漏过去
+        int kinds = (hasSignal ? 1 : 0) + (hasMessage ? 1 : 0) + (hasEscalation ? 1 : 0);
+        if (kinds == 0) {
             add(WfValidationIssue.Severity.ERROR, id,
                     "中间抛出事件 " + id + " 没有任何事件定义（signalEventDefinition / "
-                            + "messageEventDefinition），它抛不出任何东西。"
+                            + "messageEventDefinition / escalationEventDefinition），"
+                            + "它抛不出任何东西。"
                             + "要发通知给业务方，请改用 sendTask + delegate");
         }
-        if (hasSignal && hasMessage) {
+        if (kinds > 1) {
             add(WfValidationIssue.Severity.ERROR, id,
-                    "中间抛出事件 " + id + " 同时配了 signalRef=" + node.getSignalName()
-                            + " 与 messageRef=" + node.getMessageName()
-                            + "。两者语义不同（广播 / 点对点），本引擎不挑一个生效 —— "
-                            + "请拆成两个连续节点");
+                    "中间抛出事件 " + id + " 同时配了多种事件（signalRef=" + node.getSignalName()
+                            + " / messageRef=" + node.getMessageName()
+                            + " / escalationRef=" + node.getEscalationCode()
+                            + "）。三者语义不同（广播叫醒 / 点对点 / 打断宿主），"
+                            + "本引擎不挑一个生效 —— 请拆成多个连续节点");
         }
         for (WfNode boundary : definition.eventBoundariesOf(id)) {
             String boundaryId = boundary.getId();
@@ -811,6 +822,25 @@ public class WfDefinitionValidator {
                             + "挂上去会得到一个永不响、也不报错的哑表。"
                             + "要表达「等一会儿再继续」，请把它放在事件网关下，"
                             + "与等消息 / 等信号的那几条分支并列");
+        } else if (node.isEscalationEvent()) {
+            // 升级抛事件与升级边界都已实现（第 26 轮），**只有捕获这一半没有** ——
+            // 它的机制与消息/信号捕获根本不同：捕获到升级时 token 已经停在这个节点上，
+            // 而 BPMN 要求的是「在原地**再长出一条** token 沿出线走下去」，
+            // 原 token 留在原地继续等它自己的事件。
+            // 现有三种捕获都是「把停着的 token 搬走」，直接套用会得到：
+            // 原 token 被搬走（它其实该继续等），且没有第二条 token 生成。
+            // 与其那样写出一个看起来能跑的错语义，不如部署期说清缺的是哪一块。
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "中间捕获事件 " + id + " 用的是 escalationEventDefinition（升级捕获），"
+                            + "本实现暂不支持。**升级的抛事件与边界事件都已支持**，"
+                            + "缺的只有这一半：捕获到升级时 token 已经停在本节点上，"
+                            + "而 BPMN 要求的是「在原地再长出一条 token 沿出线走下去」，"
+                            + "原 token 留在原地继续等它自己的事件 —— "
+                            + "现有三种捕获都是「把停着的 token 搬走」，直接套用会得到"
+                            + "「原 token 被搬走且没有第二条」，看起来能跑而语义是错的。"
+                            + "要表达「超时未办就升级」，请把升级挂在待办节点的**边界事件**上"
+                            + "（cancelActivity=\"false\" 即非中断型：原待办继续办，"
+                            + "另起一条升级分支）");
         } else if (!node.isSupportedGatewayBranch()) {
             add(WfValidationIssue.Severity.ERROR, id,
                     "中间捕获事件 " + id + " 用的是 " + describeUnsupportedCatch(node)
@@ -948,10 +978,9 @@ public class WfDefinitionValidator {
         // conditionalEventDefinition **不提供事件类型**（它只是在某个事件类型之上
         // 再加一道门槛，"等什么"仍然得由 message / signal / timer 回答），
         // 所以不能拿它顶替事件类型，报错要说到这一点。
-        // escalationEventDefinition 则仍未支持。
-        return node.getProperties().containsKey(WfXmlParser.PROPERTY_EVENT_CONDITION)
-                ? "只有 conditionalEventDefinition（条件）而没有任何事件类型"
-                : "escalationEventDefinition 等未支持的捕获事件";
+        // 升级捕获在调用方已被单独接住并报得更具体（它有独立的机制说明），
+        // 走到这里的"没有事件类型"只可能是 conditionalEventDefinition
+        return "只有 conditionalEventDefinition（条件）而没有任何事件类型";
     }
 
     /**
@@ -1063,14 +1092,19 @@ public class WfDefinitionValidator {
                 ? null : node.getProperties().get(WfXmlParser.PROPERTY_EVENT_MISSING_REF);
         if (missingRef != null) {
             String kind = String.valueOf(missingRef);
+            // 三个事件的 ref 名字各不相同，**不能只分 message 与 signal 两支**：
+            // 升级落到 else 分支会被说成"缺 signalRef"，
+            // 而作者写的是 escalationRef —— 报错指向了一个他没写过的属性
+            String refName = kind.startsWith("message") ? "messageRef"
+                    : kind.startsWith("escalation") ? "escalationRef" : "signalRef";
             add(WfValidationIssue.Severity.ERROR, node.getId(),
-                    kind + " 缺少 " + (kind.startsWith("message") ? "messageRef" : "signalRef")
-                            + "，这条边界永远不会触发");
+                    kind + " 缺少 " + refName + "，这条边界永远不会触发");
         }
         if (node.isTimerBoundary()) {
             validateTimerBoundary(node);
-        } else if (node.isMessageBoundary() || node.isSignalBoundary()) {
-            // 消息/信号边界本身合法（缺名字的情况上面已单独报过）
+        } else if (node.isMessageBoundary() || node.isSignalBoundary()
+                || node.isEscalationEvent()) {
+            // 消息/信号/升级边界本身合法（缺名字的情况上面已单独报过）
         } else if (isBlank(node.getErrorCode())) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
                     "boundaryEvent 既没有 errorCode（errorEventDefinition/@errorRef）"

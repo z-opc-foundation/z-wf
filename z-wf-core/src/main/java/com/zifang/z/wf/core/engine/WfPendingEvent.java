@@ -18,9 +18,15 @@ import java.util.Map;
  */
 public class WfPendingEvent {
 
-    /** 投递方式。信号是广播，消息是点对点。 */
+    /**
+     * 投递方式。信号是广播，消息是点对点，升级是广播。
+     *
+     * <p>升级与信号同为广播，<b>但不是同一件事</b>：升级要去动宿主上的待办
+     * （可能换人、可能作废），而信号只是叫醒一条分支。分成两个枚举值而不是
+     * "看名字长得像不像"，是为了让投递路径的选择变成一次显式的判断。
+     */
     public enum Kind {
-        SIGNAL, MESSAGE
+        SIGNAL, MESSAGE, ESCALATION
     }
 
     private final Kind kind;

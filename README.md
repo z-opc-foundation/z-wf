@@ -300,6 +300,45 @@ runtimeService.handleBpmnError(taskId, "APPROVAL_FAILED", "查不到档案", var
 刻意**不支持** BPMN 里"空 errorRef = 捕获所有错误"：宽泛捕获会把不相关的异常
 也吸走，让本该崩掉的流程继续走下去。必须显式写明捕获哪一种错误。
 
+### 3.6 升级事件（escalation）
+
+```xml
+<userTask id="approve" zifang:assignee="boss"/>
+<boundaryEvent id="overdue" attachedToRef="approve">
+  <escalationEventDefinition escalationRef="overdue"/>
+</boundaryEvent>
+<userTask id="director" zifang:assignee="director"/>
+<sequenceFlow id="f3" sourceRef="overdue" targetRef="director"/>
+```
+
+```java
+runtimeService.escalate("overdue", "system", "超时未办，升级处理");
+```
+
+升级与信号的长相几乎一样（都是广播、都是按名字匹配），但**后果相反**：
+信号叫醒一条分支，升级**打断宿主**（待办作废、token 搬到边界上）。
+所以两者是**两个独立的 job 类型、两个独立的投递入口**，
+而不是同一个入口加一个开关 —— 让调用方在代码里就能看出自己正在做的是"通知"还是"打断"。
+
+**"换给谁办"由边界的出线节点决定**，引擎不替作者决定（Camunda 的 `escalationConfig`
+那一层本实现没有，写成"引擎自动换人"会是假的）。
+
+`cancelActivity="false"` 即非中断型：宿主待办照常开着，另起一条并行分支。
+**零个订阅者不是错误**（与抛信号同一条约定），但会写评论留痕。
+
+**部署期挡住的**：
+
+- 与 `messageEventDefinition` / `signalEventDefinition` / `timerEventDefinition` 同时配
+  ⇒ ERROR。其中**与定时器互斥最要紧**：定时器判定只认 `timerType` 字段，
+  而运行期升级走订阅型分支，两边对同一个节点给出两套判定 ——
+  混写会得到一个既不报错、也不到期的哑表。
+- 中间捕获事件（升级捕获）⇒ ERROR。它缺的是"在停着的 token 上再长出一条"
+  这块机制：现有三种捕获都是"把停着的 token 搬走"，硬套会得到
+  「原 token 被搬走且没有第二条」的看起来能跑的错语义。
+  **升级的抛事件与边界事件都已支持**，缺的只有捕获这一半。
+- 不支持 Camunda 的 `escalationTimer`（到期自动升级），也就是第一条里那条
+  "超时自动升级"。
+
 ---
 
 ## 4. 运行时（自研执行树）
@@ -461,7 +500,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 
 ## 9. 测试
 
-188 个测试，全绿。
+889 个测试，全绿（core 815 / web 6 / admin 68）。
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
@@ -475,6 +514,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 | **`WfMultiInstanceTest`** | **16** | 会签 / 或签 / 计数会签、逐实例派人、收口作废 |
 | **`WfBpmnErrorTest`** | **13** | 错误边界路由、作废待办、5 类必须被挡住的配置 |
 | **`WfMessageTriggerTest`** | **9** | 消息唤醒 / 信号广播 / 歧义报错 / 不误伤人工任务 |
+| **`WfEscalationTest`** | **17** | 升级的中断 / 非中断边界、广播、订阅一次性、零订阅留痕、5 类必须被挡住的配置、codec 往返 |
 | **`WfVariableServiceTest`** | **12** | 变量读写、批量原子性、审计留痕、终态拒绝 |
 | **`UnsupportedBpmnElementTest`** | **7** | 未支持元素不许静默退化（XML + JSON 两条入口） |
 | `WfAdminEndToEndTest` | 6 | Spring 全栈 + JDBC 落库 + 示例流程端到端 |

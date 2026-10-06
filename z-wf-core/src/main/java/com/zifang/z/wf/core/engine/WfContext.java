@@ -15,6 +15,7 @@ import com.zifang.z.wf.core.engine.expression.WfExpressionEvaluator;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfJob;
+import com.zifang.z.wf.core.model.WfJobType;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.service.WfEngineException;
 import com.zifang.z.wf.core.model.WfTask;
@@ -126,15 +127,21 @@ public class WfContext {
             job.setAttachedToRef(boundary.getAttachedToRef());
             job.setCreateTime(new Date());
             job.setRetries(WfJob.DEFAULT_RETRIES);
-            if (boundary.isMessageBoundary() || boundary.isSignalBoundary()) {
+            if (boundary.isMessageBoundary() || boundary.isSignalBoundary()
+                    || boundary.isEscalationEvent()) {
                 // 订阅型：没有触发时刻，duedate 留空。
                 // 名字记在 subscriptionName 而不是 exceptionMessage ——
                 // 后者要和"失败原因"共用，而排障视图需要同时看到这两个值（见 WfJob#subscriptionName）。
-                job.setType(boundary.isSignalBoundary()
-                        ? com.zifang.z.wf.core.model.WfJobType.SIGNAL
-                        : com.zifang.z.wf.core.model.WfJobType.MESSAGE);
+                // 升级用**自己的** job 类型而不是并进 SIGNAL：投递方要靠类型区分
+                // 「叫醒一条分支」与「打断宿主（待办作废）」这两种后果完全不同的动作
+                job.setType(boundary.isEscalationEvent() ? WfJobType.ESCALATION
+                        : boundary.isSignalBoundary()
+                        ? WfJobType.SIGNAL
+                        : WfJobType.MESSAGE);
                 job.setDuedate(null);
-                job.setSubscriptionName(boundary.isSignalBoundary()
+                job.setSubscriptionName(boundary.isEscalationEvent()
+                        ? boundary.getEscalationCode()
+                        : boundary.isSignalBoundary()
                         ? boundary.getSignalName() : boundary.getMessageName());
                 createdJobs.add(job);
                 continue;

@@ -431,6 +431,7 @@ public class WfXmlParser {
             node.getProperties().put(PROPERTY_EVENT_CONFLICT,
                     "messageEventDefinition 与 signalEventDefinition 同时出现");
         }
+        parseEscalationDefinition(element, node);
         // cancelActivity / parallelMultiple 是**属性**（不是子元素），
         // 默认值分别是 true 与 false，只有显式写了才非默认。
         // 不写就保持默认而不是记成"false"：只有显式写的非默认值才需要被校验器看见
@@ -439,6 +440,49 @@ public class WfXmlParser {
         }
         if ("true".equals(String.valueOf(element.getAttribute("parallelMultiple")).trim())) {
             node.setParallelMultiple(true);
+        }
+    }
+
+    /**
+     * 解析 {@code escalationEventDefinition}。
+     *
+     * <p>只取 {@code escalationRef} 当匹配键，<b>不解析 {@code <escalation>} 元素</b>
+     * （它只是被引用的一个定义，本实现不需要它承载语义）。
+     *
+     * <p>与消息/信号同样互斥：同时配了就在校验期报错，而不是这里挑一个。
+     * 升级与信号长得像（都是广播、都是按名字匹配），但**后果相反** ——
+     * 升级要动待办、换人办；信号只是叫醒一条分支。
+     */
+    private void parseEscalationDefinition(Element element, WfNode node) {
+        Element escalationDef = childElement(element, "escalationEventDefinition");
+        if (escalationDef == null) {
+            return;
+        }
+        node.setEscalationCode(escalationDef.getAttribute("escalationRef"));
+        if (node.getEscalationCode() == null || node.getEscalationCode().trim().isEmpty()) {
+            // 与消息/信号同一条处理：留痕而不是留空值，
+            // 否则校验器看到的是"没有事件定义"，报出来的错指向不了他写错的那一处
+            node.getProperties().put(PROPERTY_EVENT_MISSING_REF,
+                    "escalationEventDefinition");
+        }
+        if (node.isMessageEvent() || node.isSignalEvent()) {
+            node.getProperties().put(PROPERTY_EVENT_CONFLICT,
+                    "escalationEventDefinition 与 message/signalEventDefinition 同时出现");
+        }
+        if (node.isTimerBoundary()) {
+            // 这一条不是"顺手加上"：isTimerBoundary() 只看 timerType 有没有被设，
+            // 而 WfContext#startTimerJobs 里 escalation 走的是订阅型分支（duedate 留空）。
+            // 两个判定看的是同一个节点的不同字段，于是**升级边界上配了定时器
+            // 会得到一个既不报错、也不到期的哑定时器** ——
+            // 校验期按定时器边界验（放行），运行期按升级订阅建 job（timerExpression 被丢掉）。
+            // 作者写"超时 3 天没办就升级"，跑三天什么也不会发生，而且流程图上看不出异常。
+            // 所以这里记冲突交校验器报错，而不是等运行期再发现。
+            node.getProperties().put(PROPERTY_EVENT_CONFLICT,
+                    "escalationEventDefinition 与 timerEventDefinition 同时出现。"
+                            + "本实现的升级边界只由「抛升级事件」或 WfRuntimeService#escalate 触发，"
+                            + "不支持 Camunda 的 escalationTimer（到期自动升级）："
+                            + "到期与按名字触发是两种触发时刻，塞进同一个 job 会逼触发方去猜"
+                            + "「这条是不是已经到期了」（见 WfJobType#EVENT_TIMER 同源的理由）");
         }
     }
 
