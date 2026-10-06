@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.zifang.z.wf.core.definition.WfDefinition;
+import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
@@ -395,6 +396,40 @@ public interface WfPersistence {
 
     /** 条数，条件与 {@link #queryFilters} 必须一致，<b>忽略分页</b>。 */
     int countFilters(WfFilterQuery query);
+
+    // ==================== 决策（DMN 决策表）====================
+
+    /**
+     * 保存一份决策定义。
+     *
+     * <p><b>与流程定义同一套版本语义</b>：version 由 repository 分配后传入，
+     * 同一 key 重复部署时旧版本<b>保留</b>。保留的理由也一样 ——
+     * 决策表是会迭代的（"金额门槛从 1 万调到 5 万"），而在途的流程实例
+     * 引用的是当时的决策；覆盖掉旧版本，那些实例下次求值就用新门槛判了。
+     */
+    void saveDecision(WfDmnDecision decision);
+
+    /** 按 key + version 取决策；不存在返回 {@code null}（调用方自己决定要不要报错）。 */
+    WfDmnDecision findDecision(String key, int version);
+
+    /** 按 key 取<b>最新版本</b>的决策。 */
+    WfDmnDecision findLatestDecision(String key);
+
+    /** 全部版本（按 version 倒序），对应"这个决策改过几版、每版长什么样"。 */
+    List<WfDmnDecision> findDecisionVersions(String key);
+
+    /**
+     * 物理删除某个版本的决策。
+     *
+     * <p>与 {@link #deleteDefinition} 一样<b>不做在途检查</b>：
+     * 持久层没有"哪些流程正在引用这个决策"的口径，猜错比不拦更糟。
+     * 删掉之后 {@code evaluateDecisionByKey} 会明确报"决策不存在"，
+     * 而不是用同 key 的别的版本悄悄顶上 —— 后者会让同一个决策
+     * 在部署前后给出不同结果，且没有任何报错。
+     *
+     * @return 是否真的删掉了那一行
+     */
+    boolean deleteDecision(String key, int version);
 
     // ==================== 生命周期 ====================
 

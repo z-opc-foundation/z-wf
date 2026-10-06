@@ -125,7 +125,7 @@
 | AuthorizationService | ⛔ 有意排除，见 §5 |
 | FilterService（保存的查询） | ✅ | 早已实现：`WfFilterService` + `WfFilter` + `ZWF_FILTER` 表，REST `GET/POST/PUT/DELETE /api/wf/filters` 与 `GET /api/wf/filters/{id}/results`。见 §1.2。**这一行曾经长期挂着 ❌** —— 功能早就有了而能力表没跟上，读表的人会以为"保存筛选条件"得业务方自己存，于是自己又造了一套 |
 | ExternalTaskService | ⛔ 有意排除，见 §5 |
-| DecisionService（DMN） | ❌ 未实现。规则判断目前靠条件表达式 |
+| DecisionService（DMN） | ✅ | 第 23 轮实现：`WfDecisionService`（`parseDecision` / `deployDecision` / `findDecisionByKey` / `findDecisionsByKey` / `deleteDecision` / `evaluateDecision`）+ `WfDmnParser` + `WfDmnEvaluator` + `ZWF_DECISION` 表（带版本，与流程定义同一套版本语义）+ REST `POST /api/wf/decisions/deploy`、`GET /api/wf/decisions/{key}`、`GET /api/wf/decisions/{key}/versions[/{version}]`、`POST /api/wf/decisions/{key}/evaluate`、`DELETE /api/wf/decisions/{key}/versions/{version}`。**六种 HitPolicy 全支持**：UNIQUE（命中多条直接报违规）/ ANY（多条输出必须一致）/ FIRST / RULE_ORDER（多结果聚合）/ COLLECT（列表）/ OUTPUT_PRIORITY（按 `outputValues` 的先后排序）。聚合器 SUM / MIN / MAX / COUNT。**单目测试补全**：`inputEntry` 省略左操作数时以该列 `inputExpression` 的值为左操作数（`> 5000` 写作 `(amount) > 5000`）；`outputValues` 列表逐项展开。**只支持决策表，不支持决策图**（`informationRequirement` 部署期报错）与 **FEEL**（`[a..b]` 区间、`date(` / `time(` / `duration(`、`@"..."` 上下文 —— 部署期挡下高置信度的那几类，其余留给运行期 fail-closed） |
 | CaseService（CMMN） | ⛔ 有意排除，见 §5 |
 | Batch | ❌ 未实现 |
 
@@ -153,7 +153,7 @@
 | `complexGateway` | 🟡 | ✅ 已实现：按变量**取值**分派（`zifang:caseVariable` + 出线 `zifang:caseValue`），`camunda:caseExpression` 同样识别。**剩余**：Camunda 侧的后置条件（`condition` 元素）、配对/非配对语义差异 |
 | `transaction` / `adHocSubProcess` | ❌ | 同上，报错挡住 |
 | **定时器** `timerEventDefinition` | ✅ | 三种都实现了：`timeDuration`（PT5M / P1DT2H / P1Y）、`timeDate`（2026-12-31T18:00:00Z）、**`timeCycle`（第 13 轮补上）**，都可写 `${变量}` 由流程实例决定时限。**边界定时器（打断）与事件网关定时器分支（竞速）都已接上执行器**（`TIMER` / `EVENT_TIMER` 两种 job 类型，`WfJobService#executeDueJobs` 逐类型各扫一遍）。**`timeCycle` 的限制**：只支持用在**非中断型边界事件**上（`R3/PT1H` / `R/PT10M` / `P1D/T1H` / 带显式起始时刻的写法都支持），因为只有非中断型才有"下一周期可以提醒"的宿主；无界写法 `R/PT10M` 有 100 次的硬上限兜底 |
-| **异步** `asyncBefore` / `asyncAfter` | 🟡 | ✅ 已实现：`zifang:` 与 `camunda:` 双前缀；`ASYNC_BEFORE`/`ASYNC_AFTER` 两个 job 类型 + `WfJobService#executeAsyncJobs`。**剩余**：异步 job 的优先级（`asyncBefore` 配 exclusive/priority）、`timeCycle` 循环定时器、多实例+异步（部署期已挡） |
+| **异步** `asyncBefore` / `asyncAfter` | 🟡 | ✅ 已实现：`zifang:` 与 `camunda:` 双前缀；`ASYNC_BEFORE`/`ASYNC_AFTER` 两个 job 类型 + `WfJobService#executeAsyncJobs`。**剩余**：异步 job 的优先级（`asyncBefore` 配 exclusive/priority）、多实例+异步（部署期已挡）。~~`timeCycle` 循环定时器~~ —— 已于第 13 轮实现，见上一行 |
 | **外部任务** `externalTask` / `ExternalTaskService` | ✅ | `serviceTask` + `zifang:topic` 标注（`<externalTask>` 不是 BPMN 2.0 元素，Camunda 同样靠标注在 serviceTask 上）。原子"选出+上锁"、租约制、`fail` 解锁+退避、重试耗尽留档。REST 7 端点在 `/api/wf/external-tasks` |
 | `errorRef` / `errorEventDefinition` | ✅ | 见上。**刻意不支持「空 errorRef = 捕获所有错误」**——宽泛捕获会把不相关异常也吸走，让本该崩的流程继续走 |
 | `escalationCode` / `compensation` | ❌ | |
@@ -186,9 +186,12 @@
 异步执行做完了，两个方向共用一个执行器但走**相反的续跑动作**：前置 `resumeEnter`（把节点真的跑一遍），
 后置 `resumeLeave`（只补"离开"这一步，绝不重跑节点行为）—— 共用一个的话就会在重跑 delegate 和不执行之间二选一。
 
-**剩余的异步缺口**：`asyncBefore` 的 exclusive（互斥，多实例里只跑一个）、优先级，
-以及 `timeCycle` 循环定时器。多实例 + 异步已在部署期挡住：单 token 粒度的续跑没有
+**剩余的异步缺口**：`asyncBefore` 的 exclusive（互斥，多实例里只跑一个）与优先级。
+多实例 + 异步已在部署期挡住：单 token 粒度的续跑没有
 "等所有实例都离开"的汇合点，放行会让流程在最后一个实例离开时就往前走。
+
+（~~`timeCycle` 循环定时器~~ 这条曾长期挂在这里，但第 13 轮就实现了，
+且已接上执行器 —— 见 §2 定时器那一行。留着会让人以为"循环定时器还没做"。）
 
 ---
 
@@ -316,7 +319,26 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ### P2 —— 管理便利
 
-引擎指标 · ~~流程模型图形回读~~（BPMN DI 解析 + REST 已实现，见 §1.1）· ~~消息关联 `correlate`~~（**第 16 轮补上**，见 §1.2）· ~~`getActivityInstance` 树形活动实例~~（**第 17 轮补上**，见 §1.2）· ~~`getTableCount` / `getTableNames` / `getProperties`~~（**第 19 轮补上**，见 §1.5）· ~~`createExecutionQuery` 令牌条件查询 + `setProcessInstanceName`~~（**第 20 轮补上**，见 §1.2）
+引擎指标 · ~~流程模型图形回读~~（BPMN DI 解析 + REST 已实现，见 §1.1）· ~~消息关联 `correlate`~~（**第 16 轮补上**，见 §1.2）· ~~`getActivityInstance` 树形活动实例~~（**第 17 轮补上**，见 §1.2）· ~~`getTableCount` / `getTableNames` / `getProperties`~~（**第 19 轮补上**，见 §1.5）· ~~`createExecutionQuery` 令牌条件查询 + `setProcessInstanceName`~~（**第 20 轮补上**，见 §1.2）· ~~链接事件 `linkEventDefinition`~~（**第 22 轮补上**，见 §2）· ~~`DecisionService`（DMN 决策表）~~（**第 23 轮补上**，见 §1）
+
+> 第 23 轮（DMN 决策表）**没有新缺陷，但改了三处"文档比代码乐观/悲观"**：
+> ① 记忆里"`createHistoricIncidentQuery` 是缺口"**已经不成立** —— `WfIncidentService`
+>     与 `/incidents/count`、`/process/overview`、`/dashboard` 早就在了。
+>     所以本轮开工先做文档-代码核对，而不是照着上一轮列的缺口直接做；
+> ② `timeCycle` 在表格里写"第 13 轮已实现"，却在两处「剩余缺口」里还挂着 ——
+>     **同一份文档内部自相矛盾时，读的人只会挑对自己有利的那一半**；
+> ③ DMN 整块缺失与"有意排除"是两回事：§5 的五条有意排除里没有 DMN，
+>     所以它是**真的没做**，不是设计决策 —— 这也是本轮选它的理由；
+> ④ README 三处的表数量停在 **6 张**、索引数停在 **10 个**，
+>     而 `STORAGE_NAMES` 早已是 9 张、DDL 里数出来是 15 个索引。
+>     这类数字每加一张表就漂一次，**要订正就顺手数一遍，不要照抄上一处的数字**。
+
+> 第 22 轮（链接事件 `linkEventDefinition`）顺带修掉一个**已发布真缺陷**：
+> `scriptTask` 的 `zifang:resultVariable` 是死字段 —— `WfScriptTaskBehavior` 读的是
+> `node.property("resultVariable")`（properties Map），而三处写入写的都是**字段**。
+> 属性名完全一致，所以没有任何报错，只是这个功能从未生效过。
+> 同时订正 `README.en.md`：它把 `intermediateCatchEvent` 列为不支持，
+> 而那个元素第 7 轮就实现了。
 
 > 第 19 轮没有新缺陷，但逼出两处**当初差点漏掉的东西**：
 > ① **自省能力挂在哪一层**，一开始想放在 `WfManagementService` 里 `instanceof` 判断存储形态，
@@ -351,8 +373,10 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 790 个测试兜着
-- 从测试与审计中逼出并修复的**真实缺陷 43 项**，其中 6 项属于"能力看着在、实际不生效"：
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 842 个测试兜着
+- 从测试与审计中逼出并修复的**真实缺陷 47 项**（43 项截至第 21 轮 + 第 22 轮的
+  `zifang:resultVariable` 读错载体 1 项 + 第 23 轮 DMN 的 3 项），
+  其中 6 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发、
   嵌入式 `subProcess` 的内联内容永远不执行、默认流程标记两套实现不一致
 - **第 20 轮（令牌查询 + 实例改名）自己判据抓到一个"两套实现分家"的真缺陷**：
@@ -1574,3 +1598,107 @@ BPMN 里 `intermediateCatchEvent` 只挂一种事件定义，所以本实现把
 本轮改动不含时序成分（无共享状态、无 ThreadLocal、无时间依赖），
 故倾向既有的偶发，但**这是个未查清的账**：下次遇到疑似 flaky，
 先 `tee` 留档再复跑，否则复跑再多次也说不清是哪条。
+
+### 本轮反向验证记录（链接事件 `linkEventDefinition`，第 22 轮）
+
+补的是 `move` 与排他网关都替代不了的那件事（详见 §2 那一行）。
+`21` 条变异全红，`4` 条对照全绿，**顺带修掉一个已发布的真缺陷**（`zifang:resultVariable`）。
+
+**一、两条"看着一样、必须反过来写"的语义，不能互相参照**。
+改道后 token 沿 **catch 自己的出线**走，throw 自己的出线不会被走过；
+而 escalation 恰好相反 —— Camunda 文档明写 "outgoing sequence flows will be taken"。
+两处只差一个"从谁身上出线"，参照着写必错一条。
+⇒ 特判点因此放在 `leave` 的**取出线之前**：放之后，"跳过一整段"会变成"跑完整段再跳一遍"，
+而图上看不出任何异常。
+
+**二、"报错"与"报 WARN"的分界按「静默失效的范围」划，不按严重程度划**。
+throw 有出线 → WARN（那是摆设，作者自己看得见）；catch 有入线 → **ERROR**
+（token 只由 link 改道进入，那条连线**永远不会被走过**，它上游的整段流程静默失效）。
+后者藏着的东西多得多，所以不能因为"同样是连线画错"就一视同仁。
+
+**三、四次"变异没打红"，四个不同的成因**。
+
+| 现象 | 真实成因 | 判据侧的修法 |
+|---|---|---|
+| M05 打绿 | 「多个命中时挑第一个」这条**运行期不可达** —— 部署期已经挡住重名 catch 了 | 用 `DoctoredPersistence` 篡改定义，把这个状态造出来 |
+| M20 打绿 | 往返测试只用了内存实现，它**深拷贝、走不到 codec** | 内存 + JDBC 两套都测 |
+| M19 打绿 | 变异与名字不符：判据断的是 `escalation` 这个词，我却删了报错的后半句，前半句里它还在 | 重写变异，确认删掉的正是判据断的那几个字 |
+| G01 补不上 | 变异文本写的是块注释 `*`，文件里是行注释 `//` | 对齐注释形态 |
+
+M05 那条最值得记：**部署期挡住的状态，不能直接拿运行期的正常路径去测它**——
+判据得自己把那个状态造出来（篡改持久化里的定义），
+否则测的只是一个永远到不了的分支，测绿了也说明不了什么。
+
+**四、往返断言必须两套实现都测**。
+codec 的往返断言只在内存实现上跑过，而内存实现是**深拷贝**，
+序列化那一层根本没被走到 —— 表面上"往返测试通过"，实际一行 codec 都没执行。
+
+### 本轮反向验证记录（DMN 决策表 `DecisionService`，第 23 轮）
+
+补的是整块缺失的 `DecisionService`（见 §1 那一行）。
+核心层 `27` 条变异全红、`6` 条对照全绿；REST 层 `12` 条变异全红、`2` 条对照全绿。
+实现过程中被自己的判据逼出 **4 个真缺陷**（3 个在求值器、1 个在 REST 层的异常映射）。
+
+**一、开工先做文档-代码核对，而不是照着上一轮列的缺口直接做**。
+记忆里"`createHistoricIncidentQuery` 是缺口"**已经不成立** ——
+`WfIncidentService` 与 `/incidents/count`、`/process/overview`、`/dashboard` 早就在了。
+核对 §1（DecisionService 标 ❌）与 §5（五条有意排除**不含** DMN）之后才敢确定：
+DMN 是**真缺失**，不是设计决策。
+
+**二、只做决策表，不做决策图**。
+决策图（`informationRequirement`）要求按**拓扑顺序**求值多个决策、每跳输入是上一跳输出。
+折成"按声明顺序跑一遍"，在依赖顺序与声明顺序不一致的图上会**算出错误结果且不报错** ——
+所以部署期直接报错，而不是降级。
+
+**三、按 `localName` 找元素，不按命名空间 URI**。
+DMN 工具链的命名空间版本在 1.1 / 1.2 / 1.3 之间极度分裂，各家建模器导出的还不一样。
+按 URI 匹配意味着"换个工具导出的文件就读不出来"，而报错只会说"找不到元素"。
+
+**四、判据抓出来的四个真缺陷**（三个在 `WfDmnEvaluator`）：
+
+1. **`inputEntry` 是单目测试，不是完整表达式** —— 隐含的左操作数是该列 `inputExpression` 的值。
+   初版当独立表达式求值，于是**每一条带比较符的规则都不命中，且不报错**。
+   表看着能跑，实际只按 `-` 那几列在筛。
+2. **补全单目测试时把比较符切掉了** —— 写成 `test.substring(matcher.end())`，
+   `> 5000` 于是被补成 `(amount) 5000`。与上一条叠加：表能跑、结果全错、无报错。
+3. **`OUTPUT_PRIORITY` 依次覆盖同一个 key** —— 赢的是**最后**出现的值，
+   优先级整个反过来却没有报错；且第二个循环遍历 `getOutputs()`（对外形状）而不是展开后的值，
+   产出 `[[b, a], ...]` 这种套娃。
+4. **REST 层：`WfDmnViolationException` 挂在 `RuntimeException` 上** ——
+   统一异常映射里没有它的 handler，于是"这张表两条规则重叠"落成 **500**。
+   那是调用方改表就能解决的 400 级问题，报 500 会让前端一律弹"系统错误"。
+   改成继承 `WfEngineException` 之后自动走 400。
+
+**五、六条"变异没打红"，六个不同的成因**（这是本轮最值得记的部分）：
+
+| 现象 | 真实成因 | 判据侧的修法 |
+|---|---|---|
+| D04 打绿 | 判据只断报错里有「决策图」三个字，而**同一文件里"没有 decisionTable"那条兜底分支也写着「决策图」** | 两侧都断：既要有决策图那段独有的措辞，也要 `assertFalse` 不含兜底那句 |
+| D15 打绿 | 夹具只造了"两条命中值都在 outputValues 里"——那种输入下"按优先级合并"与"取最后一条命中"**结果完全相同** | 补一条命中值落在 `outputValues` 之外的 |
+| D17 打绿 | **等价变异**：探针实测 `evalRaw(expr, null)` 与 `evalRaw(expr, 空表)` 完全等价（求值器只在表非空时装载变量） | 改判为对照，并在注释里写明为什么等价 |
+| D18 打绿 | 夹具只有字面量输出项，而字面量两边都求得出 —— 断不到"求不出值"那条路 | 补语法错 `${amount >}` 的输出项 |
+| D22 打绿 | 内存实现天然按版本删，**JDBC 那条 DELETE 语句从头到尾没被任何用例跑到** | 补一条真库的按版本删除 |
+| G01 补不上 | 变异文本按块注释 `*` 写的，文件里是 `**` 包裹的行文 | 对齐注释形态 |
+
+D04 那条与第 21 轮记过的「删文案类变异要确认删掉的正是判据断的那几个字」同源，
+但方向相反：那次是**变异删多了**，这次是**判据的关键词在另一条分支里也出现**。
+
+**六、探针实测推翻了自己写的一条注释**。
+`evalOutput` 上原本注释说"传 null 时求值器跳过变量装载，纯字面量会求不出值"——
+探针实测 `evalRaw("\"ceo\"", null)` 返回 `"ceo"`，**注释描述的行为根本不存在**。
+据此改正文：两者今天等价，写空表是为了让"输出项不引用变量"在调用点上看得见，
+而不是依赖求值器内部那个 null 判断。
+⇒ 与「注释里描述的属性必须数据真具备」同源：**注释也会错，而且错得比代码更难发现**。
+
+**七、REST 层必须有，判据也得有两处**。
+本仓每个 service 都有对应 controller，只写服务不接 REST 就是半套。
+但 z-wf-web 的单测是 `standaloneSetup`（手工 new controller + 注入 service），
+**它断不到自动装配** —— 服务注册成 Bean 没有、路由没挂上，单测照样全绿、端点全 404。
+所以判据分两处：`z-wf-web` 的 `WfDecisionControllerTest`（断路径/字段/状态码）
+与 `z-wf-admin` 的 `@SpringBootTest` 端到端（断 bean 注册与真实路由），一起跑。
+
+**八、"变异没打红"的第三类：变异没进编译路径**。
+REST 层的 harness 一开始写成 `-pl z-wf-web,z-wf-admin`，
+结果改 **core** 源码的两条变异（异常继承、bean 注册）全绿 ——
+web/admin 链接的是本地仓库里**已安装**的那份 core jar，那份 class 从来没被重建。
+症状与"判据没区分力"一模一样，但修法完全不同：命令要把 `z-wf-core` 一起列进 reactor。

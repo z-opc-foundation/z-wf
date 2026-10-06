@@ -420,6 +420,36 @@ class UnsupportedBpmnElementTest {
             return 0;
         }
 
+        // ---- 决策（DMN）----
+        // 这个桩只服务 deploy 的校验路径，决策一行都不会碰到。
+        // 留着这几个方法不是为了"让编译过"，而是因为桩里每多一个
+        // throw new AssertionError("不该走到")，就多一处「若真走到这里」的说明 ——
+        // 全返回 null 的话，将来某个路径真的调到了也只是拿到 null，无从判断。
+        @Override
+        public void saveDecision(com.zifang.z.wf.core.definition.dmn.WfDmnDecision decision) {
+            throw new AssertionError("校验没过就不该走到落库");
+        }
+
+        @Override
+        public com.zifang.z.wf.core.definition.dmn.WfDmnDecision findDecision(String key, int version) {
+            return null;
+        }
+
+        @Override
+        public com.zifang.z.wf.core.definition.dmn.WfDmnDecision findLatestDecision(String key) {
+            return null;
+        }
+
+        @Override
+        public List<com.zifang.z.wf.core.definition.dmn.WfDmnDecision> findDecisionVersions(String key) {
+            return new java.util.ArrayList<>();
+        }
+
+        @Override
+        public boolean deleteDecision(String key, int version) {
+            return false;
+        }
+
         @Override
         public void saveActivityInstance(com.zifang.z.wf.core.model.WfActivityInstance a) {
         }

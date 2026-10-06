@@ -33,7 +33,7 @@
 | | 1.x（Camunda 版） | 2.x（本仓，自研） |
 |---|---|---|
 | 执行模型 | Camunda PVM | 自研 token 执行树（enter/leave 分离、fork/join） |
-| 持久化 | Camunda `ACT_*` 表 | 自有 `ZWF_*` 6 张表 + 乐观锁 CAS |
+| 持久化 | Camunda `ACT_*` 表 | 自有 `ZWF_*` 9 张表 + 乐观锁 CAS |
 | 条件求值 | Camunda JUEL | `z-util-expr-el` + **未定义变量 fail-closed** |
 | 流程定义 | Camunda BPMN 引擎 | 同一套 BPMN 语义，协议层与 `z-util-wf-kernel` 共用 |
 
@@ -83,7 +83,7 @@ mvn -o install
 | | `z-util/z-util-wf-kernel` | `z-wf` |
 |---|---|---|
 | 形态 | 内存引擎，`WorkflowNode` + `Connector` 邻接表 | 生产引擎，`WfNode` + `WfFlow` 边列表 |
-| 存储 | 无（`FileWorkflowPersistencePlugin` 可选） | SPI：内存 / JDBC（6 张表 + 乐观锁 CAS） |
+| 存储 | 无（`FileWorkflowPersistencePlugin` 可选） | SPI：内存 / JDBC（9 张表 + 乐观锁 CAS） |
 | 执行模型 | `CountDownLatch` 汇聚 | 自研 token 执行树，enter / leave 严格分离 |
 | 并发 | 单机内存态 | 多节点，乐观锁 + 重试语义 |
 | 依赖 | 无 Spring / 无 DB | Spring Boot |
@@ -313,7 +313,7 @@ advance() = leave(token) + 沿出线 enter(下一个 token)
   epoch-millis 的 `Long`，`fromJson` 还原不回 `Date` 会抛
   `Can not set java.util.Date field ... to java.lang.Long`；且原生序列化免疫
   "新增字段忘补 copy 一行"这个漏洞面。
-- `JdbcWorkflowPersistence` — 6 张表（`ZWF_*`）+ 10 个索引 + 乐观锁 CAS。
+- `JdbcWorkflowPersistence` — 9 张表（`ZWF_*`）+ 15 个索引 + 乐观锁 CAS。
   冲突抛 `WfOptimisticLockException`（web 层映射为 HTTP 409），存储故障映射 503。
 
 **持久化形状 ≠ 运行时对象**（`WfDefinitionCodec`）：`WfDefinition` 含 `Date startTime`，

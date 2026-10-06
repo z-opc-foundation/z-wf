@@ -189,7 +189,7 @@ compile, not fail silently in production.
 Abstracted behind a 25-method SPI. Two implementations ship:
 
 - **In-memory** — Java native serialization for deep copies
-- **JDBC** — 6 `ZWF_*` tables, 10 indexes, optimistic locking via compare-and-set
+- **JDBC** — 9 `ZWF_*` tables, 15 indexes, optimistic locking via compare-and-set
 
 Optimistic-lock conflicts surface as HTTP `409` instead of silently overwriting.
 

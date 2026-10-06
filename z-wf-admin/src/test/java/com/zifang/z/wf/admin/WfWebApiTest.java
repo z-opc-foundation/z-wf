@@ -1667,6 +1667,59 @@ class WfWebApiTest {
         return json.readValue(response.getBody(), Map.class);
     }
 
+    // ==================== DMN 决策表端点 ====================
+
+    /**
+     * DMN 端点走真实 HTTP。
+     *
+     * <p>z-wf-web 的单元测试是 {@code standaloneSetup}（手工 new controller + 注入 service），
+     * 它<b>断不到自动装配</b>：{@code WfDecisionService} 有没有被注册成 Bean、
+     * 路由有没有真的挂上，只有在这条起完整上下文的用例里才看得见。
+     * 而"服务写了、REST 层忘了接线"正是最常见的那种半成品 ——
+     * 单元测试照样全绿，端点 404。
+     */
+    @Test
+    @DisplayName("DMN 端点：部署 → 求值 → 删版本，全部走 HTTP")
+    void decisionEndpointsOverHttp() throws Exception {
+        String key = "webLevel-" + System.nanoTime();
+        String dmn = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"https://www.omg.org/spec/DMN/20191111/MODEL/\" id=\"d\">\n"
+                + "  <decision id=\"" + key + "\" name=\"层级\">\n"
+                + "    <decisionTable id=\"t\" hitPolicy=\"FIRST\">\n"
+                + "      <input id=\"i\"><inputExpression id=\"ie\"><text>amount</text>"
+                + "</inputExpression></input>\n"
+                + "      <output id=\"o\" name=\"level\"/>\n"
+                + "      <rule><inputEntry><text>&gt; 50000</text></inputEntry>"
+                + "<outputEntry><text>\"ceo\"</text></outputEntry></rule>\n"
+                + "      <rule><inputEntry><text>-</text></inputEntry>"
+                + "<outputEntry><text>\"staff\"</text></outputEntry></rule>\n"
+                + "    </decisionTable>\n"
+                + "  </decision>\n"
+                + "</definitions>\n";
+
+        Map<String, Object> deployed = asMap(postOk("/api/wf/decisions/deploy",
+                body("dmnXml", dmn)).get("data"));
+        List<Map<String, Object>> records = asList(deployed.get("deployed"));
+        assertEquals(1, records.size(), "一个文件里的一个 decision 应当只部署出一条");
+        assertEquals(key, records.get(0).get("key"));
+        assertEquals(1, ((Number) records.get(0).get("version")).intValue());
+
+        Map<String, Object> result = asMap(postOk("/api/wf/decisions/" + key + "/evaluate",
+                body("variables", body("amount", 60000))).get("data"));
+        assertEquals("ceo", asList(result.get("rows")).get(0).get("level"));
+        assertEquals(2, ((Number) result.get("matchedRuleCount")).intValue(),
+                "命中的规则数是 2（> 50000 与恒真的 - 都成立），FIRST 取的是第一条");
+
+        ResponseEntity<String> deleted = exchange(HttpMethod.DELETE,
+                "/api/wf/decisions/" + key + "/versions/1", null);
+        assertEquals(HttpStatus.OK, deleted.getStatusCode(), deleted.getBody());
+
+        // 删掉之后求值必须报"不存在"，而不是拿别的版本悄悄顶上
+        ResponseEntity<String> afterDelete = exchange(HttpMethod.POST,
+                "/api/wf/decisions/" + key + "/evaluate", body("variables", body("amount", 1)));
+        assertEquals(HttpStatus.BAD_REQUEST, afterDelete.getStatusCode(), afterDelete.getBody());
+    }
+
     // ==================== 历史与 Job 端点 ====================
 
     @Test

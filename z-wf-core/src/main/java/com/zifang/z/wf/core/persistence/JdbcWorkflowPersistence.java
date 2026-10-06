@@ -23,6 +23,8 @@ import com.zifang.util.json.JsonUtil;
 import com.zifang.util.json.model.JsonArray;
 import com.zifang.util.json.model.JsonObject;
 import com.zifang.z.wf.core.definition.WfDefinition;
+import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
+import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
 import com.zifang.z.wf.core.definition.WfFlow;
 import com.zifang.z.wf.core.definition.WfNode;
 import com.zifang.z.wf.core.definition.WfNodeType;
@@ -256,6 +258,24 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 + "PRIMARY KEY (FILTER_ID))");
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_FILTER_OWNER ON ZWF_FILTER (OWNER_ID)");
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_FILTER_TYPE ON ZWF_FILTER (RESOURCE_TYPE)");
+
+        // ---- DMN 决策 ----
+        // 决策表结构存一列 JSON（TABLE_JSON），与流程定义把图存进 DEF_GRAPH 同一做法：
+        // 决策表是"一组会变的列与规则"，逐列拆成关系表要跟着每种 HitPolicy 改 schema，
+        // 而它只会被整体读一次、不会按列查。
+        //
+        // HIT_POLICY 另存一列：它是运维第一眼要看的东西（这张表允许多条命中吗），
+        // 解 JSON 才能看到这一点就太不划算。与 ZWF_FILTER.RESOURCE_TYPE 同理 ——
+        // 库里写的和接口里填的必须是同一个词。
+        ddl.add("CREATE TABLE IF NOT EXISTS ZWF_DECISION ("
+                + "DECISION_KEY VARCHAR(128) NOT NULL,"
+                + "DECISION_VERSION INT NOT NULL,"
+                + "DECISION_NAME VARCHAR(256),"
+                + "HIT_POLICY VARCHAR(16),"
+                + "TABLE_JSON TEXT,"
+                + "DMN_XML TEXT,"
+                + "DEPLOY_TIME TIMESTAMP,"
+                + "PRIMARY KEY (DECISION_KEY, DECISION_VERSION))");
 
         Connection connection = null;
         try {
@@ -834,6 +854,135 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         } finally {
             close(connection);
         }
+    }
+
+    // ==================== 决策（DMN）====================
+
+    private static final String DECISION_SELECT_ALL =
+            "SELECT DECISION_KEY, DECISION_VERSION, DECISION_NAME, HIT_POLICY, "
+                    + "TABLE_JSON, DMN_XML, DEPLOY_TIME FROM ZWF_DECISION ";
+
+    @Override
+    public void saveDecision(WfDmnDecision decision) {
+        if (decision == null || decision.getKey() == null) {
+            return;
+        }
+        String sql = "INSERT INTO ZWF_DECISION "
+                + "(DECISION_KEY, DECISION_VERSION, DECISION_NAME, HIT_POLICY, "
+                + " TABLE_JSON, DMN_XML, DEPLOY_TIME) VALUES (?,?,?,?,?,?,?)";
+        Connection connection = null;
+        try {
+            connection = dataSource.getConnection();
+            PreparedStatement ps = connection.prepareStatement(sql);
+            try {
+                ps.setString(1, decision.getKey());
+                ps.setInt(2, decision.getVersion());
+                ps.setString(3, decision.getName());
+                // HIT_POLICY 从**解析后的表**取，而不是重新去读 XML：
+                // 两处解析一遍的话，某天解析器改了而这行没改，库里记的策略
+                // 就会与真正求值时用的策略不一致，而查库的人看不出来。
+                ps.setString(4, decision.getTable() == null ? null
+                        : String.valueOf(decision.getTable().getHitPolicy()));
+                ps.setString(5, decision.getTable() == null ? null
+                        : JsonUtil.toJson(decision.getTable()));
+                ps.setString(6, decision.getDmnXml());
+                ps.setTimestamp(7, timestamp(decision.getDeployTime()));
+                ps.executeUpdate();
+            } finally {
+                ps.close();
+            }
+        } catch (SQLException e) {
+            throw new WfPersistenceException("保存决策定义失败: " + decision.getKey(), e);
+        } finally {
+            close(connection);
+        }
+    }
+
+    @Override
+    public WfDmnDecision findDecision(String key, int version) {
+        String sql = DECISION_SELECT_ALL + "WHERE DECISION_KEY=? AND DECISION_VERSION=?";
+        return queryOne(sql, new Object[]{key, version}, new RowMapper<WfDmnDecision>() {
+            @Override
+            public WfDmnDecision map(ResultSet rs) throws SQLException {
+                return readDecision(rs);
+            }
+        });
+    }
+
+    @Override
+    public WfDmnDecision findLatestDecision(String key) {
+        // 不走 MAX(VERSION) 聚合：那样取回来的会是"某一行"，要靠再查一次才知道
+        // 哪个版本。更要紧的是 MAX() 在没有行时返回 NULL 且不带行 —— 那与
+        // "有一行但版本为 NULL"分不开，而这里要的是"查不到就是查不到"。
+        String sql = DECISION_SELECT_ALL + "WHERE DECISION_KEY=? "
+                + "ORDER BY DECISION_VERSION DESC";
+        List<WfDmnDecision> found = queryList(sql, new Object[]{key},
+                new RowMapper<WfDmnDecision>() {
+                    @Override
+                    public WfDmnDecision map(ResultSet rs) throws SQLException {
+                        return readDecision(rs);
+                    }
+                });
+        return found.isEmpty() ? null : found.get(0);
+    }
+
+    @Override
+    public List<WfDmnDecision> findDecisionVersions(String key) {
+        String sql = DECISION_SELECT_ALL + "WHERE DECISION_KEY=? ORDER BY DECISION_VERSION DESC";
+        return queryList(sql, new Object[]{key}, new RowMapper<WfDmnDecision>() {
+            @Override
+            public WfDmnDecision map(ResultSet rs) throws SQLException {
+                return readDecision(rs);
+            }
+        });
+    }
+
+    @Override
+    public boolean deleteDecision(String key, int version) {
+        String sql = "DELETE FROM ZWF_DECISION WHERE DECISION_KEY=? AND DECISION_VERSION=?";
+        Connection connection = null;
+        try {
+            connection = dataSource.getConnection();
+            PreparedStatement ps = connection.prepareStatement(sql);
+            try {
+                ps.setString(1, key);
+                ps.setInt(2, version);
+                return ps.executeUpdate() > 0;
+            } finally {
+                ps.close();
+            }
+        } catch (SQLException e) {
+            throw new WfPersistenceException("删除决策定义失败: " + key + ":" + version, e);
+        } finally {
+            close(connection);
+        }
+    }
+
+    /**
+     * 一行 → 一个决策。
+     *
+     * <p>{@code TABLE_JSON} 解不开时<b>抛异常而不是返回 null 表</b>：
+     * 返回 null 表会让上层报"这个决策没有决策表"，把"库里那列坏了"
+     * 说成"作者没写表"，排障方向从数据问题被带到设计问题。
+     */
+    private WfDmnDecision readDecision(ResultSet rs) throws SQLException {
+        WfDmnDecision decision = new WfDmnDecision(rs.getString("DECISION_KEY"),
+                rs.getString("DECISION_NAME"));
+        decision.setVersion(rs.getInt("DECISION_VERSION"));
+        decision.setDmnXml(rs.getString("DMN_XML"));
+        decision.setDeployTime(date(rs.getTimestamp("DEPLOY_TIME")));
+        String json = rs.getString("TABLE_JSON");
+        if (json != null && !json.trim().isEmpty()) {
+            try {
+                decision.setTable(JsonUtil.fromJson(json, WfDmnDecision.WfDmnTable.class));
+            } catch (RuntimeException e) {
+                throw new WfPersistenceException("决策 " + decision.getKey()
+                        + " 的 TABLE_JSON 解不开: " + e.getMessage()
+                        + "。这一列坏了，不是这张表没写规则 —— "
+                        + "报成「没有决策表」会把排障方向从数据问题带到设计问题", e);
+            }
+        }
+        return decision;
     }
 
     @Override
@@ -1806,7 +1955,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
     public static final List<String> TABLE_NAMES = java.util.Collections.unmodifiableList(
             java.util.Arrays.asList(
                     "ZWF_DEFINITION", "ZWF_PROCESS", "ZWF_EXECUTION", "ZWF_TASK",
-                    "ZWF_JOB", "ZWF_ACTIVITY", "ZWF_COMMENT", "ZWF_FILTER"));
+                    "ZWF_JOB", "ZWF_ACTIVITY", "ZWF_COMMENT", "ZWF_FILTER",
+                    "ZWF_DECISION"));
 
     /**
      * 表名清单，<b>从库里真查</b>而不是直接返回常量。

@@ -20,6 +20,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import com.zifang.z.wf.core.definition.WfDefinition;
+import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
@@ -60,7 +61,7 @@ class WfManagementServiceTest {
         assertTrue(String.valueOf(memory.get("storage")).contains("不落库"),
                 "内存存储要把「重启即失」写进返回值：这是排障时最先要确认的一条。实际: "
                         + memory.get("storage"));
-        assertEquals(8, memory.get("storageCount"));
+        assertEquals(9, memory.get("storageCount"));
 
         Map<String, Object> jdbc = propsOf(jdbcPersistence());
         assertEquals("jdbc", jdbc.get("persistence"));
@@ -216,13 +217,13 @@ class WfManagementServiceTest {
     }
 
     @Test
-    @DisplayName("八个存储项各自数自己 —— 造多少条报多少，互不串味")
+    @DisplayName("九个存储项各自数自己 —— 造多少条报多少，互不串味")
     void everyStorageEntityIsCountedSeparately() {
         // 内存侧 getTableCount 是八段 if-else 加一条 `return filters.size()` 兜底。
         // 任何一段写错（返回了隔壁的 size、聚合漏了一层、分支条件串了），
         // 症状都是「某一项的数其实来自另一项」—— 那种错在只测单项时完全看不出来，
         // 因为两项都恰好是 0 时，返回谁都一样。
-        // 所以这里给八项各造**互不相同**的数量：只要有一项串味，数字立刻对不上。
+        // 所以这里给九项各造**互不相同**的数量：只要有一项串味，数字立刻对不上。
         WfPersistence memory = memoryPersistence();
 
         // 定义：同一个 key 的三个版本 → 3 行（**不是** 1 行，也不是 1 行数）
@@ -260,6 +261,9 @@ class WfManagementServiceTest {
             filter.setId("f" + i);
             memory.saveFilter(filter);
         }
+        for (int i = 1; i <= 7; i++) {                                                 // 7
+            memory.saveDecision(new WfDmnDecision("d" + i, "决策" + i));
+        }
 
         Map<String, Long> expected = new java.util.LinkedHashMap<>();
         expected.put("ZWF_DEFINITION", 3L);
@@ -270,16 +274,17 @@ class WfManagementServiceTest {
         expected.put("ZWF_ACTIVITY", 4L);
         expected.put("ZWF_COMMENT", 6L);
         expected.put("ZWF_FILTER", 8L);
+        expected.put("ZWF_DECISION", 7L);
         assertEquals(new java.util.TreeSet<>(expected.keySet()),
                 new java.util.TreeSet<>(InMemoryWorkflowPersistence.STORAGE_NAMES),
-                "这里造的八项必须与存储项名单一一对应 —— 名单多一项或少一项，"
+                "这里造的九项必须与存储项名单一一对应 —— 名单多一项或少一项，"
                         + "下面的断言就只覆盖了其中一部分。**比集合不比顺序**："
                         + "这里要验的是「覆盖完整」，不是「顺序一致」");
 
         WfManagementService service = new WfManagementService(memory);
         for (java.util.Map.Entry<String, Long> entry : expected.entrySet()) {
             assertEquals(entry.getValue(), service.getTableCount(entry.getKey()),
-                    entry.getKey() + " 数错了。八项各造了互不相同的条数就是为了抓住串味 —— "
+                    entry.getKey() + " 数错了。九项各造了互不相同的条数就是为了抓住串味 —— "
                             + "如果这八项里有两项碰巧相等，下面这条断言就抓不住");
         }
     }
@@ -287,8 +292,8 @@ class WfManagementServiceTest {
     @Test
     @DisplayName("定义数按「每个 key 的每个版本」累加，不是按 key 数")
     void definitionCountSumsEveryVersion() {
-        // 八个分支里有三个是「聚合遍历」（定义按版本数、活动与评论按实例分组），
-        // 另外五个是直接的 .size()。聚合那三个最容易写成"外层 size"——
+        // 九个分支里有三个是「聚合遍历」（定义按版本数、活动与评论按实例分组），
+        // 另外六个是直接的 .size()。聚合那三个最容易写成"外层 size"——
         // 而 key 数与版本数在单版本流程上恰好相等，于是**一条版本用例都测不出来**。
         WfPersistence memory = memoryPersistence();
         for (int version = 1; version <= 3; version++) {
@@ -353,8 +358,8 @@ class WfManagementServiceTest {
         assertEquals(1, new WfManagementService(repo).getTableCount("ZWF_PROCESS"));
         Map<String, Object> properties = new WfManagementService(repo).getProperties();
         assertNotNull(properties.get("storageCount"));
-        assertEquals(8, properties.get("storageCount"),
-                "建完表之后应当报满八张 —— 与「未迁移时报空」那条互为对照");
+        assertEquals(9, properties.get("storageCount"),
+                "建完表之后应当报满九张 —— 与「未迁移时报空」那条互为对照");
     }
 
     @Test
@@ -369,7 +374,7 @@ class WfManagementServiceTest {
                     "名字 " + evil + " 绝不能被拼进 SQL");
         }
         // 确认表还在（上面那串没有造成任何影响）
-        assertEquals(8, service.getTables().size());
+        assertEquals(9, service.getTables().size());
     }
 
     @Test

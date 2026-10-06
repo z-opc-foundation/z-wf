@@ -18,6 +18,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.zifang.z.wf.core.definition.WfDefinition;
+import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
+import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
@@ -65,6 +67,9 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
     private final Map<String, WfJob> jobs = new ConcurrentHashMap<>();
 
     private final Map<String, WfFilter> filters = new ConcurrentHashMap<>();
+
+    /** 决策定义（DMN）。键是 {@code key@version}，与流程定义"多版本并存"同约定。 */
+    private final Map<String, WfDmnDecision> decisions = new ConcurrentHashMap<>();
 
     @Override
     public void initialize() {
@@ -894,7 +899,8 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
     public static final List<String> STORAGE_NAMES = java.util.Collections.unmodifiableList(
             java.util.Arrays.asList(
                     "ZWF_DEFINITION", "ZWF_PROCESS", "ZWF_EXECUTION", "ZWF_TASK",
-                    "ZWF_JOB", "ZWF_ACTIVITY", "ZWF_COMMENT", "ZWF_FILTER"));
+                    "ZWF_JOB", "ZWF_ACTIVITY", "ZWF_COMMENT", "ZWF_FILTER",
+                    "ZWF_DECISION"));
 
     @Override
     public List<String> getTableNames() {
@@ -943,7 +949,10 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
             }
             return total;
         }
-        return filters.size();
+        if ("ZWF_FILTER".equals(name)) {
+            return filters.size();
+        }
+        return decisions.size();
     }
 
     @Override
@@ -1195,6 +1204,7 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         comments.clear();
         jobs.clear();
         filters.clear();
+        decisions.clear();
     }
 
     // ==================== 保存筛选器 ====================
@@ -1340,5 +1350,108 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
 
     private static boolean isNotBlank(String s) {
         return s != null && !s.trim().isEmpty();
+    }
+
+    // ==================== 决策（DMN）====================
+
+    @Override
+    public void saveDecision(WfDmnDecision decision) {
+        if (decision == null || decision.getKey() == null) {
+            return;
+        }
+        decisions.put(decisionKey(decision.getKey(), decision.getVersion()), copy(decision));
+    }
+
+    @Override
+    public WfDmnDecision findDecision(String key, int version) {
+        return copy(decisions.get(decisionKey(key, version)));
+    }
+
+    @Override
+    public WfDmnDecision findLatestDecision(String key) {
+        WfDmnDecision latest = null;
+        for (WfDmnDecision candidate : decisions.values()) {
+            if (key == null ? candidate.getKey() == null : key.equals(candidate.getKey())
+                    && (latest == null || candidate.getVersion() > latest.getVersion())) {
+                latest = candidate;
+            }
+        }
+        return copy(latest);
+    }
+
+    @Override
+    public List<WfDmnDecision> findDecisionVersions(String key) {
+        List<WfDmnDecision> found = new ArrayList<>();
+        for (WfDmnDecision candidate : decisions.values()) {
+            if (key == null ? candidate.getKey() == null : key.equals(candidate.getKey())) {
+                found.add(copy(candidate));
+            }
+        }
+        // 按 version **倒序**（与 findDefinitionVersions 同约定）：
+        // "这个决策改过几版、每版长什么样"要的是从新往旧看
+        Collections.sort(found, new Comparator<WfDmnDecision>() {
+            @Override
+            public int compare(WfDmnDecision left, WfDmnDecision right) {
+                return right.getVersion() - left.getVersion();
+            }
+        });
+        return found;
+    }
+
+    @Override
+    public boolean deleteDecision(String key, int version) {
+        return key != null && decisions.remove(decisionKey(key, version)) != null;
+    }
+
+    /** 决策的存储键。版本是 key 的一部分 —— 同一 key 的多版本必须能并存。 */
+    private static String decisionKey(String key, int version) {
+        return key + "@" + version;
+    }
+
+    /**
+     * 决策的深拷贝。
+     *
+     * <p>与其他实体同一套理由：内存实现对外不共享引用，调用方拿到的那份改了
+     * 不该影响库里那份 —— 否则"改一下变量"就会把已部署的决策表改掉。
+     */
+    private static WfDmnDecision copy(WfDmnDecision source) {
+        if (source == null) {
+            return null;
+        }
+        WfDmnDecision target = new WfDmnDecision(source.getKey(), source.getName());
+        target.setVersion(source.getVersion());
+        target.setDmnXml(source.getDmnXml());
+        target.setDeployTime(source.getDeployTime());
+        target.setTable(copy(source.getTable()));
+        return target;
+    }
+
+    private static WfDmnDecision.WfDmnTable copy(WfDmnDecision.WfDmnTable source) {
+        if (source == null) {
+            return null;
+        }
+        WfDmnDecision.WfDmnTable target = new WfDmnDecision.WfDmnTable();
+        target.setId(source.getId());
+        target.setHitPolicy(source.getHitPolicy());
+        target.setAggregator(source.getAggregator());
+        target.setInputExpressions(new ArrayList<>(source.getInputExpressions()));
+        List<WfDmnDecision.WfDmnOutput> outputs = new ArrayList<>();
+        for (WfDmnDecision.WfDmnOutput output : source.getOutputs()) {
+            WfDmnDecision.WfDmnOutput copy = new WfDmnDecision.WfDmnOutput();
+            copy.setName(output.getName());
+            copy.setTypeRef(output.getTypeRef());
+            copy.setOutputValues(new ArrayList<>(output.getOutputValues()));
+            outputs.add(copy);
+        }
+        target.setOutputs(outputs);
+        List<WfDmnDecision.WfDmnRule> rules = new ArrayList<>();
+        for (WfDmnDecision.WfDmnRule rule : source.getRules()) {
+            WfDmnDecision.WfDmnRule copy = new WfDmnDecision.WfDmnRule();
+            copy.setInputEntries(new ArrayList<>(rule.getInputEntries()));
+            copy.setOutputEntries(new ArrayList<>(rule.getOutputEntries()));
+            rules.add(copy);
+        }
+        target.setRules(rules);
+        return target;
     }
 }

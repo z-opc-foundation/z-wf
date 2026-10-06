@@ -29,6 +29,7 @@ import com.zifang.z.wf.core.persistence.InMemoryWorkflowPersistence;
 import com.zifang.z.wf.core.persistence.JdbcWorkflowPersistence;
 import com.zifang.z.wf.core.persistence.WfPersistence;
 import com.zifang.z.wf.core.service.WfDelegateRegistry;
+import com.zifang.z.wf.core.service.WfDecisionService;
 import com.zifang.z.wf.core.service.WfHistoryService;
 import com.zifang.z.wf.core.service.WfJobService;
 import com.zifang.z.wf.core.service.WfExternalTaskService;
@@ -328,6 +329,21 @@ public class WfAutoConfiguration {
     public WfFilterService wfFilterService(WfPersistence persistence,
                                            WfIncidentService incidentService) {
         return new WfFilterService(persistence, incidentService);
+    }
+
+    // ==================== DMN 决策 ====================
+
+    /**
+     * DMN 决策表服务。
+     *
+     * <p><b>刻意不放 evaluator 参数</b>：求值器内部没有可变状态，
+     * 每处 new 一个与共用一个行为完全一样；而共用一个会让"这个服务被谁改过配置"
+     * 变成一个需要排查的问题。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WfDecisionService wfDecisionService(WfPersistence persistence) {
+        return new WfDecisionService(persistence);
     }
 
     // ==================== 启动部署 ====================
