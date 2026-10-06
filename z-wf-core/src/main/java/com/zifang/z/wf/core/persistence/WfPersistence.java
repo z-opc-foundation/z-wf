@@ -116,6 +116,33 @@ public interface WfPersistence {
     boolean setDefinitionSuspended(String key, int version, boolean suspended);
 
     /**
+     * 改某个版本的「是不是默认流程定义」标记。
+     *
+     * <p><b>置 true 时会先把全表其它行清成 false</b>，因为「全库至多一条默认」
+     * 是这个特性的全部意义：两个默认等于调用方问「默认是哪个」时拿到两个答案，
+     * 而没有任何报错能提示他挑错了。
+     *
+     * <p>置 false 只清目标行（取消默认）。目标不存在时返回 {@code false}，
+     * 由上层决定报什么错 —— 持久层不猜「是不是 key 拼错了」。
+     *
+     * @return 是否有那一行被改到
+     */
+    boolean setDefaultDefinition(String key, int version, boolean isDefault);
+
+    /**
+     * 当前那条默认流程定义。
+     *
+     * <p><b>没有默认时返回 {@code null}，有两条以上时抛异常</b>：
+     * 后者意味着数据被绕过本接口改过（直接改库、或并发执行了两次置位），
+     * 此时「随便返回一条」会让调用方以为默认是确定的 ——
+     * 而它其实取决于行返回顺序。
+     *
+     * @return 默认定义；没设过默认时为 {@code null}
+     * @throws WfPersistenceException 同时存在两条以上默认定义
+     */
+    WfDefinition findDefaultDefinition();
+
+    /**
      * 按 key / name 模糊 + 停用状态查定义（最新版本，每个 key 一行）。
      *
      * <p>key 与 name <b>都</b>能筛：调用方手里通常只有 key（其他所有端点都以 key 为准），

@@ -154,10 +154,299 @@ class JdbcWorkflowPersistenceTest {
         assertFalse(persistence.setDefinitionSuspended("noSuchKey", 1, true));
     }
 
+    // ==================== 默认流程定义 ====================
+
+    /**
+     * 默认标记真落库，并且全库至多一条。
+     *
+     * <p>与内存实现对拍：这两条不变式在两个实现里各有一份代码
+     * （内存的 {@code saveDefinition} 与这里的 INSERT / UPDATE），
+     * 判据也必须各有一份 —— 只测一边的话，另一边写错了没有任何反应。
+     */
+    @Test
+    @DisplayName("默认标记真落库，且设新的会自动取消旧的")
+    void defaultDefinitionIsPersistedAndExclusive() {
+        persistence.saveDefinition(definition("defA", "流程A"));
+        persistence.saveDefinition(definition("defB", "流程B"));
+
+        assertNull(persistence.findDefaultDefinition(), "刚存两条时不该有默认");
+
+        assertTrue(persistence.setDefaultDefinition("defA", 1, true));
+        WfDefinition found = persistence.findDefaultDefinition();
+        assertNotNull(found, "默认标记存进内存对象但没落库的话，重启后就丢了");
+        assertEquals("defA", found.getKey());
+        assertTrue(found.isDefaultDefinition(), "标记要能从 IS_DEFAULT 列读回定义对象上");
+
+        // 排他性：设 B 之后 A 必须让位
+        assertTrue(persistence.setDefaultDefinition("defB", 1, true));
+        assertEquals("defB", persistence.findDefaultDefinition().getKey(),
+                "设了新的默认之后旧的那条必须让位 —— 留下两条时「默认是哪个」没有答案");
+        assertFalse(persistence.findDefinition("defA", 1).isDefaultDefinition(),
+                "旧默认应当被显式清掉，而不是只在新的一条上打标记");
+
+        assertTrue(persistence.setDefaultDefinition("defB", 1, false));
+        assertNull(persistence.findDefaultDefinition(), "取消之后应当真的没有默认了");
+    }
+
+    /**
+     * deploy 出来的定义一律不是默认 —— 哪怕入参对象上带着标记。
+     *
+     * <p>这与内存实现是同一条约定，两边各写一次：漏掉的后果是
+     * 「拿一个带标记的定义重新部署一次，默认流程就悄悄换了」。
+     */
+    @Test
+    @DisplayName("INSERT 写死 0：带标记的定义部署后仍不是默认")
+    void insertNeverMarksADefault() {
+        WfDefinition flagged = definition("flaggedProcess", "带标记的流程");
+        flagged.setDefaultDefinition(true);
+        persistence.saveDefinition(flagged);
+
+        assertNull(persistence.findDefaultDefinition(),
+                "默认标记的真源只有 IS_DEFAULT 列，INSERT 照抄入参就多出了第二个真源");
+        assertFalse(persistence.findDefinition("flaggedProcess", 1).isDefaultDefinition());
+    }
+
+    @Test
+    @DisplayName("不存在的版本设不了默认，且不会误清原有的默认")
+    void settingDefaultOnMissingVersionKeepsTheExistingOne() {
+        persistence.saveDefinition(definition("keepA", "流程A"));
+        persistence.saveDefinition(definition("keepB", "流程B"));
+        persistence.setDefaultDefinition("keepA", 1, true);
+
+        assertFalse(persistence.setDefaultDefinition("noSuchKey", 1, true));
+        assertFalse(persistence.setDefaultDefinition("keepB", 99, true));
+
+        assertEquals("keepA", persistence.findDefaultDefinition().getKey(),
+                "目标不存在时必须先返回 false 再返回 —— "
+                        + "「先清全表再发现没改到」会把原有的默认悄悄清掉");
+    }
+
+    @Test
+    @DisplayName("库里出现两条默认时查询报错，而不是随便返回一条")
+    void multipleDefaultsAreReportedAsCorruption() {
+        persistence.saveDefinition(definition("corruptA", "流程A"));
+        persistence.saveDefinition(definition("corruptB", "流程B"));
+        persistence.setDefaultDefinition("corruptA", 1, true);
+
+        // 绕过接口直接改库 —— 这正是「数据被改坏」的真实来源
+        try {
+            java.sql.Connection c = dataSource.getConnection();
+            java.sql.Statement st = c.createStatement();
+            try {
+                st.executeUpdate("UPDATE ZWF_DEFINITION SET IS_DEFAULT=1 WHERE DEF_KEY='corruptB'");
+            } finally {
+                st.close();
+                c.close();
+            }
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException("构造两条默认失败", e);
+        }
+
+        com.zifang.z.wf.core.persistence.WfPersistenceException e =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        com.zifang.z.wf.core.persistence.WfPersistenceException.class,
+                        () -> persistence.findDefaultDefinition(),
+                        "两条默认时返回其中一条等于替调用方做了他没授权的选择，"
+                                + "而且取决于行返回顺序");
+        assertTrue(e.getMessage().contains("corruptA") && e.getMessage().contains("corruptB"),
+                "报错要点名是哪两条，否则不知道该去改哪一行: " + e.getMessage());
+    }
+
+    /**
+     * <b>全新建的表就必须带这一列，且列约束要与 DDL 一致</b>，
+     * 不能靠 {@code initialize()} 末尾的补列迁移兜着。
+     *
+     * <p>这条是被一条变异逼出来的：把 DDL 里的 {@code IS_DEFAULT} 删掉之后，
+     * <b>全套测试仍然全绿</b> —— 因为补列迁移会在建表之后立刻把它 ALTER 补上。
+     * 补列迁移本来是给「2.0.0 之前建的库」用的，对新库是多余的一步，
+     * 于是它顺带把 DDL 的缺失也一起盖住了。
+     *
+     * <p><b>光查「列在不在」区分不出来</b>，因为补列之后它确实在。
+     * 区分靠的是列约束：DDL 写的是 {@code NOT NULL}，
+     * 而补列语句是 {@code ADD COLUMN IS_DEFAULT INTEGER DEFAULT 0}（没有 NOT NULL）——
+     * H2 两者分别记成 {@code nullable=NO} 与 {@code nullable=YES}。
+     * ⇒ 判据查 {@code IS_NULLABLE}，而不是 {@code COUNT(*)}。
+     */
+    @Test
+    @DisplayName("新建的 ZWF_DEFINITION 当场就带 NOT NULL 的 IS_DEFAULT 列（不靠补列迁移兜）")
+    void freshTableAlreadyHasTheDefaultColumn() {
+        String nullable = columnNullability("ZWF_DEFINITION", "IS_DEFAULT");
+        assertEquals("NO", nullable,
+                "这一列必须是 DDL 建的（NOT NULL），不是 initialize() 末尾的补列迁移"
+                        + "ALTER 出来的（那步对老库有意义，对新库是多余的，却顺带把"
+                        + "DDL 的缺失也盖住了）。若这里是 YES，说明 DDL 漏了这一列");
+    }
+
+    /** 某列的 IS_NULLABLE；列不存在返回 {@code "<不存在>"}。 */
+    private String columnNullability(String table, String column) {
+        try {
+            java.sql.Connection c = dataSource.getConnection();
+            java.sql.PreparedStatement ps = c.prepareStatement(
+                    "SELECT IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS "
+                            + "WHERE UPPER(TABLE_NAME)=? AND UPPER(COLUMN_NAME)=?");
+            try {
+                ps.setString(1, table);
+                ps.setString(2, column);
+                java.sql.ResultSet rs = ps.executeQuery();
+                try {
+                    return rs.next() ? rs.getString(1) : "<不存在>";
+                } finally {
+                    rs.close();
+                }
+            } finally {
+                ps.close();
+                c.close();
+            }
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException("查询 INFORMATION_SCHEMA 失败", e);
+        }
+    }
+
+    /**
+     * 行在、但图解不出来时，必须报错而不是答「没有默认」。
+     *
+     * <p>这是本轮真实踩到的一个静默降级：走 DEF_GRAPH 的读法在图坏掉时
+     * {@code readDefinition} 返回 null，而 {@code queryList} 会把 null 原样收进结果集，
+     * 于是 {@code hits.size()==1} 而 {@code hits.get(0)==null} ——
+     * 库里明明有一行默认，接口却答「还没配默认」，没有任何报错。
+     * 调用方据此把入口页显示成未配置，人根本不知道库里已经配过了。
+     */
+    @Test
+    @DisplayName("默认那行的图损坏时报错，而不是静默答「没有默认」")
+    void corruptedDefaultGraphIsReported() {
+        persistence.saveDefinition(definition("brokenDef", "图会坏掉的流程"));
+        persistence.setDefaultDefinition("brokenDef", 1, true);
+
+        try {
+            java.sql.Connection c = dataSource.getConnection();
+            java.sql.Statement st = c.createStatement();
+            try {
+                st.executeUpdate("UPDATE ZWF_DEFINITION SET DEF_GRAPH='这不是 JSON' "
+                        + "WHERE DEF_KEY='brokenDef'");
+            } finally {
+                st.close();
+                c.close();
+            }
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException("构造坏图失败", e);
+        }
+
+        com.zifang.z.wf.core.persistence.WfPersistenceException e =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        com.zifang.z.wf.core.persistence.WfPersistenceException.class,
+                        () -> persistence.findDefaultDefinition(),
+                        "行在、图坏掉时返回 null 会被读成「还没配默认」—— "
+                                + "调用方据此显示未配置，而库里其实配过了");
+        assertTrue(e.getMessage().contains("brokenDef"),
+                "报错要点名是哪一行，否则不知道去查哪条数据: " + e.getMessage());
+    }
+
+    /**
+     * 老库里没有 IS_DEFAULT 列时，{@code initialize()} 必须补上。
+     * <p>{@code CREATE TABLE IF NOT EXISTS} <b>不会</b>给已存在的表补列，
+     * 缺列的后果是「引擎启动即炸」（每一句 SELECT 都报 column not found），
+     * 而不是某个功能悄悄坏掉。存量行补 0 = 都不是默认，
+     * 于是升级后的行为与升级前完全一致：<b>没有默认</b>，而不是「默认丢了」。
+     */
+    @Test
+    @DisplayName("老库没有 IS_DEFAULT 列时 initialize 会补上，存量行补 0")
+    void legacyTableGetsDefaultColumn() {
+        // 先用正常的表存一条**真的**定义，把它编出来的图 JSON 抄出来 ——
+        // 手写一段 JSON 是造不出"老库里的合法行"的：DEF_GRAPH 要能解回来，
+        // 否则后面 findDefaultDefinition 读到的是 null，测的就不是补列这件事了
+        persistence.saveDefinition(definition("legacyDef", "老流程"));
+        String legacyGraph = readDefinitionGraph("legacyDef");
+
+        try {
+            java.sql.Connection c = dataSource.getConnection();
+            java.sql.Statement st = c.createStatement();
+            try {
+                st.execute("DROP TABLE ZWF_DEFINITION");
+                st.execute("CREATE TABLE ZWF_DEFINITION ("
+                        + "DEF_KEY VARCHAR(128) NOT NULL,"
+                        + "DEF_VERSION INTEGER NOT NULL,"
+                        + "DEF_NAME VARCHAR(512),"
+                        + "DEF_CATEGORY VARCHAR(128),"
+                        + "DEF_DESCRIPTION VARCHAR(2048),"
+                        + "DEF_GRAPH TEXT,"
+                        + "SOURCE_XML CLOB,"
+                        + "DEPLOY_TIME TIMESTAMP,"
+                        + "SUSPENDED INTEGER NOT NULL DEFAULT 0,"
+                        + "PRIMARY KEY (DEF_KEY, DEF_VERSION))");
+                // 2.0.0 之前部署的一条老定义
+                java.sql.PreparedStatement ps = c.prepareStatement(
+                        "INSERT INTO ZWF_DEFINITION "
+                                + "(DEF_KEY, DEF_VERSION, DEF_NAME, DEF_GRAPH) VALUES (?,?,?,?)");
+                try {
+                    ps.setString(1, "legacyDef");
+                    ps.setInt(2, 1);
+                    ps.setString(3, "老流程");
+                    ps.setString(4, legacyGraph);
+                    ps.executeUpdate();
+                } finally {
+                    ps.close();
+                }
+            } finally {
+                st.close();
+                c.close();
+            }
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException("构造老库失败", e);
+        }
+
+        persistence.initialize();
+
+        assertNull(persistence.findDefaultDefinition(),
+                "存量行补 0 = 都不是默认，升级后行为与升级前完全一致："
+                        + "没有默认，而不是「默认丢了」");
+        // 补完之后整条链路都要能用：读定义、设默认、取消
+        assertNotNull(persistence.findDefinition("legacyDef", 1),
+                "补列之后老定义仍要读得回来");
+        assertTrue(persistence.setDefaultDefinition("legacyDef", 1, true));
+        assertEquals("legacyDef", persistence.findDefaultDefinition().getKey(),
+                "补列之后设默认这条链路必须通 —— 只补列不做往返验证的话，"
+                        + "第一条线上调用就会撞上 column not found");
+        assertTrue(persistence.setDefaultDefinition("legacyDef", 1, false));
+        assertNull(persistence.findDefaultDefinition());
+    }
+
+    /** 造一条可落库的空定义（图结构给一个最小的，codec 要能编解码）。 */
+    private WfDefinition definition(String key, String name) {
+        WfDefinition definition = new WfDefinition(key, name);
+        WfNodeBundle.of(definition);
+        definition.buildIndex();
+        return definition;
+    }
+
+    /** 读出某条定义落在 DEF_GRAPH 列里的原文（构造老库夹具用）。 */
+    private String readDefinitionGraph(String key) {
+        try {
+            java.sql.Connection c = dataSource.getConnection();
+            java.sql.PreparedStatement ps = c.prepareStatement(
+                    "SELECT DEF_GRAPH FROM ZWF_DEFINITION WHERE DEF_KEY=?");
+            try {
+                ps.setString(1, key);
+                java.sql.ResultSet rs = ps.executeQuery();
+                try {
+                    if (!rs.next()) {
+                        throw new IllegalStateException("读不到 " + key + " 的 DEF_GRAPH");
+                    }
+                    return rs.getString(1);
+                } finally {
+                    rs.close();
+                }
+            } finally {
+                ps.close();
+                c.close();
+            }
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException("读取 DEF_GRAPH 失败", e);
+        }
+    }
+
     @Test
     @DisplayName("按名称模糊 + 停用状态过滤，且名字里的通配符被转义")
-    void definitionQueryByNameAndSuspension() {
-        WfDefinition leave = new WfDefinition("q_leave", "请假流程");
+    void definitionQueryByNameAndSuspension() {        WfDefinition leave = new WfDefinition("q_leave", "请假流程");
         WfNodeBundle.of(leave);
         leave.buildIndex();
         persistence.saveDefinition(leave);

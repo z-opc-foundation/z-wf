@@ -279,6 +279,74 @@ public class WfRepositoryService {
     }
 
     /**
+     * 把某个版本设为默认流程定义（对应 Camunda 的 {@code setDefaultProcessDefinition}）。
+     *
+     * <p>用途是「调用方不知道 key 也能发起」：入口页问一句「默认是哪个」，
+     * 业务代码里就不必硬编码一个 key。改默认值是运营动作，不需要改代码重新发布。
+     *
+     * <p><b>只认停用与否这一条前置校验</b>：默认的定义必须是能启动的。
+     * 让默认指向一个已停用的定义，等于把「不知道 key 起一个」变成
+     * 「不知道 key 起一个然后撞上报错」—— 那个报错出现在离原因很远的地方。
+     *
+     * <p>置位是**排他**的：设了新的，原来的自动取消。
+     *
+     * @throws WfDefinitionException 版本不存在，或该版本已停用
+     */
+    public WfDefinition setDefaultDefinition(String key, int version) {
+        // 必须用 getDefinition（精确取，不回落）而不是 findPersisted：
+        // findPersisted 在指定版本不存在时会**回落到该 key 的最新版本** ——
+        // 那是「按 key 启动流程」主路径需要的行为，可这里判的是「这个版本存不存在」。
+        // 用它会导致：传一个不存在的版本号时，下面 isSuspended() 读的是**别的版本**的
+        // 停用状态，等于拿 A 的状态去判 B 的合法性；而最终抛出的「可能已被并发删除」
+        // 会把调用方引去查并发/删除，根本想不到是自己版本号写错了。
+        WfDefinition definition = getDefinition(key, version);
+        if (definition.isSuspended()) {
+            throw new WfDefinitionException("流程定义 [" + key + ":" + version + "] 已停用，"
+                    + "不能设为默认。默认流程的用途就是「不知道 key 时也能发起一个」，"
+                    + "指向一个起不来的定义只会把这个用途变成一个更晚才爆出来的错。"
+                    + "请先 activateDefinition 再设为默认");
+        }
+        if (!persistence.setDefaultDefinition(key, version, true)) {
+            // findPersisted 刚确认过这一行在，setDefaultDefinition 却说没改到：
+            // 两者之间这一行被删了。不在这里报，调用方会以为默认已经切过去了
+            throw new WfDefinitionException(
+                    "流程定义版本在设置默认时消失（可能已被并发删除）: " + key + ":" + version);
+        }
+        log.info("默认流程定义已设为 {}:{}", key, version);
+        return findPersisted(key, version);
+    }
+
+    /**
+     * 取消默认流程定义。
+     *
+     * <p>刻意<b>不</b>提供「取消后再指定另一个」的组合调用：
+     * 那是 {@link #setDefaultDefinition} 一次调用就完成的事，
+     * 拆成两步反而制造出「中间那一瞬间没有默认」的窗口。
+     *
+     * @throws WfDefinitionException 版本不存在
+     */
+    public void clearDefaultDefinition(String key, int version) {
+        if (!persistence.setDefaultDefinition(key, version, false)) {
+            throw new WfDefinitionException(
+                    "流程定义版本不存在，取消默认失败: " + key + ":" + version);
+        }
+        log.info("已取消默认流程定义: {}:{}", key, version);
+    }
+
+    /**
+     * 当前那条默认流程定义（对应 Camunda 的 {@code getDefaultProcessDefinition}）。
+     *
+     * <p>从没设过默认时返回 {@code null} —— 这是「还没配」而不是「配丢了」，
+     * 两者要靠本方法能返回 {@code null} 来区分，所以刻意不用异常。
+     *
+     * <p>同时存在多条默认时由持久层抛 {@link com.zifang.z.wf.core.persistence.WfPersistenceException}：
+     * 那是数据被绕过接口改过的信号，返回「其中一条」等于替调用方做了他没授权的选择。
+     */
+    public WfDefinition getDefaultDefinition() {
+        return persistence.findDefaultDefinition();
+    }
+
+    /**
      * 回读部署时留存的原始 BPMN XML（对应 z-camuda 的 {@code getProcessModel}）。
      *
      * <p>模型编辑器集成靠它：没有它就只剩引擎解析后的图结构，回显时排版已经丢了。

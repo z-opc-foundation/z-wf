@@ -120,6 +120,46 @@ public class WfRuntimeService implements WfSubProcessLauncher {
     }
 
     /**
+     * 启动<b>默认</b>流程实例 —— 调用方不知道 key 时的入口。
+     *
+     * <p>没有这一条时，「发起审批」这个入口就得把某个 key 写死在业务代码里，
+     * 换流程要改代码重新发布；改成配置就意味着引擎要能回答「默认是哪个」，
+     * 也就是 {@code WfRepositoryService#getDefaultDefinition}。
+     *
+     * <p><b>三种失败分开报，且都带上可执行的下一步</b>：
+     * 一个笼统的「启动失败」让人分不清是「没配默认」「默认被停用了」
+     * 还是「默认那条被删了又重建了」—— 三者的处置完全不同。
+     * 所以这里不静默回退到「随便起一个有 key 的流程」：
+     * 那会让「默认」这个配置形同虚设，且没人发现。
+     *
+     * @return 流程实例 ID；被钩子否决时返回 {@code null}
+     * @throws WfDefinitionException 从没设过默认，或默认那条已停用 / 已不存在
+     */
+    public String startDefaultProcessInstance(String businessKey, String userId, String deptId,
+                                              Map<String, Object> variables) {
+        WfDefinition target = repositoryService.getDefaultDefinition();
+        if (target == null) {
+            List<String> keys = new ArrayList<>();
+            for (WfDefinition each : repositoryService.getAllDefinitions()) {
+                keys.add(each.getKey());
+            }
+            throw new WfDefinitionException("尚未设置默认流程定义，无法按默认发起。"
+                    + "请先调用 WfRepositoryService#setDefaultDefinition(key, version)。"
+                    + "当前已部署的流程 key: " + keys);
+        }
+        if (target.isSuspended()) {
+            // setDefaultDefinition 当初就拒了停用的定义，这里还能撞上，
+            // 只可能是「设成默认之后又被停用了」。而停用并不取消默认标记
+            // —— 取消默认是一次显式的运营决策，不该由停用顺手带走。
+            throw new WfDefinitionException("默认流程定义 [" + target.getKey() + ":"
+                    + target.getVersion() + "] 已停用，无法发起。"
+                    + "请先 WfRepositoryService#activateDefinition 启用它，"
+                    + "或把默认改到别的版本（setDefaultDefinition）");
+        }
+        return startProcessInstance(target, businessKey, userId, deptId, variables);
+    }
+
+    /**
      * 启动流程实例（定义对象已知）。
      *
      * @return 流程实例 ID；被钩子否决时返回 {@code null}

@@ -232,6 +232,16 @@ class UnsupportedBpmnElementTest {
         }
 
         @Override
+        public boolean setDefaultDefinition(String key, int version, boolean isDefault) {
+            return false;
+        }
+
+        @Override
+        public WfDefinition findDefaultDefinition() {
+            return null;
+        }
+
+        @Override
         public List<WfDefinition> findDefinitions(String keyLike, String nameLike, Boolean suspended) {
             return null;
         }

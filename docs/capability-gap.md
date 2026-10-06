@@ -43,8 +43,8 @@
 | `suspendProcessDefinitionById` / `activate` | ✅ | `WfRepositoryService#suspendDefinition / activateDefinition`，REST `POST /api/wf/definitions/suspend\|activate`。**真源只有 `ZWF_DEFINITION.SUSPENDED` 一列**（不进 codec，列与图 JSON 各存一份必然漂）。闸门在 `startProcessInstance` 上判、且判的是**持久化那份**而不是入参对象 —— 拿入参判的话，调用方手里停用前取的旧定义就能绕过。已在跑的实例完全不受影响：停用是下架版本，不是终止在跑的 |
 | `getProcessModel`（回读 BPMN XML） | ✅ | `WfRepositoryService#getProcessModel(key, version)`，REST `GET /api/wf/definitions/model`。顺带修了一个隐藏缺陷：读路径只 `SELECT DEF_GRAPH`，而 `sourceXml` / `startTime` 存在列里从没被取过 —— 两者在 JDBC 读回来的定义上恒为 null，`getProcessModel` 与部署时间一起失效，且从表结构上完全看不出原因 |
 | `getProcessModelGraphic`（流程图） | ✅ | `WfRepositoryService#getProcessDiagram(key, version)`，REST `GET /api/wf/definitions/diagram?key=&version=`，返回 `WfDiagramInfo`（shapes/edges + 一致性核对结果）。解析的是 **BPMN DI 标准段**（`BPMNDiagram`/`BPMNPlane`/`BPMNShape`/`BPMNEdge`），不自造图元 —— 坐标只存在于 XML 的 DI 段，自造等于让用户导入模型后手工重画。**按本地名匹配**（`bpmndi:BPMNShape` / 裸 `<BPMNShape>` 两种写法都认得）：用 `getElementsByTagNameNS` 的话，不少工具保存的模型会"解析成功但一个图元都没有"。**不抛异常**：拿不到图不是部署错误，很多流程是手写的没图，返回 `empty=true` 即可。**带一致性核对**（`missingNodeIds`/`orphanShapeIds`/`orphanEdgeIds`/`missingFlowIds`）：图与逻辑分开存，就必然会出现"图上多一个框/少一根线"，而渲染端只看图元、且无任何报错 |
-| `getDefaultProcessDefinition` / `setDefault` | ❌ | |
-| `createDeploymentQuery`（按部署批次查） | ❌ | `deployAll` 一次部署多个，但没有"部署批次"这个概念 |
+| `getDefaultProcessDefinition` / `setDefault` | ✅ | **第 15 轮补上**：`WfRepositoryService#setDefaultDefinition(key, version)` / `clearDefaultDefinition` / `getDefaultDefinition`，运行期 `WfRuntimeService#startDefaultProcessInstance`（不传 key 也能发起），REST `GET/POST/DELETE /api/wf/definitions/default` 与 `POST /api/approval-center/processes/start-default`。**三条刻意的设计**：① 默认指向一个**特定的 (key, version)**，不跟最新版本漂 —— 运营在默认流程上做的验证不该被一次无关的重新部署改掉；② 置位**排他**（设新的自动取消旧的），因为"默认是哪个"必须只有一个答案，而库里出现两条时**查询直接报错**而不是返回其中一条；③ **默认必须能启动** —— 设默认时拒掉已停用的版本，否则「不知道 key 时也能发起一个」会变成「不知道 key 时撞上一个出现在别处的报错」。**停用不带走默认标记**（取消默认是一次显式的运营决策）。真源只有 `ZWF_DEFINITION.IS_DEFAULT` 一列，**不进 codec** |
+| `createDeploymentQuery`（按部署批次查） | ❌ | `deployAll` 一次部署多个，但没有"部署批次"这个概念。**刻意不造**：一次 deploy 就是一条 (key, version) 定义，Camunda 的 deployment 是「一个包里若干个 BPMN + 若干资源」的**打包单位**，而本引擎不存资源包 —— 为一个查不出来的实体建一张表，只会多出一个永远为空的真源 |
 
 ### 1.2 RuntimeService
 
@@ -55,7 +55,7 @@
 | `suspend` / `activate` / `delete` 实例 | ✅ | `terminate` 对应 delete |
 | **变量服务** `getVariable(s)` / `setVariable(s)` / `getVariableLocal` / `setVariableLocal` | ✅ | **本轮补上** `WfVariableService`：流程级 get/set/remove/has + 任务级 get/set/remove，批量整批只落一次库，变更留审计 |
 | `createProcessInstanceQuery` 流畅查询 | 🟡 | `WfProcessInstanceQuery` 有 10 个条件，但没有 `variableValueEquals`（按变量值查实例，审批系统常用） |
-| **`move` / `moveTaskState`**（流程实例迁移） | 🟡 | **本轮补上 `move`**：`WfRuntimeService#move` 按 token 粒度迁移，撤掉源节点的待办、该 token 的 job 与到达记录，再在目标节点**重新进入**；给 `sourceActivityId` 就只迁指定源，不给就迁全部未结束 token。REST `POST /api/wf/process/move`。**刻意不检查图上可达性** —— 运营改流程后图往往已对不上，强行校验等于"改一次流程就得重画一遍"，代价是目标节点必须在定义里存在（部署期之外做存在性校验）。**仍缺** Camunda 的 `moveTaskState`（按任务状态筛选迁移）与迁移过程自身的历史记录类型 |
+| **`move` / `moveTaskState`**（流程实例迁移） | ✅ | `WfRuntimeService#move` 按 token 粒度迁移，撤掉源节点的待办、该 token 的 job 与到达记录，再在目标节点**重新进入**；给 `sourceActivityId` 就只迁指定源，不给就迁全部未结束 token。REST `POST /api/wf/process/move`。**刻意不检查图上可达性** —— 运营改流程后图往往已对不上，强行校验等于"改一次流程就得重画一遍"，代价是目标节点必须在定义里存在（部署期之外做存在性校验）。**`moveTaskState` 不是缺口**（第 15 轮订正）：它属于 Camunda 的 **standalone task** 体系 —— `TaskService#newTask()` 建的是"不挂任何流程实例的独立任务"，`moveTaskState` 搬的是那种任务在 `Created/Assigned/Completed/Canceled/Failed` 之间的位置。本引擎**没有独立任务**这个概念（`WfTask` 一律由 `WfUserTaskBehavior` 建出，必带 `processInstanceId` + `definitionId`），而"把一个流程内任务换状态"这件事现有能力已经全覆盖：`claim`/`unclaim`/`updateTask`(转办/改责任人)/`delegate`/`resolve`/`complete`/`withdraw`/`force-complete`/`suspend`/`activate`。为对齐一个数字而把 standalone task 这整套引入，代价远大于收益 |
 | `createExecutionQuery` | 🟡 | 只有 `getExecutions(processInstanceId)` 列举，没有按条件查 |
 | `createVariableInstanceQuery` | ✅ | **本轮补上** `WfVariableQueryService` + `WfVariableInstanceView` + `WfVariableInstanceQuery`，REST `GET /api/wf/variable-instances` 与 `/count`。回答的是**「这个变量挂在哪一级作用域上」** —— 此前 `getVariables(processInstanceId)` 只能看到流程级那一层，分支级与任务级的值根本不在里面，而并行分支排障问的恰恰是级别。视图是**派生**的（变量在本仓没有独立实体，是三个模型上各自的 Map），所以没有自己的 id，只有「作用域:归属 + 变量名」拼成的临时 id，**只在本次查询期间有效**，不该被持久化成订阅条件。两个需要讲清的默认值：`openTasksOnly` 默认 `true`（任务变量在办结后仍然存在，算进「当前变量」会混进十几条历史表单变量）**但显式点名 `taskId` 时不过滤**（那时返回空列表分不清是「没有变量」还是「被过滤了」，而排障查的恰恰多是已办结的任务）；`includeEngineInternal` 默认 `false`（`loopCounter` 混进来只会让人怀疑查错了）。**一个范围都不给直接报错** —— 本仓的「全系统所有变量实例」只能靠全量取回再过滤，只返回一部分比报错坏得多。超过扫描上限（5000）报错而不是给一份看起来完整的清单 |
 | 保存筛选器（Camunda `FilterService`） | ✅ | **本轮补上** `WfFilterService` + `WfFilter` + `WfFilterQuery` + `WfFilterResult`，新增 `ZWF_FILTER` 表（内存 / JDBC 两套实现）。REST `GET/POST /api/wf/filters`、`PUT/DELETE /api/wf/filters/{id}`、`GET /api/wf/filters/{id}/results`。见 §1.5 |
@@ -298,9 +298,11 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 ### P1 —— 引擎成熟度
 
 历史查询体系（活动 / 任务 / 流程实例 / **变量变更审计** + 历史清理已实现）·
-~~Repository 完整化~~（定义停用/启用 + 模型回读 + 定义查询 + 物理删除已实现）·
+~~Repository 完整化~~（定义停用/启用 + 模型回读 + 定义查询 + 物理删除 + **默认流程定义（第 15 轮）**已实现）·
 ~~任务挂起~~（suspend/activate + 七处闸门 + 查询过滤 + REST 已实现）·
-~~运行时增删候选人~~（含 `candidateOrAssigned` 待办或语义 + 可认领列表按人过滤）· ~~复杂网关~~ · ~~事件网关~~（**消息 / 信号 / 定时器三种分支均已实现**，见 §2；仅缺 `conditionalEventDefinition` 分支）· ~~实例迁移~~（`move` 已实现，见 §1.2；`moveTaskState` 仍缺）· ~~Filter~~（**第 9 轮补上**，见 §1.5）· ~~中间捕获事件的定时器分支~~（**本轮补上**，见 §2）
+~~运行时增删候选人~~（含 `candidateOrAssigned` 待办或语义 + 可认领列表按人过滤）· ~~复杂网关~~ · ~~事件网关~~（**消息 / 信号 / 定时器三种分支均已实现**，见 §2；仅缺 `conditionalEventDefinition` 分支）· ~~实例迁移~~（`move` 已实现；`moveTaskState` **经核实不是缺口**，见 §1.2）· ~~Filter~~（**第 9 轮补上**，见 §1.5）· ~~中间捕获事件的定时器分支~~（**本轮补上**，见 §2）
+
+**P1 已全部清空。**
 
 ### P2 —— 管理便利
 
@@ -310,10 +312,10 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 667 个测试兜着
-- 从测试与审计中逼出并修复的**真实缺陷 39 项**，其中 5 项属于"能力看着在、实际不生效"：
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 696 个测试兜着
+- 从测试与审计中逼出并修复的**真实缺陷 42 项**，其中 6 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发、
-  嵌入式 `subProcess` 的内联内容永远不执行
+  嵌入式 `subProcess` 的内联内容永远不执行、默认流程标记两套实现不一致
 - **本轮（变量实例查询）写出 3 个自己造的缺陷，都在流出前抓住**，但其中两个的形态值得记：
   ① **派生视图的 id 在 setter 之前就拼好了**。`base()` 回头去读视图上的
      `processInstanceId` / `executionId` / `taskId`，而这些字段是逐个 setter 填的，
@@ -993,3 +995,80 @@ M12 之外还发现并修掉一处**注释说了假话**：`fireNonInterruptingB
    这两件长得完全一样的事区分开了**。
    这也说明**归因四分类里的第 ③ 类不是"脚本偶尔出错"，而是每轮都会发生的常态** ——
    只要一轮里既有改代码又有跑变异，补丁文本就必然有几条会过期。
+
+### 本轮反向验证记录（默认流程定义 `getDefaultProcessDefinition` / `setDefault`）
+
+本轮把 P1 收尾。先**订正了一条自己写错的记录**：此前把 `moveTaskState` 记成
+「按任务状态筛选迁移」。查 Camunda 7 的 javadoc 与 Task Lifecycle 文档后确认，
+它属于 **standalone task** 体系 —— `TaskService#newTask()` 建的是
+「不挂任何流程实例的独立任务」，`moveTaskState` 搬的是那种任务在
+`Created/Assigned/Completed/Canceled/Failed` 之间的位置。
+本引擎**没有独立任务**这个概念（`WfTask` 一律由 `WfUserTaskBehavior` 建出，
+必带 `processInstanceId` + `definitionId`），而"把一个流程内任务换状态"
+现有能力已全覆盖（`claim`/`unclaim`/`updateTask`/`delegate`/`resolve`/
+`complete`/`withdraw`/`force-complete`/`suspend`/`activate`）。
+⇒ **一个写错的能力描述，比一个真缺口更容易误导后来人**：
+它会让人以为"只差这一个 API"，于是把 standalone task 整套引入引擎。
+本轮 P1 的实际内容因此变成 `getDefaultProcessDefinition` / `setDefault`。
+
+实现上值得记的有四件。
+
+**一、同一不变式在两套实现里各有一份，判据也必须两份**（M01 / M07）。
+`deploy` 出来的定义一律不是默认 —— 这条不变式写在两个地方：
+内存实现的 `saveDefinition` 与 JDBC 的 `INSERT`。
+我先写完 JDBC（`ps.setInt(10, 0)` 写死），内存实现照抄了入参上的标记，
+判据也只写了 JDBC 那条，于是「内存实现会把默认改掉」这件事零反应。
+⇒ 「deploy 不产生默认」与第 10 轮的「落选分支清理要覆盖新枚举值」是同一条：
+**凡是一条不变式有 N 处实现，判据必须 N 条**。
+补上内存那条判据后，M01、M07 立刻双双转红。
+
+**二、补列迁移会完全掩盖 DDL 的缺列**（M05，本轮最有价值的一条发现）。
+把 DDL 里的 `IS_DEFAULT INTEGER NOT NULL DEFAULT 0` 删掉之后，
+**全套 20 条测试里没有任何一条会红** —— 因为 `initialize()` 末尾的
+`addDefaultColumnIfMissing` 会在建表之后立刻把它 `ALTER` 补上。
+补列迁移本来是给「2.0.0 之前建的库」用的，对新库是多余的一步，
+而它顺带把 DDL 的缺失也一起盖住了。
+⇒ 判据必须**直接查 `INFORMATION_SCHEMA`**，绕开后面所有补救步骤。
+**一般形式：凡是有「补列 / 补表 / 懒初始化」这类补救步骤的地方，
+它会掩盖的正是「本来就该有」的那部分缺陷** ——
+补救步骤跑得越成功，缺失越看不见。
+
+**三、两处"因错误的原因通过"，都是同一句话被两道闸门共用**（M15 / M17）。
+M15：`setDefaultDefinition` 里有两道闸门都会抛 `WfDefinitionException`
+——「版本不存在」与「持久层说没改到」。我只断言异常类型，
+于是「跳过版本存在性检查」这条变异照样通过，因为它是**另一道闸门抛的**。
+M17：`startDefaultProcessInstance` 的停用检查与 `startProcessInstance`
+自己的停用闸门，错误消息**都含 `activateDefinition`**，
+只断言那一句同样放过。
+⇒ 错误消息要挑**只有目标路径会说**的词（M17 补的是「默认流程定义」）。
+这与第 12 轮那条同源：**断言了错误消息 ≠ 断言到了正确的那条错误。**
+
+**四、判据收紧后逼出来的一个真 bug：`findPersisted` 会回落**。
+M15 的判据从"断言类型"收紧到"断言消息落在版本不存在那道闸门上"之后，
+测试转红并暴露出：`findPersisted(key, version)` 在指定版本不存在时
+**回落到该 key 的最新版本**（那是「按 key 启动流程」主路径需要的行为）。
+而"设为默认"拿它判存在性，于是
+① `isSuspended()` 读的是**别的版本**的停用状态 —— 拿 A 的状态判 B 的合法性；
+② 版本号打错时报的是「可能已被并发删除」，把调用方引去查并发与删除，
+根本想不到是自己写错了版本号。
+⇒ 改用 `getDefinition`（精确取 + 报「版本不存在」）。
+**这个 bug 只断言异常类型时是查不出来的。**
+
+另有一处**静默降级**由老库夹具逼出来：`findDefaultDefinition` 原先走
+`DEF_GRAPH` 读法，而图解不出来时 `readDefinition` 返回 `null`、
+`queryList` 会把 `null` 原样收进结果集 ⇒ `hits.size()==1` 而 `hits.get(0)==null`
+—— 库里明明有一行默认，接口却答「还没配默认」，没有任何报错。
+⇒ 改成**先只按列数与 key/version 判定，不碰 `DEF_GRAPH`**，
+图解不出来时报错并点名是哪一行。
+这一条也顺带解释了为什么那条老库夹具一开始失败：
+我手写的 `DEF_GRAPH='{}'` 不是合法图 JSON，
+而**判据的夹具数据不合法时，测的就不是你想测的那件事** ——
+先存一条真定义再把编出来的 JSON 抄进老表，才是"老库里的一行"。
+
+**变异脚本自己出错的第三种形态：改的模块不在编译路径里**（M19）。
+脚本原本只跑 `mvn -pl z-wf-core,z-wf-admin test`，而 web 层的控制器改动
+没有进 reactor —— 变异**改了但没跑起来**，症状与「判据没区分力」完全一样。
+⇒ 改跑 `mvn install` 全反应堆。
+⇒ 与第 14 轮那两种（打完补丁没恢复 / 补丁文本没跟上代码变化）并列，
+**「变异没生效」有三个来源：没打上、没恢复、没进编译路径**，
+而三者在结果上都长得像"判据没区分力"。

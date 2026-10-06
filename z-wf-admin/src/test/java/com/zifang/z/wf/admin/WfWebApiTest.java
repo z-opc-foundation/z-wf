@@ -1212,6 +1212,83 @@ class WfWebApiTest {
     }
 
     @Test
+    @DisplayName("默认流程端点：设为默认 → 按默认发起 → 停用后被拒 → 取消默认")
+    void defaultDefinitionEndpoints() throws Exception {
+        String key = "restDefault-" + (System.nanoTime() % 100000);
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"" + key + "\" name=\"默认流程\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"ds1\"/>\n"
+                + "    <userTask id=\"dapprove\" name=\"审批\" zifang:assignee=\"d-boss\"/>\n"
+                + "    <endEvent id=\"de1\"/>\n"
+                + "    <sequenceFlow id=\"df1\" sourceRef=\"ds1\" targetRef=\"dapprove\"/>\n"
+                + "    <sequenceFlow id=\"df2\" sourceRef=\"dapprove\" targetRef=\"de1\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        postOk("/api/wf/definitions/deploy", body("key", key, "xml", xml));
+
+        // 还没设默认时查得到 null —— 入口页要能据此提示「还没配默认」，而不是收到 4xx
+        assertNull(getOk("/api/wf/definitions/default").get("data"),
+                "没设过默认是正常状态，查询端点要返回 null 而不是报错");
+
+        // 按默认发起此时必须被拒，并说清怎么修
+        ResponseEntity<String> noDefault = exchange(HttpMethod.POST,
+                "/api/approval-center/processes/start-default",
+                body("businessKey", "DEF-0", "userId", "alice"));
+        assertEquals(statusOf("onDefinition"), noDefault.getStatusCode(),
+                "没配默认就不能按默认发起。实际: " + noDefault.getBody());
+        assertTrue(noDefault.getBody().contains("setDefaultDefinition"),
+                "报错要指明怎么修。实际: " + noDefault.getBody());
+
+        // 设为默认
+        Map<String, Object> set = asMap(
+                postOk("/api/wf/definitions/default?key=" + key + "&version=1", null).get("data"));
+        assertEquals(key, set.get("key"));
+        assertEquals(Boolean.TRUE, set.get("defaultDefinition"));
+        assertEquals(key, asMap(getOk("/api/wf/definitions/default").get("data")).get("key"));
+
+        // 定义列表里要能看出哪条是默认，否则列表页显示不出来
+        List<Map<String, Object>> listed = asList(
+                getOk("/api/wf/definitions?keyLike=" + key).get("data"));
+        assertEquals(1, listed.size());
+        assertEquals(Boolean.TRUE, listed.get(0).get("defaultDefinition"),
+                "定义列表要带默认标记");
+
+        // 按默认发起：不传 key 也能起
+        String pid = (String) postOk("/api/approval-center/processes/start-default",
+                body("businessKey", "DEF-1", "userId", "alice")).get("data");
+        assertNotNull(pid, "按默认发起应当成功");
+        assertEquals(key, asMap(getOk("/api/approval-center/processes/get?processInstanceId=" + pid)
+                .get("data")).get("definitionKey"),
+                "按默认发起必须起默认那一条 —— 悄悄起别的流程等于「默认」这个配置形同虚设");
+
+        // 停用默认之后：标记还在，但按默认发起被拒
+        postOk("/api/wf/definitions/suspend?key=" + key + "&version=1", null);
+        assertEquals(key, asMap(getOk("/api/wf/definitions/default").get("data")).get("key"),
+                "停用不该顺手把默认标记也清掉 —— 取消默认是一次显式的运营决策");
+        ResponseEntity<String> blocked = exchange(HttpMethod.POST,
+                "/api/approval-center/processes/start-default",
+                body("businessKey", "DEF-2", "userId", "alice"));
+        assertEquals(statusOf("onDefinition"), blocked.getStatusCode(),
+                "默认指向一个起不来的定义时必须当场报错。实际: " + blocked.getBody());
+        assertTrue(blocked.getBody().contains("已停用"),
+                "拒绝的原因要点明是停用。实际: " + blocked.getBody());
+
+        // 停用的版本不能被设为默认
+        ResponseEntity<String> setSuspended = exchange(HttpMethod.POST,
+                "/api/wf/definitions/default?key=" + key + "&version=1", null);
+        assertEquals(statusOf("onDefinition"), setSuspended.getStatusCode(),
+                "已停用的版本不能设为默认。实际: " + setSuspended.getBody());
+
+        // 取消默认
+        postOk("/api/wf/definitions/activate?key=" + key + "&version=1", null);
+        exchange(HttpMethod.DELETE, "/api/wf/definitions/default?key=" + key + "&version=1", null);
+        assertNull(getOk("/api/wf/definitions/default").get("data"),
+                "取消之后应当真的没有默认了");
+    }
+
+    @Test
     @DisplayName("变量端点：读 → 批量写 → 删除，全程留审计")
     void variableEndpoints() throws Exception {
         String businessKey = "WEB-VAR-" + System.nanoTime();

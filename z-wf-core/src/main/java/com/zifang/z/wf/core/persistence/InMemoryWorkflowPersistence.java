@@ -81,7 +81,13 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
             versions = new LinkedHashMap<>();
             definitions.put(definition.getKey(), versions);
         }
-        versions.put(definition.getVersion(), copy(definition));
+        WfDefinition stored = copy(definition);
+        // 存进去的这一份必定不是默认：默认只能由 setDefaultDefinition 置位。
+        // 不清的话就成了第二个真源 —— 调用方拿一个带标记的定义来 deploy
+        // 就把默认改了，而 JDBC 那边的 INSERT 是写死 0 的，两套实现行为还会不一样。
+        // （开发期常用内存实现，上线才发现「重新部署一次就换了默认流程」）
+        stored.setDefaultDefinition(false);
+        versions.put(definition.getVersion(), stored);
     }
 
     @Override
@@ -225,6 +231,47 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         // 改的是存储里那一份：查询一律返回副本，调用方拿到的对象改了不落库
         definition.setSuspended(suspended);
         return true;
+    }
+
+    @Override
+    public synchronized boolean setDefaultDefinition(String key, int version, boolean isDefault) {
+        Map<Integer, WfDefinition> versions = definitions.get(key);
+        WfDefinition target = versions == null ? null : versions.get(version);
+        if (target == null) {
+            return false;
+        }
+        if (isDefault) {
+            // 先清全表再置目标：留下两条默认时，"默认是哪个"就没有答案了
+            for (Map<Integer, WfDefinition> each : definitions.values()) {
+                for (WfDefinition definition : each.values()) {
+                    definition.setDefaultDefinition(false);
+                }
+            }
+        }
+        target.setDefaultDefinition(isDefault);
+        return true;
+    }
+
+    @Override
+    public synchronized WfDefinition findDefaultDefinition() {
+        WfDefinition found = null;
+        java.util.List<String> hits = new ArrayList<>();
+        for (Map<Integer, WfDefinition> versions : definitions.values()) {
+            for (WfDefinition definition : versions.values()) {
+                if (definition.isDefaultDefinition()) {
+                    hits.add(definition.getKey() + ":" + definition.getVersion());
+                    if (found == null) {
+                        found = definition;
+                    }
+                }
+            }
+        }
+        if (hits.size() > 1) {
+            throw new WfPersistenceException(
+                    "同时存在多条默认流程定义: " + hits + "。默认标记只能由 setDefaultDefinition 写入，"
+                            + "出现多条说明数据被绕过接口直接改过");
+        }
+        return found == null ? null : copy(found);
     }
 
     @Override

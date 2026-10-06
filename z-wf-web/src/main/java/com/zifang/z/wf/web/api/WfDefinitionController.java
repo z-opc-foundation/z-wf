@@ -114,6 +114,29 @@ public class WfDefinitionController {
         return Result.success(toView(definition));
     }
 
+    @PostMapping("/default")
+    @Operation(summary = "011_设为默认流程定义（调用方不知道 key 时的发起入口）")
+    public Result<Map<String, Object>> setDefault(@RequestParam String key,
+                                                  @RequestParam Integer version) {
+        return Result.success(toView(repositoryService.setDefaultDefinition(key, version)));
+    }
+
+    @DeleteMapping("/default")
+    @Operation(summary = "012_取消默认流程定义")
+    public Result<Void> clearDefault(@RequestParam String key, @RequestParam Integer version) {
+        repositoryService.clearDefaultDefinition(key, version);
+        return Result.success();
+    }
+
+    @GetMapping("/default")
+    @Operation(summary = "013_查当前默认流程定义（没设过则返回 null）")
+    public Result<Map<String, Object>> getDefault() {
+        WfDefinition definition = repositoryService.getDefaultDefinition();
+        // 没设过默认是正常状态（回 data=null），不是异常：
+        // 入口页要能据此提示"还没配默认"，而不是收到一个 4xx
+        return Result.success(definition == null ? null : toView(definition));
+    }
+
     private Map<String, Object> toView(WfDefinition definition) {
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("key", definition.getKey());
@@ -122,6 +145,7 @@ public class WfDefinitionController {
         view.put("category", definition.getCategory());
         view.put("description", definition.getDescription());
         view.put("suspended", definition.isSuspended());
+        view.put("defaultDefinition", definition.isDefaultDefinition());
         // 不回传整份图结构：定义列表是给人看的，节点树动辄几十个节点，
         // 要看结构请走 /model 回读原始 XML
         view.put("nodeCount", definition.getNodes() == null ? 0 : definition.getNodes().size());

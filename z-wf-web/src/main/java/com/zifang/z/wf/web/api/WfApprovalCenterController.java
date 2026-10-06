@@ -200,6 +200,26 @@ public class WfApprovalCenterController {
     }
 
     /**
+     * 按<b>默认</b>流程发起。
+     *
+     * <p><b>独立端点而不是给 {@code /processes/start} 加个「key 为空就走默认」的分支</b>：
+     * 那样「忘了传 key」和「想走默认」会走同一条路，而前者几乎总是调用方的 bug。
+     * 分开之后，忘了传 key 会立刻报「definitionKey 不能为空」，
+     * 走默认则是一条明确的意图。
+     */
+    @PostMapping("/processes/start-default")
+    @Operation(summary = "009b_按默认流程发起（不传 key）")
+    public Result<String> startDefaultProcess(@RequestBody WfRequests.StartProcess request) {
+        String processId = runtimeService.startDefaultProcessInstance(
+                request.getBusinessKey(), request.getUserId(),
+                request.getDeptId(), request.getVariables());
+        if (processId == null) {
+            return Result.fail("流程启动被钩子否决");
+        }
+        return Result.success(processId);
+    }
+
+    /**
      * 按消息 / 信号启动流程。
      *
      * <p><b>与 {@code /processes/start} 分成两个端点而不是加个参数</b>：

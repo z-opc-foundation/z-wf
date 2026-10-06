@@ -96,6 +96,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 + "SOURCE_XML CLOB,"
                 + "DEPLOY_TIME TIMESTAMP,"
                 + "SUSPENDED INTEGER NOT NULL DEFAULT 0,"
+                + "IS_DEFAULT INTEGER NOT NULL DEFAULT 0,"
                 + "PRIMARY KEY (DEF_KEY, DEF_VERSION))");
 
         ddl.add("CREATE TABLE IF NOT EXISTS ZWF_PROCESS ("
@@ -279,6 +280,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             addJobTypeColumnIfMissing(connection);
             addExternalTaskColumnsIfMissing(connection);
             addSuspendedColumnIfMissing(connection);
+            addDefaultColumnIfMissing(connection);
         } catch (SQLException e) {
             throw new WfPersistenceException("建表失败", e);
         } finally {
@@ -450,6 +452,27 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             log.info("已为既有 ZWF_DEFINITION 补建 SUSPENDED 列");
         } catch (SQLException e) {
             log.debug("SUSPENDED 列已存在或无需补建: {}", e.getMessage());
+        } finally {
+            closeQuietly(statement);
+        }
+    }
+
+    /**
+     * 给已存在的 ZWF_DEFINITION 补 IS_DEFAULT 列，理由同 {@link #addDelegateChainColumnIfMissing}。
+     *
+     * <p>存量行默认值 0 = 都不是默认，即升级后行为与升级前完全一致 ——
+     * 没有默认时 {@code findDefaultDefinition} 返回 {@code null}，
+     * 调用方拿到的是「还没设过默认」而不是「默认丢了」。
+     */
+    private void addDefaultColumnIfMissing(Connection connection) {
+        Statement statement = null;
+        try {
+            statement = connection.createStatement();
+            statement.execute("ALTER TABLE ZWF_DEFINITION "
+                    + "ADD COLUMN IS_DEFAULT INTEGER DEFAULT 0");
+            log.info("已为既有 ZWF_DEFINITION 补建 IS_DEFAULT 列");
+        } catch (SQLException e) {
+            log.debug("IS_DEFAULT 列已存在或无需补建: {}", e.getMessage());
         } finally {
             closeQuietly(statement);
         }
@@ -627,7 +650,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         String graph = WfDefinitionCodec.encode(definition);
         String sql = "INSERT INTO ZWF_DEFINITION "
                 + "(DEF_KEY, DEF_VERSION, DEF_NAME, DEF_CATEGORY, DEF_DESCRIPTION, "
-                + " DEF_GRAPH, SOURCE_XML, DEPLOY_TIME, SUSPENDED) VALUES (?,?,?,?,?,?,?,?,?)";
+                + " DEF_GRAPH, SOURCE_XML, DEPLOY_TIME, SUSPENDED, IS_DEFAULT) "
+                + "VALUES (?,?,?,?,?,?,?,?,?,?)";
         Connection connection = null;
         try {
             connection = dataSource.getConnection();
@@ -642,6 +666,10 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 ps.setString(7, definition.getSourceXml());
                 ps.setTimestamp(8, timestamp(definition.getStartTime()));
                 ps.setInt(9, definition.isSuspended() ? 1 : 0);
+                // 走 deploy 建出来的定义一律不是默认：默认只能由 setDefaultDefinition 置位。
+                // 这里若照抄 definition.isDefaultDefinition()，就多出一个能在图 JSON
+                // 之外改动默认标记的入口 —— 那正是"列与 JSON 两个真源"的老问题。
+                ps.setInt(10, 0);
                 ps.executeUpdate();
             } finally {
                 ps.close();
@@ -670,10 +698,19 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         Timestamp deployTime = rs.getTimestamp("DEPLOY_TIME");
         definition.setStartTime(deployTime == null ? null : new Date(deployTime.getTime()));
         definition.setSuspended(rs.getInt("SUSPENDED") != 0);
+        definition.setDefaultDefinition(rs.getInt("IS_DEFAULT") != 0);
         return definition;
     }
 
-    /** 只带元数据列的查询（不带 DEF_GRAPH），供按分类/停用状态过滤时用。 */
+    /**
+     * 只带元数据列的查询（不带 DEF_GRAPH），供按分类/停用状态过滤时用。
+     *
+     * <p><b>目前没有调用方</b>，保留是因为它是「只取元数据」这条路子的现成落点。
+     * 留着一个不用的方法不是问题，<b>留着它却让它的列清单与 {@code DEF_SELECT_ALL}
+     * 悄悄分叉才是</b>：上面读 {@code IS_DEFAULT}，将来有人给它配一条不带该列的
+     * SELECT，结果集里没有这列，{@code getInt} 会抛 SQLException，
+     * 症状是「一条查询莫名其妙失败」而不是「少读了某个字段」。
+     */
     private WfDefinition readDefinitionMeta(ResultSet rs) throws SQLException {
         WfDefinition definition = new WfDefinition();
         definition.setKey(rs.getString("DEF_KEY"));
@@ -684,11 +721,12 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         Timestamp deployTime = rs.getTimestamp("DEPLOY_TIME");
         definition.setStartTime(deployTime == null ? null : new Date(deployTime.getTime()));
         definition.setSuspended(rs.getInt("SUSPENDED") != 0);
+        definition.setDefaultDefinition(rs.getInt("IS_DEFAULT") != 0);
         return definition;
     }
 
     private static final String DEF_SELECT_ALL =
-            "SELECT DEF_KEY, DEF_VERSION, DEF_GRAPH, SOURCE_XML, DEPLOY_TIME, SUSPENDED "
+            "SELECT DEF_KEY, DEF_VERSION, DEF_GRAPH, SOURCE_XML, DEPLOY_TIME, SUSPENDED, IS_DEFAULT "
                     + "FROM ZWF_DEFINITION ";
 
     @Override
@@ -792,6 +830,93 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         } finally {
             close(connection);
         }
+    }
+
+    @Override
+    public boolean setDefaultDefinition(String key, int version, boolean isDefault) {
+        Connection connection = null;
+        try {
+            connection = dataSource.getConnection();
+            // 先确认目标行在不在：不存在时直接返回 false。
+            // 不能"先清全表再发现没改到" —— 那会把原有的默认悄悄清掉，
+            // 症状是「调了两次，第二次的 key 打错了，于是默认没了」而调用方毫无察觉。
+            PreparedStatement check = connection.prepareStatement(
+                    "SELECT 1 FROM ZWF_DEFINITION WHERE DEF_KEY=? AND DEF_VERSION=?");
+            try {
+                bind(check, new Object[]{key, version});
+                try (ResultSet rs = check.executeQuery()) {
+                    if (!rs.next()) {
+                        return false;
+                    }
+                }
+            } finally {
+                check.close();
+            }
+            if (isDefault) {
+                // 「全库至多一条默认」由这里维持。两步之间没有事务包住，
+                // 并发两次置位理论上会留下两条 —— findDefaultDefinition 会当场报出来，
+                // 而不是让调用方拿到一个取决于行返回顺序的答案。
+                Statement clear = connection.createStatement();
+                try {
+                    clear.executeUpdate(
+                            "UPDATE ZWF_DEFINITION SET IS_DEFAULT=0 WHERE IS_DEFAULT=1");
+                } finally {
+                    clear.close();
+                }
+            }
+            PreparedStatement ps = connection.prepareStatement(
+                    "UPDATE ZWF_DEFINITION SET IS_DEFAULT=? WHERE DEF_KEY=? AND DEF_VERSION=?");
+            try {
+                bind(ps, new Object[]{isDefault ? 1 : 0, key, version});
+                return ps.executeUpdate() > 0;
+            } finally {
+                ps.close();
+            }
+        } catch (SQLException e) {
+            throw new WfPersistenceException(
+                    "设置默认流程定义失败: " + key + ":" + version, e);
+        } finally {
+            close(connection);
+        }
+    }
+
+    @Override
+    public WfDefinition findDefaultDefinition() {
+        // 先只按列数与 key/version 判定，不碰 DEF_GRAPH。
+        // 走 DEF_GRAPH 的那条路有个静默失败：图解不出来时 readDefinition 返回 null，
+        // 库里明明有一行 IS_DEFAULT=1，接口却答"没有默认" —— 没有任何报错，
+        // 而调用方据此判定"还没配默认"，把入口页显示成未配置状态。
+        List<String[]> keys = queryList(
+                "SELECT DEF_KEY, DEF_VERSION FROM ZWF_DEFINITION "
+                        + "WHERE IS_DEFAULT=1 ORDER BY DEF_KEY, DEF_VERSION",
+                new Object[0], new RowMapper<String[]>() {
+                    @Override
+                    public String[] map(ResultSet rs) throws SQLException {
+                        return new String[]{
+                                rs.getString("DEF_KEY"), String.valueOf(rs.getInt("DEF_VERSION"))};
+                    }
+                });
+        if (keys.isEmpty()) {
+            return null;
+        }
+        if (keys.size() > 1) {
+            List<String> ids = new ArrayList<>();
+            for (String[] each : keys) {
+                ids.add(each[0] + ":" + each[1]);
+            }
+            throw new WfPersistenceException("同时存在多条默认流程定义: " + ids
+                    + "。默认标记只能由 setDefaultDefinition 写入，"
+                    + "出现多条说明数据被绕过接口直接改过");
+        }
+        WfDefinition definition =
+                findDefinition(keys.get(0)[0], Integer.parseInt(keys.get(0)[1]));
+        if (definition == null) {
+            // 行在、图解不出来：这不是"没有默认"，是数据坏了
+            throw new WfPersistenceException("默认流程定义 " + keys.get(0)[0] + ":"
+                    + keys.get(0)[1] + " 的 DEF_GRAPH 解析失败，"
+                    + "该行的图结构已损坏（可能被绕过引擎直接改过库）");
+        }
+        return definition;
     }
 
     @Override

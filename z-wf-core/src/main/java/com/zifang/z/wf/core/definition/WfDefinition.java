@@ -67,6 +67,23 @@ public class WfDefinition implements Serializable {
      */
     private boolean suspended;
 
+    /**
+     * 是否是<b>默认流程定义</b> —— 同一时刻全库至多一条为真。
+     *
+     * <p>对应 Camunda 的 {@code RepositoryService#setDefaultProcessDefinition}：
+     * 调用方不知道 key 时可以问"默认那个是哪个"，不用在业务代码里硬编码一个 key。
+     *
+     * <p><b>默认指向的是一个特定的 (key, version)，不是"某个 key 的最新版本"</b> ——
+     * 部署新版本时默认不跟着漂。理由是"默认指向哪儿"必须可预期：
+     * 运营在默认流程上做的验证不该被一次无关的重新部署改掉。
+     *
+     * <p><b>真源只有 {@code ZWF_DEFINITION.IS_DEFAULT} 这一列</b>，理由与
+     * {@link #suspended} 完全相同：列与图 JSON 各存一份必然漂。
+     * 连带的好处是"删掉默认定义"不需要额外清理 —— 标记与行同生共死，
+     * 不会留下一条指向不存在定义的指针。
+     */
+    private boolean defaultDefinition;
+
     // ---- 索引（构造时建立，序列化时忽略） ----
 
     private transient Map<String, WfNode> nodeMap;
@@ -662,6 +679,14 @@ public class WfDefinition implements Serializable {
 
     public void setSuspended(boolean suspended) {
         this.suspended = suspended;
+    }
+
+    public boolean isDefaultDefinition() {
+        return defaultDefinition;
+    }
+
+    public void setDefaultDefinition(boolean defaultDefinition) {
+        this.defaultDefinition = defaultDefinition;
     }
 
     @Override
