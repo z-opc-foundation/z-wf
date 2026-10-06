@@ -43,6 +43,7 @@ import com.zifang.z.wf.core.service.WfVariableQueryService;
 import com.zifang.z.wf.core.service.WfFilterService;
 import com.zifang.z.wf.core.service.WfActivityInstanceService;
 import com.zifang.z.wf.core.service.WfManagementService;
+import com.zifang.z.wf.core.service.WfExecutionQueryService;
 
 /**
  * z-wf 引擎自动装配。
@@ -274,6 +275,19 @@ public class WfAutoConfiguration {
     @ConditionalOnMissingBean
     public WfManagementService wfManagementService(WfPersistence persistence) {
         return new WfManagementService(persistence);
+    }
+
+    /**
+     * 执行令牌的条件查询。纯读，不启动任何线程。
+     *
+     * <p>与 {@code WfSubscriptionService} 放在一起的原因：两者回答的是同一个问题的两半
+     * ——「这条单子不动了」。订阅答「在等一个事件」，令牌答「停在哪一步」。
+     * 分开部署时排障的人要打两个接口才能拼出一句完整的判断。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WfExecutionQueryService wfExecutionQueryService(WfPersistence persistence) {
+        return new WfExecutionQueryService(persistence);
     }
 
     /**

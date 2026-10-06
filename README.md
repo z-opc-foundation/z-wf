@@ -378,8 +378,15 @@ advance() = leave(token) + 沿出线 enter(下一个 token)
 `POST /transfer`、`/delegate`、`/claim`、`/unclaim`、`/withdraw`、`/force-complete`、`/jump`
 
 **流程操作** `/api/wf/process`
-`POST /suspend`、`/activate`、`/terminate`、`/comment`、`/advance`、
+`POST /suspend`、`/activate`、`/terminate`、`/comment`、`/advance`、`/name`、
 `GET /comments`、`/trail`、`/overview`、`/executions`
+
+**令牌查询** `/api/wf/executions`：`GET /`（按 `processInstanceId` / `activityId` /
+`state` / `variableName` / `variableValue` / `unfinishedOnly` 查「这条 token 停在哪」）、
+`GET /count`
+
+> 令牌查询与订阅查询（`/api/wf/subscriptions`）回答的是同一个问题的两半：
+> 订阅答「它在等一个事件」，令牌答「它停在哪一步」。只给一半时排障会得出错误结论。
 
 **分组 / 图** `/api/wf/group`：`GET /list`、`/processes`、`/detail`（供设计器渲染）
 **引擎自省** `/api/wf/management`：`GET /properties`（版本 / schema 版本 / 存储形态）、

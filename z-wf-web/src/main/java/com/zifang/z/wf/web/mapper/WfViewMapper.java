@@ -102,6 +102,7 @@ public class WfViewMapper {
         view.setDefinitionId(instance.getDefinitionId());
         view.setDefinitionVersion(instance.getDefinitionVersion());
         view.setBusinessKey(instance.getBusinessKey());
+        view.setName(instance.getName());
         view.setStartUserId(instance.getStartUserId());
         view.setStartDeptId(instance.getStartDeptId());
         view.setCategory(instance.getCategory());

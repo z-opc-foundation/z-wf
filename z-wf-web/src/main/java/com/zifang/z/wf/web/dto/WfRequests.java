@@ -500,6 +500,38 @@ public final class WfRequests {
     }
 
     /**
+     * 改流程实例名称。
+     *
+     * <p><b>{@code name} 传 null 表示清空名称</b>，而传空串 / 纯空白会报 400 ——
+     * 「空标题」与「没起名字」在界面上长得一样、语义却不同，
+     * 让调用方显式说"我要清空"，比引擎替他猜要可靠。
+     */
+    public static class ProcessInstanceName implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private String processInstanceId;
+
+        private String name;
+
+        public String getProcessInstanceId() {
+            return processInstanceId;
+        }
+
+        public void setProcessInstanceId(String processInstanceId) {
+            this.processInstanceId = processInstanceId;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+    }
+
+    /**
      * 投递消息 / 广播信号。
      *
      * <p>事件网关、消息边界与接收任务共用这一个请求体：三者等的是同一个"事件名"，

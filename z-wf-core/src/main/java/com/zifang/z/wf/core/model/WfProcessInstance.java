@@ -34,6 +34,23 @@ public class WfProcessInstance implements Serializable {
     /** 业务键 —— 业务方用它把流程实例挂到自己的单据上（单号）。 */
     private String businessKey;
 
+    /**
+     * 实例名称 —— 列表页与通知里给人看的那句话（「张三的请假申请」），不是给程序用的。
+     *
+     * <p><b>与 {@link #businessKey} 的分工</b>：businessKey 是<b>业务方</b>给的
+     * 单号（对外、要做唯一性校验、要能被业务系统查回来），name 是<b>人或业务方</b>
+     * 事后补的一句可读描述（对内、进标题、进邮件）。两者都不强制、都不唯一、都可以为空，
+     * 但**不能互相顶替** —— 拿 businessKey 去当标题会得到一串没人看得懂的编号，
+     * 而那是业务方自己的单号，不该由引擎替他们决定怎么显示。
+     *
+     * <p><b>字段所有权：只有 {@code setProcessInstanceName} 改它。</b>
+     * {@code saveProcessInstance} 的 UPDATE 是<b>部分更新</b>（只更状态、结果、
+     * 变量、原因那几个列），刻意<b>不</b>包含本字段 ——
+     * 否则任何一处拿一个"手里没有 name 的旧实例对象"回写状态，都会顺手把名字抹成 null，
+     * 而症状是"名字莫名其妙没了"：改名那一刻明明成功过。
+     */
+    private String name;
+
     /** 发起人。 */
     private String startUserId;
 
@@ -117,6 +134,14 @@ public class WfProcessInstance implements Serializable {
 
     public void setBusinessKey(String businessKey) {
         this.businessKey = businessKey;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
     }
 
     public String getStartUserId() {

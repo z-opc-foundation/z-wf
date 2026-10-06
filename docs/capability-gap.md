@@ -56,14 +56,15 @@
 | **变量服务** `getVariable(s)` / `setVariable(s)` / `getVariableLocal` / `setVariableLocal` | ✅ | **本轮补上** `WfVariableService`：流程级 get/set/remove/has + 任务级 get/set/remove，批量整批只落一次库，变更留审计 |
 | `createProcessInstanceQuery` 流畅查询 | 🟡 | `WfProcessInstanceQuery` 有 10 个条件，但没有 `variableValueEquals`（按变量值查实例，审批系统常用） |
 | **`move` / `moveTaskState`**（流程实例迁移） | ✅ | `WfRuntimeService#move` 按 token 粒度迁移，撤掉源节点的待办、该 token 的 job 与到达记录，再在目标节点**重新进入**；给 `sourceActivityId` 就只迁指定源，不给就迁全部未结束 token。REST `POST /api/wf/process/move`。**刻意不检查图上可达性** —— 运营改流程后图往往已对不上，强行校验等于"改一次流程就得重画一遍"，代价是目标节点必须在定义里存在（部署期之外做存在性校验）。**`moveTaskState` 不是缺口**（第 15 轮订正）：它属于 Camunda 的 **standalone task** 体系 —— `TaskService#newTask()` 建的是"不挂任何流程实例的独立任务"，`moveTaskState` 搬的是那种任务在 `Created/Assigned/Completed/Canceled/Failed` 之间的位置。本引擎**没有独立任务**这个概念（`WfTask` 一律由 `WfUserTaskBehavior` 建出，必带 `processInstanceId` + `definitionId`），而"把一个流程内任务换状态"这件事现有能力已经全覆盖：`claim`/`unclaim`/`updateTask`(转办/改责任人)/`delegate`/`resolve`/`complete`/`withdraw`/`force-complete`/`suspend`/`activate`。为对齐一个数字而把 standalone task 这整套引入，代价远大于收益 |
-| `createExecutionQuery` | 🟡 | 只有 `getExecutions(processInstanceId)` 列举，没有按条件查 |
+| `createExecutionQuery` | ✅ | **第 20 轮补上** `WfExecutionQueryService` + `WfExecutionQuery`，REST `GET /api/wf/executions` 与 `/executions/count`。与既有 `getExecutions(processInstanceId)` 的差别**只有一个：查之前不必先知道实例 id** —— 排障的第一句常常是「哪个单子卡在审批节点上」，而那时手里还只有节点。能答的三个问题：① 哪些单子的 token 停在节点 X ② 哪些 token 还没结束（`onlyUnfinished`，与订阅查询互补：订阅答「在等什么」，令牌答「停在哪」）③ 哪条 token 的某个变量是这个值（并行分支最常出问题的那一个）。**刻意不提供 `definitionKey`**：令牌表里没这一列，要支持就得 join 实例表，而"某定义下所有活跃 token"用实例查询再逐个 `getExecutions` 就够。**变量过滤与排序都在 Java 里做、只有一份实现** —— 变量存 JSON 文本列，各库写法不同跨库只能回 Java；过滤一旦在分页之后，分页也不能交给 SQL（先 LIMIT 50 再过滤会剩 3 条，而调用方以为"就这些"）。**排序不交给数据库**：`ENTERED_TIME` 可空，而"NULL 排前还是排后"在 H2/PG/MySQL 上结论相反。`count` 与 list **共用同一次扫描**，不走 SQL `COUNT(*)` —— 否则列表 1 条而 count 说 8 条，调用方只会以为自己算错了 |
+| `getBusinessKey` / `setProcessInstanceName` | ✅ | businessKey 本就有；**第 20 轮补上 `setProcessInstanceName`**（`WfProcessInstance#name`，`ZWF_PROCESS` 新增 `NAME` 列 + 补列迁移），REST `POST /api/wf/process/name`。name 与 businessKey **不能互相顶替** —— 前者是给人看的可读描述，后者是业务方的单号，拿单号当标题会得到一串没人看得懂的编号。**名字的字段只有一个所有者**：只有 `setProcessInstanceName` 改它，`saveProcessInstance` 的部分更新刻意不含该列 —— 引擎每次推进结束时都会把 `context` 里那个**改名前取的**实例对象写回去，名字一旦进了那条列清单，用户改完名再点一次「通过」就被抹回 null。**改名不走乐观锁也不碰 revision**（名字与状态机无关，让"改标题"和"审批推进"抢同一把锁，冲突时报的还是「乐观锁冲突」）。**空串报错、null 才表示清空**（空标题与没起名字在界面上一样、语义却不同）。**实例不存在报错并点名**，不静默返回 |
 | `createVariableInstanceQuery` | ✅ | **本轮补上** `WfVariableQueryService` + `WfVariableInstanceView` + `WfVariableInstanceQuery`，REST `GET /api/wf/variable-instances` 与 `/count`。回答的是**「这个变量挂在哪一级作用域上」** —— 此前 `getVariables(processInstanceId)` 只能看到流程级那一层，分支级与任务级的值根本不在里面，而并行分支排障问的恰恰是级别。视图是**派生**的（变量在本仓没有独立实体，是三个模型上各自的 Map），所以没有自己的 id，只有「作用域:归属 + 变量名」拼成的临时 id，**只在本次查询期间有效**，不该被持久化成订阅条件。两个需要讲清的默认值：`openTasksOnly` 默认 `true`（任务变量在办结后仍然存在，算进「当前变量」会混进十几条历史表单变量）**但显式点名 `taskId` 时不过滤**（那时返回空列表分不清是「没有变量」还是「被过滤了」，而排障查的恰恰多是已办结的任务）；`includeEngineInternal` 默认 `false`（`loopCounter` 混进来只会让人怀疑查错了）。**一个范围都不给直接报错** —— 本仓的「全系统所有变量实例」只能靠全量取回再过滤，只返回一部分比报错坏得多。超过扫描上限（5000）报错而不是给一份看起来完整的清单 |
 | 保存筛选器（Camunda `FilterService`） | ✅ | **本轮补上** `WfFilterService` + `WfFilter` + `WfFilterQuery` + `WfFilterResult`，新增 `ZWF_FILTER` 表（内存 / JDBC 两套实现）。REST `GET/POST /api/wf/filters`、`PUT/DELETE /api/wf/filters/{id}`、`GET /api/wf/filters/{id}/results`。见 §1.5 |
 | `createEventSubscriptionQuery` | ✅ | **本轮补上** `WfSubscriptionService` + `WfSubscriptionView`（放 core 不放 web：订阅查询通常由独立部署的监控/运维服务消费，放 web 会把它拖进 Spring MVC 运行时）。REST `GET /api/wf/subscriptions` 与 `/subscriptions/count`，并**并进 `GET /api/wf/process/overview`**。回答的是"这条单子怎么不动了"——在等消息的流程没有待办、轨迹没动、也不报错，没有这张表就只能翻 XML 猜。**job 类型归并成"等什么"**（message/signal/timer/external/async）同时**保留原 jobType** 以区分"打断"与"竞速"；竞速分支额外带 `gatewayId`，让人看得出几条是同一次竞速。**超过扫描上限（2000）直接报错**而不是给一份看起来完整的截断列表 |
 | `getActivityInstance`（树形活动实例） | ✅ | **第 17 轮补上** `WfActivityInstanceService#getActivityInstance` + `WfActivityInstanceView` / `WfTransitionInstanceView`，REST `GET /api/wf/process/activity-instance` 并**并进 `GET /api/wf/process/overview`**。回答的是「这条单现在走到哪了，并发分支在哪，各分支停在哪一步」。**与扁平 `trail` 是两种切法，不互相推导**：trail 是时间序、这棵树是结构；并行分支跑起来之后 trail 的行在时间上交错、看不出谁是谁的分支，而交错的历史行**推不出**层级，硬推会在并行分支上猜错 —— 猜出来的层级比扁平轨迹更坏，因为它看起来可信。⇒ **树给并发结构（来自执行树），节点内的 `childTransitionInstances` 给这条分支走过的顺序**。**形状上的三处实测结论**（写代码前跑探针打出来，不是推的）：① **并行网关 fork 出来的是父子链不是兄弟** —— 第一条出线留在父 token 上，所以两条并行分支的 activityId 天然不同，**按「同一父下有几个兄弟」判并发永远判不出 true**，判据取「未结束 token 总数 > 1」；② **`arrivedActivities` 回答不了「join 在等谁」** —— fork 出来的子 token 它的 arrived 里**不含那个并行网关**，那个答案在树本身（另有一条 token 还停在别的节点上没结束）；③ **fork 出来的子 token 没走过起始节点**，它的步骤表在离开第一个节点前是空的。**树活多久取决于历史保留多久**：`deleteHistoryBefore` 会把令牌与历史一起清掉，所以历史清理之前树都在，清理之后实例本身就不存在。**实例查不到时返回 400 而不是空树** —— 空树会让调用方分不清「没跑起来」「被清过历史」「真的没有分支」。**父指针与 children 双向自洽**（只填一边等于树是断的）；**挂不上父节点的 token 直接报错**，不静默丢弃 —— 丢一条会让「这单有 3 条分支」变成 2 条且无人察觉 |
 | `messageEventReceived` / `signalEventReceived` | ✅ | `triggerMessage`（点对点）/ `broadcastSignal`（广播），**本轮补上 REST**：`POST /api/wf/process/message` 与 `POST /api/wf/process/signal`。此前只有 Java 入口，纯 HTTP 的调用方根本没法投递事件，事件网关等于对它们不存在。一个端点同时能叫醒三种等待者（事件网关分支 / 消息边界订阅 / receiveTask），谁先判决定了这条事件落到哪种语义上 |
 | `correlate`（关联消息到执行） | ✅ | **第 16 轮补上** `WfRuntimeService#correlate(WfMessageCorrelation, userId, comment)` + `WfMessageCorrelation`，REST `POST /api/wf/process/message/correlate`。与 `triggerMessage` 的差别**只有一个**：调用方手里只有业务键与业务字段，引擎自己找到那条该被唤醒的单 —— 而"收到 ERP 回执、发一条消息、按单号配"才是消息驱动集成的常态。条件四选：业务键 / 定义 key / 流程级变量 / 执行级变量，全是「与」，不设即不参与。**候选集与 `triggerMessage` 共用同一份定义**（`waitingCandidates`），两者的差别只该是「多几道筛选」，候选定义一旦分叉，"correlate 找不到但 triggerMessage 能触发"就是 bug。**「没人在等」与「有 N 条在等但都没匹配上」分开报**：合并成一句"没找到"会让调用方不知道自己该去调条件还是该去查为什么没人在等；多条时列出每条候选的形态与 id，不静默挑一条。**变量比较用 `Object.equals`，不做类型宽松**（`1` 与 `"1"` 判不等），且**键不存在不等于「值为 null」**。**匹配条件不产生任何副作用**（不回写流程/任务变量）—— 三类候选的触发入口并不都接受变量，只让三分之一的路径生效等于同一次请求因命中形态不同而结果不同；且条件常直接来自外部消息体，把未经校验的外部字段灌进流程状态会让「配错了」从一次报错变成一次数据损坏。**刻意不做 `correlateAll`**（唤醒全部已由 `broadcastSignal` 覆盖）与 `withoutVariables()` 开关 |
-| `getBusinessKey` / `setProcessInstanceName` | 🟡 | businessKey 有；流程名称没有 |
+| `getBusinessKey` / `setProcessInstanceName` | ✅ | businessKey 本就有；**第 20 轮补上 `setProcessInstanceName`**（`WfProcessInstance#name`，`ZWF_PROCESS` 新增 `NAME` 列 + 补列迁移），REST `POST /api/wf/process/name`。name 与 businessKey **不能互相顶替** —— 前者是给人看的可读描述，后者是业务方的单号，拿单号当标题会得到一串没人看得懂的编号。**名字的字段只有一个所有者**：只有 `setProcessInstanceName` 改它，`saveProcessInstance` 的部分更新刻意不含该列 —— 引擎每次推进结束时都会把 `context` 里那个**改名前取的**实例对象写回去，名字一旦进了那条列清单，用户改完名再点一次「通过」就被抹回 null。**改名不走乐观锁也不碰 revision**（名字与状态机无关，让"改标题"和"审批推进"抢同一把锁，冲突时报的还是「乐观锁冲突」）。**空串报错、null 才表示清空**（空标题与没起名字在界面上一样、语义却不同）。**实例不存在报错并点名**，不静默返回 |
 
 ### 1.3 TaskService
 
@@ -122,7 +123,7 @@
 | IdentityService | ⛔ 有意排除，见 §5 |
 | FormService | ⛔ 有意排除，见 §5 |
 | AuthorizationService | ⛔ 有意排除，见 §5 |
-| FilterService（保存的查询） | ❌ 未实现。管理台"保存筛选条件"这类需求目前要业务方自己存 |
+| FilterService（保存的查询） | ✅ | 早已实现：`WfFilterService` + `WfFilter` + `ZWF_FILTER` 表，REST `GET/POST/PUT/DELETE /api/wf/filters` 与 `GET /api/wf/filters/{id}/results`。见 §1.2。**这一行曾经长期挂着 ❌** —— 功能早就有了而能力表没跟上，读表的人会以为"保存筛选条件"得业务方自己存，于是自己又造了一套 |
 | ExternalTaskService | ⛔ 有意排除，见 §5 |
 | DecisionService（DMN） | ❌ 未实现。规则判断目前靠条件表达式 |
 | CaseService（CMMN） | ⛔ 有意排除，见 §5 |
@@ -315,7 +316,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ### P2 —— 管理便利
 
-引擎指标 · ~~流程模型图形回读~~（BPMN DI 解析 + REST 已实现，见 §1.1）· ~~消息关联 `correlate`~~（**第 16 轮补上**，见 §1.2）· ~~`getActivityInstance` 树形活动实例~~（**第 17 轮补上**，见 §1.2）· ~~`getTableCount` / `getTableNames` / `getProperties`~~（**第 19 轮补上**，见 §1.5）
+引擎指标 · ~~流程模型图形回读~~（BPMN DI 解析 + REST 已实现，见 §1.1）· ~~消息关联 `correlate`~~（**第 16 轮补上**，见 §1.2）· ~~`getActivityInstance` 树形活动实例~~（**第 17 轮补上**，见 §1.2）· ~~`getTableCount` / `getTableNames` / `getProperties`~~（**第 19 轮补上**，见 §1.5）· ~~`createExecutionQuery` 令牌条件查询 + `setProcessInstanceName`~~（**第 20 轮补上**，见 §1.2）
 
 > 第 19 轮没有新缺陷，但逼出两处**当初差点漏掉的东西**：
 > ① **自省能力挂在哪一层**，一开始想放在 `WfManagementService` 里 `instanceof` 判断存储形态，
@@ -328,6 +329,12 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 >     写这条注释之前我自己先踩了一次：拿 `KIND_TABLE`（"table"）去比
 >     `persistenceKind()`（"jdbc"），永远不成立，于是 **JDBC 也被标成 collection**。
 
+> 第 20 轮**自己判据抓到一个两套实现分家的真缺陷**，两套都不曾单独出错：
+> 「实例名只能由改名那一路写」这条不变式在 **JDBC 上天然成立**（`saveProcessInstance`
+> 是部分更新，列清单里没有 `NAME`），而在**内存实现上不成立** ——
+> 它是整对象覆盖，而调用方手上那份实例往往是改名前取的，回写就把名字抹成 null。
+> 症状是「内存里好好的、一上真库就丢」，排查的人会先怀疑数据库。
+
 > 第 17 轮顺带修掉一个不属于本轮范围、但由本轮挖出来的**已发布真缺陷**：
 > `deleteHistoryBefore` 在 JDBC 上漏删执行令牌（内存实现一直会删），
 > 而令牌没有别的清理路径 —— 真库上 `ZWF_EXECUTION` 只增不减。
@@ -337,11 +344,15 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 761 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 779 个测试兜着
 - 从测试与审计中逼出并修复的**真实缺陷 43 项**，其中 6 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发、
   嵌入式 `subProcess` 的内联内容永远不执行、默认流程标记两套实现不一致
-- **本轮（`intermediateThrowEvent` 原生实现）没有新缺陷，但逼出两处"够不着的防御"与一处死代码**：
+- **第 20 轮（令牌查询 + 实例改名）自己判据抓到一个"两套实现分家"的真缺陷**：
+  新增一个字段时，**JDBC 侧的"部分更新"天然守住了字段所有权，内存侧的"整对象覆盖"没有**，
+  于是同一条不变式在一套上成立、在另一套上不成立。
+  详见 §6 与文末本轮小节。
+- **第 18 轮（`intermediateThrowEvent` 原生实现）没有新缺陷，但逼出两处"够不着的防御"与一处死代码**：
   ① **投递队列的 `while` 循环原本不承重**。第一版是"共享队列 + 每层都完整 drain"，
      于是最内层那次调用会把整个队列清空，外层循环第二次迭代时队列必为空 ——
      「只发一批」与「发到空」两种写法给出**完全一样**的结果。
@@ -1407,3 +1418,87 @@ worktree 的 `FILES` 清单里漏了 `WfPersistence.java`（SPI 接口），
 **表名不可参数化**（`?` 只对值有效），而表名来自 REST 查询参数，
 所以校验来源必须是**数据库自己报的清单**，不是请求参数。
 变异 M19（去掉白名单）转红，那串 `ZWF_TASK; DROP TABLE ZWF_PROCESS` 立刻现形。
+
+---
+
+### 本轮反向验证记录（令牌条件查询 + 流程实例改名，第 20 轮）
+
+本轮补两块：`createExecutionQuery` 的对应物（令牌条件查询）与
+`setProcessInstanceName`。`20` 条变异全红，`3` 条对照全绿。
+**一条两套实现分家的真缺陷在流出前被抓到。**
+
+**一、自己判据抓到的真缺陷：「字段只有一个所有者」这条不变式只在 JDBC 上成立**。
+新增 `WfProcessInstance#name` 时我判断得很清楚：名字只能由 `setProcessInstanceName` 写，
+所以 `saveProcessInstance` 的部分更新刻意不含该列。
+**而内存实现压根不是部分更新 —— 它是整对象覆盖**
+（`processInstances.put(id, copy(instance))`），调用方手上那份实例往往是改名前取的，
+回写就把名字抹成 null。
+⇒ 症状是「内存里好好的、一上真库就丢」，而排查的人会先怀疑数据库。
+两套单独看都没错，错的是**同一个不变式在两处的实现方式不同**。
+⇒ 修法是让内存实现也守住这条边界（存之前把原有的 name 拷回副本）。
+代价是「用 `saveProcessInstance` 改名字」这条路**两边都不通**了 ——
+那正是"字段只有一个所有者"要的效果，不是顺带的限制。
+⇒ 与第 17 轮 `deleteHistoryBefore` 同族：**只有真库抓得到的那一类，
+反过来也可能是"只有内存抓得到"的那一类**，别默认问题总在存储那一侧。
+
+**二、`ENTERED_TIME` 排序刻意不交给数据库**。
+`enteredTime` 可空（外部写入 / 脏数据），而"NULL 排前还是排后"在
+H2 / MySQL / PostgreSQL 上**结论相反**：
+`ORDER BY t DESC` 在 H2 把 NULL 排最后、在 PostgreSQL 排最前；
+用 `ORDER BY t IS NULL` 显式控制也不行 —— H2 / PG 上它是布尔（false < true，于是 NULL 排前），
+MySQL 上是 0/1（0 在前，于是 NULL 排后）。
+⇒ 存储层只按主键倒序保证**页内稳定**，语义排序统一在服务层做（两套实现跑同一段 Java）。
+同理，id 里带进程随机数、**跨实例不可比**，所以它只用来在同一时刻的若干条之间给稳定顺序。
+
+**三、变量过滤与排序都在 Java 里做，所以分页不能下推**。
+`VARIABLES` 是 JSON 文本列，跨库写不出同一段 SQL；过滤一旦发生在分页**之后**，
+把分页交给 SQL 就是错的：先 LIMIT 50 再过滤，可能只剩 3 条，也可能一条不剩，
+而调用方会以为"就这些了"。
+⇒ `scan()` 故意传一个"一页超大"的 pageSize 给存储层，过滤后再分页。
+`count` 与 list **共用同一次扫描**，不走 SQL `COUNT(*)` —— 两者一旦分开，
+列表 1 条而 count 说 8 条时，调用方只会以为自己算错了。
+
+**四、M07 打红前打了两次绿，两次都不是"判据没区分力"**。
+① **判据因错误的原因通过**。排序那条我原先只造了引擎自己建的两条令牌，
+它们的时间戳**落在同一毫秒** ⇒ 比较器走 id 兜底；再加上原始顺序恰好已经是
+「非 null 在前」，排序**根本没做功**，于是「前两条非 null」平凡成立。
+⇒ 改成造时间明显递增的三条、且要求顺序与插入顺序不同，排序才非做功不可。
+② **判据在测一个造不出来的状态**。造"没有进入时间的脏数据"时我用了
+`new WfExecution(id, pid, activityId)`，而**那个三参构造器里有一句
+`this.enteredTime = new Date()`** —— 造出来的是"刚刚进入的令牌"，照样有时间戳。
+⇒ 必须显式 `setEnteredTime(null)`。
+⇒ 这两条合起来是「第 0 问」的又一次：断言打不红 / 平凡通过时，
+先问「这个输入下**被测代码可能**产生这个效果吗」，以及「这个夹具造出来的**真是**我要的数据吗」。
+
+**五、M09 是"变异与名字不符"，而它指的是一段死拷贝**。
+变异改的是 `copy()` 里的 `variableName`，但 `scan()` 的过滤读的是**原 query** 而非副本 ——
+变量条件压根不下推，所以那两行复制是死的。
+⇒ 不是补判据（那是"为将来准备的测试"），而是**把那两行删掉并写明原因**：
+`copy()` 只复制参与下推与分推的字段；若将来把变量条件下推到 SQL，必须同时加回来。
+⇒ 与第 18 轮 `MAX_PENDING_EVENT_DRAIN` 同一处置原则：**不承重的实现不靠判据救，也不假装有**。
+
+**六、`scan()` 一度就地改调用方的 query，翻页因此失效**。
+写的时候想的是"读数据时把分页调大"，改的却是**调用方传进来的那个对象** ——
+之后 `listExecutions` 再用它算分页，读到的是被改过的参数，
+于是第二页永远等于第一页，而那看起来像"数据只有一页"。
+⇒ 加 `WfExecutionQuery#copy()`，并在它的注释里写明"存在就是为了不在调用方的对象上就地改"。
+变异 E05 立刻转红。
+
+**七、harness 的 FILES 清单连续三轮漏文件，本轮改成从 git 自动生成**。
+第 19 轮漏 SPI 接口（编译报 `cannot find symbol`），
+第 20 轮先漏 DTO（`setName` 找不到）、修完又漏 `WfAutoConfiguration`
+（web 全红 `NoSuchBeanDefinitionException`）。
+**三次的症状都长得极像「代码写错了」**，每次都要多花一轮排查。
+⇒ 清单不手写，`git status --porcelain` 逐行取（目录要 `rglob` 展开并 `is_file()` 过滤）。
+⇒ 配套：基线失败时**打印 mvn 输出尾部**；上下文起不来时**真因只在 surefire 报告的
+`Caused by` 里**，外层的 `IllegalStateException: Failed to load ApplicationContext` 不含根因。
+⇒ 与第 16/17 轮「`PATCH NOT FOUND` 失败路径也要还原再退出」同源：
+**harness 自己的失败路径是最容易被误判成"被测代码有问题"的地方**。
+
+**八、顺手订正了一行长期过时的能力表**。
+`FilterService`（保存的查询）那一行长期挂着 ❌，而功能早已实现
+（`WfFilterService` + `ZWF_FILTER` 表 + 一整套 REST）。
+读表的人会以为"保存筛选条件"得业务方自己存，于是自己又造了一套。
+⇒ 这就是第 17 轮那条「照着一个缺陷写出来的设计说明，在缺陷修好后会变成新的错误文档」的
+另一个方向：**已经修好的缺陷，会在别的文档里留下"还没修"的痕迹**，
+而那些痕迹没人会去核对，因为它们看起来只是文档。

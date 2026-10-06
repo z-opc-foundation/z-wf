@@ -2645,6 +2645,96 @@ class WfWebApiTest {
                 "报错要列出合法的名字，否则调用方不知道自己还能问什么: " + typo.getBody());
     }
 
+// ==================== 令牌查询与实例改名 ====================
+
+    /** 一条串行流程：起步就停在 userTask 上，因而一定有一条活跃令牌。 */
+    private static final String NAME_SEQ_BPMN =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+            + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+            + "  <process id=\"webNameSeq\" isExecutable=\"true\">\n"
+            + "    <startEvent id=\"wns\"/>\n"
+            + "    <userTask id=\"wnt1\" name=\"一级\" zifang:assignee=\"alice\"/>\n"
+            + "    <endEvent id=\"wne\"/>\n"
+            + "    <sequenceFlow id=\"wnf1\" sourceRef=\"wns\" targetRef=\"wnt1\"/>\n"
+            + "    <sequenceFlow id=\"wnf2\" sourceRef=\"wnt1\" targetRef=\"wne\"/>\n"
+            + "  </process>\n"
+            + "</definitions>\n";
+
+    @Test
+    @DisplayName("令牌端点：按节点查得到，且 count 与列表口径一致")
+    void executionsOverHttp() throws Exception {
+        postOk("/api/wf/definitions/deploy", body("key", "webExec", "xml", NAME_SEQ_BPMN));
+        String pid = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webExec", "businessKey", "EXEC-1",
+                        "userId", "web-exec-alice")).get("data");
+
+        // 关键一问：**还不知道单子 id，只知道节点** 时能不能查
+        Map<String, Object> byNode = asMap(getOk("/api/wf/executions?activityId=wnt1").get("data"));
+        List<Map<String, Object>> records = asList(byNode.get("records"));
+        assertFalse(records.isEmpty(), "按节点查不到 —— 排障的第一问就答不了");
+        assertEquals(pid, String.valueOf(records.get(0).get("processInstanceId")));
+        assertEquals("wnt1", records.get(0).get("activityId"));
+        // count 必须与列表同口径（都算上变量过滤），否则列表 1 条 count 却说 5 条
+        assertEquals(records.size(), ((Number) byNode.get("total")).intValue(),
+                "列表条数与 total 对不上：count 走了另一条路（漏掉过滤）");
+
+        // 按实例 + 状态筛。注意它停在 userTask 上 ⇒ 令牌是 **WAITING**（等人工），
+        // 不是 ACTIVE。这两个状态混为一谈的话，「有没有流程在等人工」就答错了 ——
+        // 而那正是订阅查询答不了的那一半
+        Map<String, Object> waiting = asMap(getOk(
+                "/api/wf/executions?processInstanceId=" + pid + "&state=WAITING").get("data"));
+        assertEquals(1, asList(waiting.get("records")).size());
+        assertEquals(0, asList(asMap(getOk(
+                        "/api/wf/executions?processInstanceId=" + pid + "&state=ACTIVE")
+                .get("data")).get("records")).size(),
+                "它在等人工办，却被算成了 ACTIVE");
+
+        // 未知状态必须 400，并列出合法值 —— 静默忽略一个拼错的状态，
+        // 调用方会拿到一份"看起来筛过了、其实没筛"的结果
+        ResponseEntity<String> typo = exchange(HttpMethod.GET,
+                "/api/wf/executions?state=ACTIE", null);
+        assertEquals(HttpStatus.BAD_REQUEST, typo.getStatusCode(),
+                "拼错状态报 400，而不是当没传");
+        assertTrue(typo.getBody().contains("ACTIVE"),
+                "报错要列出合法的状态值: " + typo.getBody());
+    }
+
+    @Test
+    @DisplayName("改名端点：改名后看得到，空白串报 400，实例不存在报 400")
+    void setProcessInstanceNameOverHttp() throws Exception {
+        postOk("/api/wf/definitions/deploy", body("key", "webRename", "xml", NAME_SEQ_BPMN));
+        String pid = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webRename", "businessKey", "RN-1",
+                        "userId", "web-rename-alice")).get("data");
+
+        Map<String, Object> renamed = asMap(postOk("/api/wf/process/name",
+                body("processInstanceId", pid, "name", "张三的请假申请")).get("data"));
+        assertEquals("张三的请假申请", renamed.get("name"),
+                "改名端点返回的实例里必须带 name —— 返回里没有，前端改完只能自己再查一次");
+        assertNotNull(renamed.get("businessKey"),
+                "businessKey 是业务方的单号，与 name 是两回事，两个都要在");
+
+        // 列表页拿到的实例也要带 name，否则列表标题永远是空的
+        Map<String, Object> overview = asMap(getOk(
+                "/api/wf/process/overview?processInstanceId=" + pid).get("data"));
+        assertNotNull(overview);
+
+        // 空白串报 400，并说清「清空请传 null」
+        ResponseEntity<String> blank = exchange(HttpMethod.POST, "/api/wf/process/name",
+                body("processInstanceId", pid, "name", "   "));
+        assertEquals(HttpStatus.BAD_REQUEST, blank.getStatusCode(),
+                "空白串被当成合法名字存了进去 —— 空标题与没起名字在界面上一样、语义却不同");
+        assertTrue(blank.getBody().contains("清空"), "报错要说清怎么清空: " + blank.getBody());
+
+        // 实例不存在报 400 并点名，不能安静地什么都不做
+        ResponseEntity<String> missing = exchange(HttpMethod.POST, "/api/wf/process/name",
+                body("processInstanceId", "proc-压根不存在", "name", "改名"));
+        assertEquals(HttpStatus.BAD_REQUEST, missing.getStatusCode());
+        assertTrue(missing.getBody().contains("proc-压根不存在"),
+                "报错要点名是哪个实例: " + missing.getBody());
+    }
+
     /** 带事件网关的测试定义，事件由 REST 端点投递。 */
     private static final String RACE_BPMN =
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"

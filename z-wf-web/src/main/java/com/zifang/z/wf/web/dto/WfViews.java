@@ -86,6 +86,7 @@ public final class WfViews {
         private String processInstanceId;
         private String processKey;
         private String businessKey;
+        private String name;
         private String definitionId;
         private String formKey;
         private String category;
@@ -315,6 +316,18 @@ public final class WfViews {
         private String definitionId;
         private int definitionVersion;
         private String businessKey;
+
+        /**
+         * 实例名称 —— 给界面看的可读描述（「张三的请假申请」）。
+         *
+         * <p>与 {@link #businessKey} 不是一回事：businessKey 是业务方的单号
+         * （对外、要做唯一性、要能被业务系统查回来），name 是事后补的可读描述。
+         * 两者都不强制、都不唯一、可以为空，但<b>不能互相顶替</b> ——
+         * 拿单号当标题会得到一串没人看得懂的编号，而那串编号怎么显示
+         * 是业务方自己的事，不该由引擎替他们决定。
+         */
+        private String name;
+
         private String startUserId;
         private String startDeptId;
         private String category;
@@ -355,6 +368,14 @@ public final class WfViews {
 
         public void setDefinitionVersion(int definitionVersion) {
             this.definitionVersion = definitionVersion;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
         }
 
         public String getBusinessKey() {

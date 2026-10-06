@@ -11,6 +11,7 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.service.WfRepositoryService;
 
 /**
@@ -468,6 +469,17 @@ class UnsupportedBpmnElementTest {
         @Override
         public long getTableCount(String name) {
             throw new AssertionError("校验没过就不该走到存储自省");
+        }
+
+        @Override
+        public int setProcessInstanceName(String processInstanceId, String name) {
+            throw new AssertionError("校验没过就不该走到改实例名");
+        }
+
+        @Override
+        public List<WfExecution> queryExecutions(
+                com.zifang.z.wf.core.persistence.WfExecutionQuery query) {
+            throw new AssertionError("校验没过就不该走到令牌查询");
         }
 
         @Override

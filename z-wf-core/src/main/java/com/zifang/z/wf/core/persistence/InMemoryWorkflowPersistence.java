@@ -315,12 +315,41 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
                 throw new WfOptimisticLockException("processInstance", instance.getId(), expected);
             }
         }
-        processInstances.put(instance.getId(), copy(instance));
+        WfProcessInstance toStore = copy(instance);
+        if (existing != null && !java.util.Objects.equals(toStore.getName(), existing.getName())) {
+            // 名字由 setProcessInstanceName 独占，两套实现都不得经 save 改它。
+            //
+            // 本实现是**整对象覆盖**（JDBC 那侧是部分更新），而调用方手上的实例对象
+            // 往往是改名前取的 —— 直接存进去会把名字抹成 null。
+            // 后果在内存模式下比真库更刺眼：只要有人改完名再点一次"通过"，
+            // 名字立刻消失，而 JDBC 上不会 —— 于是"内存里好好的、一上真库就丢"，
+            // 排查的人会先怀疑数据库。
+            //
+            // 代价是**「用 saveProcessInstance 改名字」这条路两边都不通**了 ——
+            // 那正是"字段只有一个所有者"要的效果，不是顺带的限制。
+            toStore.setName(existing.getName());
+        }
+        processInstances.put(instance.getId(), toStore);
     }
 
     @Override
     public WfProcessInstance findProcessInstance(String id) {
         return copy(processInstances.get(id));
+    }
+
+    @Override
+    public int setProcessInstanceName(String processInstanceId, String name) {
+        WfProcessInstance existing = processInstances.get(processInstanceId);
+        if (existing == null) {
+            return 0;
+        }
+        // 复制一份再改再放回，与 saveProcessInstance 同一套做法：
+        // 直接改 map 里那个对象会让别处持有的引用（findProcessInstance 之前的调用方
+        // 若拿的是同一实例）看到一次"没经过任何写入路径"的突变。
+        WfProcessInstance named = copy(existing);
+        named.setName(name);
+        processInstances.put(processInstanceId, named);
+        return 1;
     }
 
     @Override
@@ -452,6 +481,57 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
             }
         }
         return result;
+    }
+
+    @Override
+    public List<WfExecution> queryExecutions(WfExecutionQuery query) {
+        // 先筛**引用**、排序、分页，最后才对当页的条目做深拷贝：
+        // copy 走的是 Java 序列化，逐条做的话一页 50 条要拷全量。
+        // 既有 find* 系列是"边匹配边 copy"，在有分页的场景下那一份是白拷的。
+        List<WfExecution> matched = new ArrayList<>();
+        for (WfExecution execution : executions.values()) {
+            if (matchesExecution(execution, query)) {
+                matched.add(execution);
+            }
+        }
+        // 与 JdbcWorkflowPersistence#queryExecutions 同口径：这里只保证页内稳定，
+        // 业务排序（按进入时间）在 WfExecutionQueryService 里统一做。
+        java.util.Collections.sort(matched, new java.util.Comparator<WfExecution>() {
+            @Override
+            public int compare(WfExecution left, WfExecution right) {
+                String leftId = left.getId() == null ? "" : left.getId();
+                String rightId = right.getId() == null ? "" : right.getId();
+                return rightId.compareTo(leftId);
+            }
+        });
+        int offset = query == null ? 0 : Math.max(0, query.getOffset());
+        int size = query == null || query.getPageSize() <= 0 ? 50 : query.getPageSize();
+        List<WfExecution> page = paginate(matched, offset, size);
+        List<WfExecution> result = new ArrayList<>();
+        for (WfExecution execution : page) {
+            result.add(copy(execution));
+        }
+        return result;
+    }
+
+    /** 与 {@code JdbcWorkflowPersistence#appendExecutionFilters} 同口径。 */
+    private boolean matchesExecution(WfExecution execution, WfExecutionQuery query) {
+        if (query == null) {
+            return true;
+        }
+        if (isNotBlank(query.getProcessInstanceId())
+                && !query.getProcessInstanceId().equals(execution.getProcessInstanceId())) {
+            return false;
+        }
+        if (isNotBlank(query.getActivityId())
+                && !query.getActivityId().equals(execution.getActivityId())) {
+            return false;
+        }
+        if (query.getStates() != null && !query.getStates().isEmpty()
+                && (execution.getState() == null || !query.getStates().contains(execution.getState()))) {
+            return false;
+        }
+        return true;
     }
 
     @Override

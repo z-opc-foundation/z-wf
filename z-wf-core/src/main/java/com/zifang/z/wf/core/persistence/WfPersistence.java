@@ -169,6 +169,26 @@ public interface WfPersistence {
     WfProcessInstance findProcessInstance(String id);
 
     /**
+     * 改实例名称，<b>只改这一个字段</b>。
+     *
+     * <p><b>刻意不走乐观锁、也不碰 {@code revision}。</b>
+     * 名字是给界面看的元数据，与实例的状态机无关 ——
+     * 让"改个标题"和"审批推进"抢同一把 revision 锁，冲突时报出来的是
+     * 「乐观锁冲突」，而两件事之间根本没有任何因果关系。
+     *
+     * <p>也正因如此，本方法<b>不能</b>走 {@link #saveProcessInstance}：
+     * 那条 UPDATE 是部分更新，调用方手上的实例对象往往在改名之前取的，
+     * 把 NAME 放进它的列清单会让每次状态回写顺手把名字抹掉。
+     *
+     * <p>{@code name} 传 {@code null} 表示清空名字（合法）。
+     * 空串与纯空白<b>不</b>在持久层拦 —— 那是服务层的校验，理由见
+     * {@code WfRuntimeService#setProcessInstanceName}。
+     *
+     * @return 受影响行数；{@code 0} 表示没有这个实例
+     */
+    int setProcessInstanceName(String processInstanceId, String name);
+
+    /**
      * 按业务键查实例（审批场景的主查询路径：单号 → 流程）。
      */
     List<WfProcessInstance> findProcessInstancesByBusinessKey(String businessKey);
@@ -206,6 +226,23 @@ public interface WfPersistence {
      * 查某流程实例的全部 token。
      */
     List<WfExecution> findExecutionsByProcessInstance(String processInstanceId);
+
+    /**
+     * 按条件查执行令牌（<b>只下推能下推的那几项</b>：流程实例 / 节点 / 状态）。
+     *
+     * <p>刻意<b>不</b>包含变量条件与业务排序：变量存在 JSON 文本列里，
+     * 各库写法不同，过滤只能回到 Java；过滤在分页之后，于是分页也不能下推。
+     * 真正的过滤、排序、分页与扫描上限统一在
+     * {@code WfExecutionQueryService} 里做 —— 只有那一份实现，
+     * 两套存储不会在这中间分家。
+     *
+     * <p>这里的排序只保证<b>页内稳定</b>（按主键倒序），不承担业务语义 ——
+     * {@code ENTERED_TIME} 可空，而"NULL 排前还是排后"在不同数据库上结论相反。
+     *
+     * <p><b>已按 query 的分页参数截断</b>（调用方通常会传一个很大的 pageSize，
+     * 那是 service 层为了"先读够再过滤"故意为之，不是笔误）。
+     */
+    List<WfExecution> queryExecutions(WfExecutionQuery query);
 
     // ==================== 任务 ====================
 

@@ -184,6 +184,25 @@ public class WfProcessOperationController {
         return Result.success(viewMapper.toProcessView(instance));
     }
 
+    /**
+     * 改流程实例名称。
+     *
+     * <p>与 {@code businessKey} 不是一回事：businessKey 是业务方的单号
+     * （对外、要做唯一性、要能被业务系统查回来），name 是给界面看的可读描述。
+     * 这里只改 name，不碰 businessKey，也不碰实例状态。
+     */
+    @PostMapping("/name")
+    @Operation(summary = "015_改流程实例名称：name 传 null 表示清空，传空白串报 400")
+    public Result<WfViews.ProcessInstanceView> setName(
+            @RequestBody WfRequests.ProcessInstanceName request) {
+        if (request == null) {
+            throw new com.zifang.z.wf.core.service.WfEngineException("请求体不能为空");
+        }
+        WfProcessInstance instance = runtimeService.setProcessInstanceName(
+                request.getProcessInstanceId(), request.getName());
+        return Result.success(viewMapper.toProcessView(instance));
+    }
+
     @PostMapping("/comment")
     @Operation(summary = "004_加签评论")
     public Result<Map<String, Object>> addComment(@RequestBody WfRequests.ProcessOperation request,

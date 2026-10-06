@@ -660,6 +660,49 @@ public class WfRuntimeService implements WfSubProcessLauncher {
     }
 
     /**
+     * 改流程实例的名称 —— 列表页与通知里给人看的那句话。
+     *
+     * <p>与 {@code businessKey} 的分工：businessKey 是业务方的单号（对外、要做唯一性），
+     * name 是事后补的一句可读描述（对内、进标题）。两者都不强制、都不唯一、可以为空，
+     * 但**不能互相顶替** —— 拿单号当标题会得到一串没人看得懂的编号，
+     * 而那串编号怎么显示是业务方自己的事，不该由引擎替他们决定。
+     *
+     * <p><b>三条规则</b>：
+     * <ol>
+     *   <li><b>实例不存在就报错</b>，不静默返回。改名的调用方多半是在补一个业务字段，
+     *       安静地"什么都没发生"会让人以为补上了 —— 直到几小时后列表里还是空标题才发现。</li>
+     *   <li><b>空串与纯空白报错</b>，清空请显式传 {@code null}。
+     *       空串渲染出来是一行空白标题，而"没起名字"在库里是 null ——
+     *       两者在界面上一样、语义不同，留着空串等于制造一个说不清的状态。</li>
+     *   <li><b>不改 revision、不走乐观锁</b>，名字与状态机无关（理由见
+     *       {@code WfPersistence#setProcessInstanceName}）。</li>
+     * </ol>
+     *
+     * <p><b>为什么必须走独立的一条 UPDATE</b>：本引擎每次推进结束时都会把
+     * {@code context} 里持有的那个实例对象 {@code saveProcessInstance} 回去
+     * （那是事务收口的必经之路），而那个对象是<b>改名前取的</b>。
+     * 名字一旦出现在那条部分更新的列清单里，用户改完名再点一次"通过"，
+     * 名字就被引擎自己抹回 null —— 症状是"名字莫名其妙又没了"，
+     * 而且只在**改完名之后又推进过流程**的那些单子上出现，越查越像偶发。
+     */
+    public WfProcessInstance setProcessInstanceName(String processInstanceId, String name) {
+        if (processInstanceId == null || processInstanceId.trim().isEmpty()) {
+            throw new WfEngineException("流程实例 ID 不能为空");
+        }
+        if (name != null && name.trim().isEmpty()) {
+            throw new WfEngineException("流程实例名称不能是空白字符串。要清空名称请传 null，"
+                    + "因为「空标题」与「没起名字」在界面上长得一样、语义却不同，"
+                    + "留着空串等于造出一个说不清的状态");
+        }
+        String trimmed = name == null ? null : name.trim();
+        if (persistence.setProcessInstanceName(processInstanceId.trim(), trimmed) == 0) {
+            throw new WfEngineException("流程实例不存在: " + processInstanceId.trim()
+                    + "。若它刚被 terminate 或被历史清理过，那条记录已经不在了");
+        }
+        return persistence.findProcessInstance(processInstanceId.trim());
+    }
+
+    /**
      * 审批轨迹。
      */
     public List<WfActivityInstance> getTrail(String processInstanceId) {

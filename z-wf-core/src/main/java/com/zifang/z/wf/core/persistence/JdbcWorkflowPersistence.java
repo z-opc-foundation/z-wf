@@ -107,6 +107,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 + "DEF_ID VARCHAR(256),"
                 + "DEF_VERSION INTEGER,"
                 + "BUSINESS_KEY VARCHAR(256),"
+                + "NAME VARCHAR(512),"
                 + "START_USER_ID VARCHAR(128),"
                 + "START_DEPT_ID VARCHAR(128),"
                 + "CATEGORY VARCHAR(128),"
@@ -278,6 +279,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             }
             log.info("JDBC 持久化初始化完成（{} 张表，{} 条索引）", tableCount, ddl.size() - tableCount);
             addDelegateChainColumnIfMissing(connection);
+            addProcessNameColumnIfMissing(connection);
             addTaskSuspendedColumnIfMissing(connection);
             addJobTypeColumnIfMissing(connection);
             addExternalTaskColumnsIfMissing(connection);
@@ -397,6 +399,29 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             log.info("已为既有 ZWF_JOB 补建 {} 列", column);
         } catch (SQLException e) {
             log.debug("{} 列已存在或无需补建: {}", column, e.getMessage());
+        } finally {
+            closeQuietly(statement);
+        }
+    }
+
+    /**
+     * 给已存在的 ZWF_PROCESS 补 NAME 列，理由同 {@link #addDelegateChainColumnIfMissing}。
+     *
+     * <p>存量行补出来是 NULL，也就是"没起名"—— 与升级前压根没有这个概念等价。
+     * 刻意<b>不</b>回填一个占位串（如流程 key）：升级后每条存量单子突然多出一个
+     * 看起来像业务数据的标题，而它其实只是引擎编的，比空着更容易误导人。
+     *
+     * <p>{@code NAME} 在 {@code ZWF_FILTER} 上已经是同名同类型的列，
+     * 所以这条 SQL 在方言（保留字、大小写）上不用再冒一次险。
+     */
+    private void addProcessNameColumnIfMissing(Connection connection) {
+        Statement statement = null;
+        try {
+            statement = connection.createStatement();
+            statement.execute("ALTER TABLE ZWF_PROCESS ADD COLUMN NAME VARCHAR(512)");
+            log.info("已为既有 ZWF_PROCESS 补建 NAME 列");
+        } catch (SQLException e) {
+            log.debug("NAME 列已存在或无需补建: {}", e.getMessage());
         } finally {
             closeQuietly(statement);
         }
@@ -961,6 +986,11 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         boolean exists = exists("SELECT 1 FROM ZWF_PROCESS WHERE PROC_ID=?", instance.getId());
         if (exists) {
             // 乐观锁：只允许 revision 恰好 +1 的那次写入
+            // **刻意不含 NAME**。这条 UPDATE 是部分更新（只更状态、结果、变量、原因），
+            // 而调用方手上的实例对象往往是在改名之前取的、压根没有 name ——
+            // 把 NAME 放进列清单，任何一次回写都会顺手把名字抹成 null，
+            // 症状是「改名明明成功了，名字过一会儿自己没了」。
+            // 名字由 setProcessInstanceName 独占，理由见 WfProcessInstance#name。
             String sql = "UPDATE ZWF_PROCESS SET STATUS=?, RESULT=?, END_TIME=?, SUSPEND_REASON=?, "
                     + "DELETE_REASON=?, VARIABLES=?, REVISION=? WHERE PROC_ID=? AND REVISION=?";
             int affected = update(sql, instance.getStatus() == null ? null : instance.getStatus().name(),
@@ -975,8 +1005,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             return;
         }
         String sql = "INSERT INTO ZWF_PROCESS (PROC_ID, DEF_KEY, DEF_ID, DEF_VERSION, BUSINESS_KEY, "
-                + "START_USER_ID, START_DEPT_ID, CATEGORY, STATUS, RESULT, START_TIME, END_TIME, "
-                + "SUSPEND_REASON, DELETE_REASON, VARIABLES, REVISION) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+                + "NAME, START_USER_ID, START_DEPT_ID, CATEGORY, STATUS, RESULT, START_TIME, END_TIME, "
+                + "SUSPEND_REASON, DELETE_REASON, VARIABLES, REVISION) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
         Connection connection = null;
         try {
             connection = dataSource.getConnection();
@@ -987,17 +1017,18 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 ps.setString(3, instance.getDefinitionId());
                 ps.setInt(4, instance.getDefinitionVersion());
                 ps.setString(5, instance.getBusinessKey());
-                ps.setString(6, instance.getStartUserId());
-                ps.setString(7, instance.getStartDeptId());
-                ps.setString(8, instance.getCategory());
-                ps.setString(9, instance.getStatus() == null ? null : instance.getStatus().name());
-                ps.setString(10, instance.getResult());
-                ps.setTimestamp(11, timestamp(instance.getStartTime()));
-                ps.setTimestamp(12, timestamp(instance.getEndTime()));
-                ps.setString(13, instance.getSuspendReason());
-                ps.setString(14, instance.getDeleteReason());
-                ps.setString(15, JsonUtil.toJson(instance.getVariables()));
-                ps.setInt(16, instance.getRevision());
+                ps.setString(6, instance.getName());
+                ps.setString(7, instance.getStartUserId());
+                ps.setString(8, instance.getStartDeptId());
+                ps.setString(9, instance.getCategory());
+                ps.setString(10, instance.getStatus() == null ? null : instance.getStatus().name());
+                ps.setString(11, instance.getResult());
+                ps.setTimestamp(12, timestamp(instance.getStartTime()));
+                ps.setTimestamp(13, timestamp(instance.getEndTime()));
+                ps.setString(14, instance.getSuspendReason());
+                ps.setString(15, instance.getDeleteReason());
+                ps.setString(16, JsonUtil.toJson(instance.getVariables()));
+                ps.setInt(17, instance.getRevision());
                 ps.executeUpdate();
             } finally {
                 ps.close();
@@ -1007,6 +1038,12 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         } finally {
             close(connection);
         }
+    }
+
+    @Override
+    public int setProcessInstanceName(String processInstanceId, String name) {
+        // 只更这一列，且**不带上 REVISION**：见 WfPersistence#setProcessInstanceName
+        return update("UPDATE ZWF_PROCESS SET NAME=? WHERE PROC_ID=?", name, processInstanceId);
     }
 
     @Override
@@ -1157,6 +1194,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 rs.getString("PROC_ID"), rs.getString("DEF_KEY"), rs.getString("DEF_ID"));
         instance.setDefinitionVersion(rs.getInt("DEF_VERSION"));
         instance.setBusinessKey(rs.getString("BUSINESS_KEY"));
+        instance.setName(rs.getString("NAME"));
         instance.setStartUserId(rs.getString("START_USER_ID"));
         instance.setStartDeptId(rs.getString("START_DEPT_ID"));
         instance.setCategory(rs.getString("CATEGORY"));
@@ -1239,6 +1277,71 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                         return mapExecution(rs);
                     }
                 });
+    }
+
+    @Override
+    public List<WfExecution> queryExecutions(WfExecutionQuery query) {
+        StringBuilder sql = new StringBuilder("SELECT * FROM ZWF_EXECUTION WHERE 1=1");
+        List<Object> args = new ArrayList<>();
+        appendExecutionFilters(sql, args, query);
+        // 只用主键兜底排序，**不按 ENTERED_TIME 排**。
+        //
+        // 为什么不在这里按进入时间排：ENTERED_TIME 可空（手工写入 / 脏数据 / 外部导入），
+        // 而"NULL 排前还是排后"在 H2 / MySQL / PostgreSQL 上**结论相反**
+        // —— `ORDER BY t DESC` 在 H2 把 NULL 排最后，在 PostgreSQL 排最前。
+        // 用 `ORDER BY t IS NULL` 去显式控制同样不行：H2 / PG 上它是布尔
+        // （false < true，于是 NULL 排前），MySQL 上是 0/1（0 在前，于是 NULL 排后）。
+        // 排序交给 WfExecutionQueryService 统一做（它两套实现跑同一段 Java），
+        // 这里的顺序只保证同一页内稳定、不保证业务语义。
+        sql.append(" ORDER BY EXEC_ID DESC LIMIT ? OFFSET ?");
+        args.add(query == null || query.getPageSize() <= 0 ? 50 : query.getPageSize());
+        args.add(query == null ? 0 : Math.max(0, query.getOffset()));
+        return queryList(sql.toString(), args.toArray(), new RowMapper<WfExecution>() {
+            @Override
+            public WfExecution map(ResultSet rs) throws SQLException {
+                return mapExecution(rs);
+            }
+        });
+    }
+
+    /**
+     * 令牌查询里<b>能下推到 SQL</b> 的那几项。
+     *
+     * <p>刻意<b>不</b>含变量条件：{@code VARIABLES} 是 JSON 文本列，
+     * 各库对 JSON 函数的支持与语义都不一样（H2 与 PostgreSQL 能用不同写法，
+     * MySQL 又是另一套），要跨库行为一致就只能回到 Java 里比 ——
+     * 那就意味着过滤发生在分页<b>之后</b>，所以分页也不能交给 SQL，
+     * 由 {@code WfExecutionQueryService} 统一做（见那里的注释）。
+     */
+    private void appendExecutionFilters(StringBuilder sql, List<Object> args, WfExecutionQuery query) {
+        if (query == null) {
+            return;
+        }
+        if (isNotBlank(query.getProcessInstanceId())) {
+            sql.append(" AND PROC_ID=?");
+            args.add(query.getProcessInstanceId().trim());
+        }
+        if (isNotBlank(query.getActivityId())) {
+            sql.append(" AND ACTIVITY_ID=?");
+            args.add(query.getActivityId().trim());
+        }
+        if (query.getStates() != null && !query.getStates().isEmpty()) {
+            sql.append(" AND STATE IN (");
+            boolean first = true;
+            for (WfExecution.State state : query.getStates()) {
+                if (!first) {
+                    sql.append(",");
+                }
+                sql.append("?");
+                args.add(state.name());
+                first = false;
+            }
+            sql.append(")");
+        }
+    }
+
+    private static boolean isNotBlank(String value) {
+        return value != null && !value.trim().isEmpty();
     }
 
     private WfExecution mapExecution(ResultSet rs) throws SQLException {
