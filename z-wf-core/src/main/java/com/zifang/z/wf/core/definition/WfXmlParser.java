@@ -54,8 +54,6 @@ public class WfXmlParser {
     /** messageEventDefinition 与 signalEventDefinition 同时出现。 */
     public static final String PROPERTY_EVENT_CONFLICT = "zifang:eventConflict";
 
-    /** cancelActivity="false"（非中断型边界），本实现不支持。 */
-    public static final String PROPERTY_NON_INTERRUPTING = "zifang:nonInterrupting";
 
     /** 写了 messageEventDefinition / signalEventDefinition 却没给 name/ref。 */
     public static final String PROPERTY_EVENT_MISSING_REF = "zifang:eventMissingRef";
@@ -336,10 +334,8 @@ public class WfXmlParser {
      * <p>两者互斥，同时出现时按 properties 记下来交校验器报错 —— 静默挑一个
      * 会让作者以为自己写的那条生效了。
      *
-     * <p>{@code cancelActivity="false"}（非中断）本实现不支持：非中断边界要求
-     * "任务照常办、边界分支并行跑起来"，而 token 在离开宿主节点时会把该节点的
-     * 订阅与待办一起撤掉，语义上要另开一套状态。这里在解析层留痕、校验层报错，
-     * 部署期挡住，而不是部署成功却在运行时当成中断型执行。
+     * <p>{@code cancelActivity="false"}（非中断）已支持（第 12 轮）：触发时不搬宿主
+     * token，另起一条从边界出发的并行分支，两者在下游汇合点碰头。
      */
     private void parseEventDefinition(Element element, WfNode node) {
         Element messageDef = childElement(element, "messageEventDefinition");
@@ -365,9 +361,14 @@ public class WfXmlParser {
             node.getProperties().put(PROPERTY_EVENT_CONFLICT,
                     "messageEventDefinition 与 signalEventDefinition 同时出现");
         }
-        String cancelActivity = element.getAttribute("cancelActivity");
-        if (cancelActivity != null && "false".equals(cancelActivity.trim())) {
-            node.getProperties().put(PROPERTY_NON_INTERRUPTING, cancelActivity.trim());
+        // cancelActivity / parallelMultiple 是**属性**（不是子元素），
+        // 默认值分别是 true 与 false，只有显式写了才非默认。
+        // 不写就保持默认而不是记成"false"：只有显式写的非默认值才需要被校验器看见
+        if ("false".equals(String.valueOf(element.getAttribute("cancelActivity")).trim())) {
+            node.setNonInterrupting(true);
+        }
+        if ("true".equals(String.valueOf(element.getAttribute("parallelMultiple")).trim())) {
+            node.setParallelMultiple(true);
         }
     }
 

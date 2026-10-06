@@ -151,6 +151,30 @@ public class WfNode implements Serializable {
     private String errorCode;
 
     /**
+     * 非中断型边界事件（{@code cancelActivity="false"}）。
+     *
+     * <p>区别只有一处，但那一处是全部：触发时<b>宿主 token 不动</b>。
+     * 中断型是把宿主那条 token 搬到边界事件上（宿主待办作废、token 走补偿分支），
+     * 非中断型是<b>另起一条 token</b>从边界事件出发，宿主照常办理，
+     * 两条路径在下游的汇合点碰头。
+     *
+     * <p>实现上并不需要"另一套状态"：边界订阅的存活期本来就是"宿主活跃期间"，
+     * 中断型与非中断型在这一点上完全一样。真正要做的是<b>不搬 token</b>，
+     * 以及让汇合判定认得这两条是同一批（靠 parentId，见
+     * {@code WfEngine#samePeer}）。
+     */
+    private boolean nonInterrupting;
+
+    /**
+     * {@code parallelMultiple="true"}：同一事件可以重复触发。
+     *
+     * <p>本实现只支持<b>单次触发</b>，所以识别出来是为了报 ERROR 而不是静默按
+     * 单次跑 —— 作者写"每来一次就催一遍"而实际只催一次，是那种几个月后
+     * 才被人发现的偏差。
+     */
+    private boolean parallelMultiple;
+
+    /**
      * 边界事件挂在哪个节点上（{@code attachedToRef}）。
      * 只有 {@link WfNodeType#BOUNDARY_EVENT} 会用。
      */
@@ -198,6 +222,22 @@ public class WfNode implements Serializable {
     /** 这个边界事件是否由定时器触发。 */
     public boolean isTimerBoundary() {
         return timerType != null;
+    }
+
+    public boolean isNonInterrupting() {
+        return nonInterrupting;
+    }
+
+    public void setNonInterrupting(boolean nonInterrupting) {
+        this.nonInterrupting = nonInterrupting;
+    }
+
+    public boolean isParallelMultiple() {
+        return parallelMultiple;
+    }
+
+    public void setParallelMultiple(boolean parallelMultiple) {
+        this.parallelMultiple = parallelMultiple;
     }
 
     /** 消息边界（{@code messageEventDefinition}）。 */

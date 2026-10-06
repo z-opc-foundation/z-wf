@@ -248,15 +248,15 @@ class WfMessageBoundaryTest {
     // ==================== 部署期 ====================
 
     @Test
-    @DisplayName("非中断型边界在部署期被拒，不静默降级成中断型")
-    void nonInterruptingRejectedAtDeployTime() {
-        String nonInterrupting = BPMN.replace(
+    @DisplayName("并行多触发（parallelMultiple）仍被拒：只支持单次触发，不能静默按单次跑")
+    void parallelMultipleRejectedAtDeployTime() {
+        String repeated = BPMN.replace(
                 "<boundaryEvent id=\"cancelBoundary\" attachedToRef=\"approve\">",
-                "<boundaryEvent id=\"cancelBoundary\" attachedToRef=\"approve\" cancelActivity=\"false\">");
+                "<boundaryEvent id=\"cancelBoundary\" attachedToRef=\"approve\" parallelMultiple=\"true\">");
         WfDefinitionException e = assertThrows(WfDefinitionException.class,
-                () -> repository.deployXml(nonInterrupting, "cancelProcess"));
-        assertTrue(e.getMessage().contains("非中断") || e.getMessage().contains("cancelActivity"),
-                "报错要说清是不支持非中断。实际: " + e.getMessage());
+                () -> repository.deployXml(repeated, "cancelProcess"));
+        assertTrue(e.getMessage().contains("parallelMultiple"),
+                "报错要说清是重复触发。实际: " + e.getMessage());
     }
 
     @Test
@@ -270,12 +270,18 @@ class WfMessageBoundaryTest {
     }
 
     @Test
-    @DisplayName("解析器读得到 messageRef / signalRef，并识别非中断标记")
+    @DisplayName("解析器读得到 messageRef / signalRef，以及 cancelActivity / parallelMultiple")
     void parserReadsEventDefinitions() {
         WfDefinition cancel = new WfXmlParser().parse(BPMN);
         assertEquals("cancel", cancel.node("cancelBoundary").getMessageName());
         assertTrue(cancel.node("cancelBoundary").isMessageBoundary());
         assertFalse(cancel.node("cancelBoundary").isTimerBoundary());
+        // 不写 cancelActivity 就是中断型：不写与写 true 必须落在同一个值上，
+        // 否则「作者没写」和「作者显式写了 false」会在下游被当成两回事
+        assertFalse(cancel.node("cancelBoundary").isNonInterrupting(),
+                "没写 cancelActivity 时默认为中断型");
+        assertFalse(cancel.node("cancelBoundary").isParallelMultiple(),
+                "没写 parallelMultiple 时默认为单次触发");
 
         WfDefinition sig = new WfXmlParser().parse(SIGNAL_BPMN);
         assertEquals("urgent", sig.node("urgencyBoundary").getSignalName());

@@ -82,6 +82,12 @@ class WfDefinitionRoundTripTest {
             + "    <callActivity id=\"ca\" name=\"子流程调用\" zifang:resultVariable=\"rv\">\n"
             + "      <calledElement>other</calledElement>\n"
             + "    </callActivity>\n"
+            + "    <boundaryEvent id=\"urgeBoundary\" attachedToRef=\"call\""
+            + " cancelActivity=\"false\" parallelMultiple=\"true\">\n"
+            + "      <timerEventDefinition>\n"
+            + "        <timeDuration>PT10M</timeDuration>\n"
+            + "      </timerEventDefinition>\n"
+            + "    </boundaryEvent>\n"
             + "    <userTask id=\"colSign\" name=\"部门领导会签\""
             + " zifang:assignee=\"${leader}\">\n"
             + "      <multiInstanceLoopCharacteristics isSequential=\"true\">\n"
@@ -173,6 +179,17 @@ class WfDefinitionRoundTripTest {
                     + ": elementVariable 丢了 ⇒ 办理表达式 ${leader} 取不到值，"
                     + "派出来的待办没有办理人且不报错");
             assertTrue(colSign.isSequential(), who + ": isSequential 丢了");
+
+            // cancelActivity / parallelMultiple 是边界事件的两个属性，
+            // 与"事件定义"无关 —— 漏掉它们时边界仍会被挂上订阅、仍会触发，
+            // 只是行为悄悄从中断变成非中断（或反过来），从外面看不出编译或校验错误
+            WfNode urge = reloaded.node("urgeBoundary");
+            assertTrue(urge.isNonInterrupting(), who
+                    + ": nonInterrupting 丢了 ⇒ JDBC 部署的流程里这个提醒会变成"
+                    + "把人打断，而内存实现的测试全绿");
+            assertTrue(urge.isParallelMultiple(), who
+                    + ": parallelMultiple 丢了 ⇒ 校验器不再拦它，"
+                    + "而运行期只支持单次触发");
 
             WfNode call = reloaded.node("call");
             assertEquals("com.x.Y", call.getDelegateClass(), who);

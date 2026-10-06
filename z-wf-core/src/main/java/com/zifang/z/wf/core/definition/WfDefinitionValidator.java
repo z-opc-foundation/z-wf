@@ -563,17 +563,25 @@ public class WfDefinitionValidator {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
                     "边界事件上: " + eventConflict + "。一个边界事件只能挂一种触发条件");
         }
-        // 非中断型：部署期挡住而不是运行时当成中断型执行。
-        // 静默降级的后果是"任务被打断走了"，而作者写的是"任务照常办、分支并行跑"——
-        // 流程行为与设计永久不一致，且没有任何报错。
-        Object nonInterrupting = node.getProperties() == null
-                ? null : node.getProperties().get(WfXmlParser.PROPERTY_NON_INTERRUPTING);
-        if (nonInterrupting != null) {
+        // 重复触发：识别出来是为了报 ERROR，不是静默按单次跑。
+        // 作者写"每来一次就催一遍"而实际只催一次 —— 那种偏差几个月后才被发现，
+        // 而且从流程图上看不出任何异常
+        if (node.isParallelMultiple()) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
-                    "非中断型边界事件（cancelActivity=\"false\"）本实现不支持。"
-                            + "非中断要求宿主任务照常办理、补偿分支并行推进，"
-                            + "而 token 离开宿主节点时会把该节点的订阅与待办一起撤掉，"
-                            + "需要另一套状态来保持订阅存活。请改用中断型（默认）");
+                    "边界事件的 parallelMultiple=\"true\"（重复触发）本实现不支持。"
+                            + "本实现只支持单次触发的边界事件：触发一次后订阅即作废。"
+                            + "静默按单次跑的后果是「每来一次就催一遍」变成「只催一遍」，"
+                            + "且流程图上看不出任何异常。要重复提醒请用循环定时器"
+                            + "（timeCycle），或在外部按周期重复投递消息");
+        }
+        // 非中断型没有出线时，新起的那条 token 无处可去：它会永远停在这个边界节点上，
+        // 而宿主的流程看起来一切正常 —— 一条永远等下去且没人管的分支
+        if (node.isNonInterrupting() && definition.outgoingFlows(node.getId()).isEmpty()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "非中断型边界事件 " + node.getId() + " 没有任何出线。"
+                            + "非中断触发时引擎会另起一条 token 从它出发，"
+                            + "没有出线这条 token 会永远停在这里 —— 流程表面正常，"
+                            + "实际多了一条没人管、也永远等不到的分支");
         }
         Object missingRef = node.getProperties() == null
                 ? null : node.getProperties().get(WfXmlParser.PROPERTY_EVENT_MISSING_REF);

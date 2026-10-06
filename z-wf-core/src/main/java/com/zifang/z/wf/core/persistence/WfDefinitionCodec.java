@@ -141,6 +141,8 @@ public final class WfDefinitionCodec {
         private boolean sequential;
         private String loopAssignees;
         private String errorCode;
+        private boolean nonInterrupting;
+        private boolean parallelMultiple;
         private String attachedToRef;
         private String timerType;
         private String timerExpression;
@@ -369,6 +371,22 @@ public final class WfDefinitionCodec {
             this.errorCode = errorCode;
         }
 
+        public boolean isNonInterrupting() {
+            return nonInterrupting;
+        }
+
+        public void setNonInterrupting(boolean nonInterrupting) {
+            this.nonInterrupting = nonInterrupting;
+        }
+
+        public boolean isParallelMultiple() {
+            return parallelMultiple;
+        }
+
+        public void setParallelMultiple(boolean parallelMultiple) {
+            this.parallelMultiple = parallelMultiple;
+        }
+
         public String getAttachedToRef() {
             return attachedToRef;
         }
@@ -566,6 +584,8 @@ public final class WfDefinitionCodec {
             gn.setSequential(node.isSequential());
             gn.setLoopAssignees(node.getLoopAssignees());
             gn.setErrorCode(node.getErrorCode());
+            gn.setNonInterrupting(node.isNonInterrupting());
+            gn.setParallelMultiple(node.isParallelMultiple());
             gn.setAttachedToRef(node.getAttachedToRef());
             gn.setTimerType(node.getTimerType() == null ? null : node.getTimerType().name());
             gn.setTimerExpression(node.getTimerExpression());
@@ -658,6 +678,8 @@ public final class WfDefinitionCodec {
             node.setSequential(gn.isSequential());
             node.setLoopAssignees(gn.getLoopAssignees());
             node.setErrorCode(gn.getErrorCode());
+            node.setNonInterrupting(gn.isNonInterrupting());
+            node.setParallelMultiple(gn.isParallelMultiple());
             node.setAttachedToRef(gn.getAttachedToRef());
             // 枚举名不认识时保持 null（= 非定时器边界）而不抛：
             // 老库里的定义被新版读、或反之，都不该让引擎整体起不来

@@ -145,7 +145,7 @@
 | `callActivity` | ✅ | 本轮修好 `resultExpression` 死字段（解析了但从不求值），并拆出 `resultVariable`；被调流程启动失败不再被吞掉 |
 | **嵌入式 `subProcess`** | ❌ | **内联内容永远不执行。** 解析器把内联节点收进扁平表，引擎却直接穿透。现在部署期报 ERROR 挡住，可用 callActivity 代替 |
 | **`multiInstance`**（会签/或签/计数） | ✅ | 并行与串行都已实现，三种展开方式二选一或组合：`loopCardinality`（作者写死个数）/ **`collection` 集合迭代（第 11 轮补上，实例数由集合大小决定）** / **`isSequential="true"` 逐个串行（第 11 轮补上）**，加 `completionCondition` 即或签与计数会签。`elementVariable` 把集合当前元素绑成局部变量（绑**原值**，`loopAssignee` 仍给字符串形式）。**两个易错处都做了 fail-closed**：集合取不到 / 不是集合 ⇒ 停成内部终止而不是当空集合放行（后者会让整个会签节点被静默跳过）；串行下集合中途变短 ⇒ 报错停住而不是少办几个人。**剩余**：`collection` 的下标 EL（`${approvers[loopCounter]}`，见下）、多实例嵌套 |
-| `boundaryEvent` | 🟡 | **错误边界**：`<errorEventDefinition errorRef>` + `WfRuntimeService#handleBpmnError` + `BpmnError`。**定时器边界**：`<timerEventDefinition>` + Job 执行器。**消息/信号边界**：`<messageEventDefinition messageRef>` / `<signalEventDefinition signalRef>`，token 一进入宿主节点就作为订阅挂在 `ZWF_JOB` 上，`triggerMessage`（点对点）/ `broadcastSignal`（广播）到达时**打断**在办的流程：宿主待办作废、token 走补偿分支。非中断型（`cancelActivity="false"`）**部署期报 ERROR**（需要另一套订阅存活状态，不做半套） |
+| `boundaryEvent` | 🟡 | **错误边界**：`<errorEventDefinition errorRef>` + `WfRuntimeService#handleBpmnError` + `BpmnError`。**定时器边界**：`<timerEventDefinition>` + Job 执行器。**消息/信号边界**：`<messageEventDefinition messageRef>` / `<signalEventDefinition signalRef>`，token 一进入宿主节点就作为订阅挂在 `ZWF_JOB` 上，`triggerMessage`（点对点）/ `broadcastSignal`（广播）到达时**打断**在办的流程：宿主待办作废、token 走补偿分支。**非中断型（`cancelActivity="false"`）第 12 轮补上**：宿主 token 一步不动、待办不撤，**另起一条 token** 从边界出发走补偿分支，两条在下游汇合点碰头 —— 这就是"超时只提醒、不打断审批"。**剩余**：`parallelMultiple="true"`（重复触发，仍报 ERROR，见下） |
 | **`intermediateCatchEvent`** | 🟡 | ✅ 已实现（消息 / 信号 / **定时器**三种事件定义）：token 停在该节点挂一条 `EVENT_MESSAGE` / `EVENT_SIGNAL` / `EVENT_TIMER` 订阅，**不建人工待办** —— 它等的是消息不是某个人，退化成待办的话事件网关就变成"让 N 个人同时点"。**也支持不经网关的普通用法**（流程里直接写、等消息继续），此时只前进自己不与任何分支互斥。**定时器捕获只支持作为事件网关的分支**（**本轮补上**）：孤立的定时器捕获事件仍报 ERROR —— 它要的是另一条"到点就往下走"的续跑路径，本引擎没有，挂上去会得到永不响也不报错的哑表。**剩余**：`conditionalEventDefinition` / `escalationEventDefinition` / `linkEventDefinition` |
 | `intermediateThrowEvent` | ❌ | **部署期报 ERROR**（见 §4），并建议改用等价的 `sendTask` |
 | `eventBasedGateway` | 🟡 | ✅ 已实现：token 分叉到各中间捕获事件，**谁的事件先到就走谁，其余分支连同各自的订阅一并作废**（落选分支在轨迹上留 `eventGatewayLost` 一条）。竞速的兄弟集合从**流程定义**反查（捕获事件唯一入线的源头就是网关），不另存副本。订阅用 `EVENT_MESSAGE`/`EVENT_SIGNAL`/**`EVENT_TIMER`** 三种 job 类型，与消息/信号/定时器**边界**订阅分开 —— 后者是打断，前者是竞速，混用时触发路径必须去猜而猜错的后果是流程静默走错分支。**定时器分支本轮补上**：到点即算它赢，其余分支作废。**剩余**：`conditionalEventDefinition` 分支 |
@@ -291,7 +291,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 |---|---|---|
 | 1 | ~~**多实例（会签/或签/计数）**~~ | ✅ **并行 + 串行 + `collection` 集合迭代均已实现**（第 11 轮）。剩余：变量下标 EL（引擎侧限制）、多实例嵌套 |
 | 2 | ~~**变量服务**~~ | ✅ 本轮已补（`WfVariableService` + REST `GET/POST /api/wf/process/variables`）。剩余缺口：变量实例查询、类型化变量、变量作用域链（execution 级） |
-| 3 | ~~**BPMN 错误事件 + `handleBpmnError`**~~ | ✅ 本轮已实现（错误边界）。剩余：escalation / compensation / 超时与消息边界 |
+| 3 | ~~**BPMN 错误事件 + `handleBpmnError`**~~ | ✅ 本轮已实现（错误边界）。剩余：escalation / compensation |
 | 4 | ~~**边界事件 + 定时器 + Job 执行器**~~ | ✅ **已实现**：定时器 / 错误 / 消息 / 信号 / 外部 / 异步前置 / 异步后置七种共用 `ZWF_JOB` 一个载体，靠 `JOB_TYPE` 区分；事件网关的定时器分支（第 10 轮）也接上了同一个执行器。**剩余**：循环定时器 `timeCycle`、异步 job 优先级 |
 
 ### P1 —— 引擎成熟度
@@ -309,8 +309,8 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 605 个测试兜着
-- 从测试与审计中逼出并修复的**真实缺陷 34 项**，其中 4 项属于"能力看着在、实际不生效"：
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 620 个测试兜着
+- 从测试与审计中逼出并修复的**真实缺陷 35 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **本轮（变量实例查询）写出 3 个自己造的缺陷，都在流出前抓住**，但其中两个的形态值得记：
   ① **派生视图的 id 在 setter 之前就拼好了**。`base()` 回头去读视图上的
@@ -755,3 +755,67 @@ B 上的 `loopCounter` 被丢掉，**每一轮都读到 0、每轮都建第 1 �
 **新补的一条自检**：断言里凡是给「互不相同 / 非空 / 大于 0」的，
 先问「把取值换成它的字符串形式，这个断言还会过吗」。
 会过 ⇒ 它分不清「拿到了对象」与「拿到了对象的描述」。
+
+### 本轮反向验证记录（非中断型边界事件）
+
+13 条变异，**13 红**。逐条在**独立 worktree**（`/tmp/z-wf-rv12`）里跑，跑完逐文件与源目录
+`diff` 确认无残留。
+
+| 变异 | 结果 | 被哪条判据抓住 |
+|---|---|---|
+| M1 非中断退化成中断 | 🔴 8 | `hostTaskSurvivesTheTrigger` / `hostTokenDoesNotMove` |
+| M2 非中断也作废宿主待办 | 🔴 6 | 同上 + 两条汇合用例 |
+| M3 分支 token 与宿主无父子关系 | 🔴 5 | `branchTokenIsParentedToTheHost` + 两条汇合用例 |
+| M4 分支 token 不登记进 context | 🔴 3+3 | `hostTokenDoesNotMove` 等 |
+| M5 分支 token 落在宿主节点上 | 🔴 7 | `boundaryVisitIsRecordedOnTheTrail` 等 |
+| M6 触发后不重判实例终态 | ⚪ **绿 → 见下** | — |
+| M7 `parallelMultiple` 不再报 ERROR | 🔴 2 | 两条部署期用例 |
+| M8 非中断没有出线不再报 ERROR | ⚪ **绿 → 已修判据** | — |
+| M9 parser 漏读 `cancelActivity` | 🔴 9 | 全部非中断用例 |
+| M10 codec 丢掉 `nonInterrupting` 的拷贝 | ⚪ **绿 → 已修判据** | — |
+| M11 codec 丢掉 `parallelMultiple` 的拷贝 | ⚪ **绿 → 已修判据** | — |
+| M12 触发时不写评论 | ⚪ **绿 → 已修判据** | — |
+
+**M6 那一格：该调用可证明是空转，所以改的是代码不是判据。**
+反向验证把我引向 `resolveCompletion`，读它发现开头就是"还有任何一条活跃 token 就早退" ——
+而这条路径上宿主那条**必然**还活着（前面那道闸门刚确认过它停在宿主节点上，
+否则这里已经 `return` 了）。所以那个调用在任何输入下都不可能改变实例状态。
+⇒ 删掉它，并把注释改成**真实的**理由（为什么这条路径不需要重判、中断型为什么需要）。
+⇒ 这是「变异打不红」的第四种成因：**被测代码本身没有可观测行为**。
+与前三种（判据没区分力 / 没编译过 / 没打上）并列，归因时别忘了先问一句
+「这段代码在这个输入下**可能**有效果吗」。
+
+**另外三格都是判据缺口，其中两格是同一类**：
+
+- **M8**：断言写的是"报错里含'出线'"。可删掉 f3 之后**别的**规则也会报错
+  （`remind` 变得不可达之类），于是这条断言因错误的原因通过。
+  ⇒ 断言要挑**只有这一条规则会说**的词：改成"非中断"。
+  **「断言错误消息」不等于「断言到了正确的那条错误」** ——
+  多条规则共用的措辞会让判据对错误来源没有区分力。
+- **M10 / M11**：`WfDefinitionCodec` 的缺口在**内存实现上验不到** ——
+  `InMemoryWorkflowPersistence` 的深拷贝走的是 **Java 序列化**（`copy` 方法），
+  压根不经过 codec。而本轮新写的 `boundaryFlagsSurviveRoundTrip` 用的是内存实现，
+  于是它对 codec 缺口**零区分力**。
+  ⇒ codec 往返的断言只能放在 `WfDefinitionRoundTripTest`（那里同时跑 JDBC 与内存，
+  **JDBC 那套才真的过 codec**）。已在 `RICH_BPMN` 里加了一个
+  `cancelActivity="false" parallelMultiple="true"` 的边界并断言两个取值。
+  ⇒ 与第 11 轮同一条教训的延续：**任何"存进去再取回来"的判据，都要先确认
+  被测的那条存储路径真的被走到了**。内存实现能过不代表 JDBC 能过，反之亦然。
+  新测试的 `@DisplayName` 与注释已改成如实说明"这条验不到 codec"，并指向正确的地方。
+- **M12**：轨迹断言查的是**活动实例**（由 `leave()` 记），而 `WfComment` 是另一个产物 ——
+  把写评论那行删掉，轨迹照样在，测试照样全绿，那行就成了无人验证的代码。
+  ⇒ 补了一条独立断言（评论里要出现边界事件 id）。
+  ⇒ **同一个动作留下的每一种产物都要各有一条断言**：轨迹、评论、job 状态、
+  token 状态是四条独立的数据，验了一条不等于验了其余。
+
+**判据设计上的一处补强**（M1 一条就抓了 8 条用例）：
+
+"宿主待办还在"这件事，除断言"待办数 == 1"外，还断言了**待办的办理人没变**、
+**宿主 token 仍停在 `approve` 上**、以及一条**对照用例**（同一张图去掉
+`cancelActivity`，中断型必须作废宿主待办）。最后那条最要紧：
+它证明非中断与中断**确实走了不同的分支** ——
+若两者行为相同，前面所有断言就都只是在复述"流程跑通了"。
+
+M12 之外还发现并修掉一处**注释说了假话**：`fireNonInterruptingBoundary` 末尾原本写着
+"汇合判定可能因为这条分支到达而放行后续，实例状态要跟着重新判一次"，
+而那个重判在这条路径上永远早退。

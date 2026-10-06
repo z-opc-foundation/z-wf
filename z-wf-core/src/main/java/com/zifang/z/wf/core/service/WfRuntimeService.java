@@ -1267,6 +1267,18 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
                 instance.getId(), "system", "job",
                 reason + "，触发边界事件 " + boundary.getId()));
+
+        // 非中断型：宿主 token 一步都不动，另起一条从边界出发的并行分支
+        if (boundary.isNonInterrupting()) {
+            log.info("流程 {} 节点 {} 上触发**非中断型**边界事件 {}：宿主照常办理，"
+                            + "另起一条并行分支",
+                    instance.getId(), job.getAttachedToRef(), boundary.getId());
+            fireNonInterruptingBoundary(contextForError(instance, definition, execution, null),
+                    instance, definition, execution, boundary, job, reason);
+            fireJobExecuted(definition, instance.getId(), job, true);
+            return instance;
+        }
+
         log.info("流程 {} 节点 {} 被 {} 打断，触发边界事件 {}",
                 instance.getId(), job.getAttachedToRef(), reason, boundary.getId());
 
@@ -1289,6 +1301,61 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         // 历史还没记），于是"这个 job 触发后流程走到哪了"这类统计永远差一步
         fireJobExecuted(definition, instance.getId(), job, true);
         return instance;
+    }
+
+    /**
+     * 触发<b>非中断型</b>边界事件：宿主 token 一步都不动，另起一条并行分支。
+     *
+     * <p>与中断型的差别只有"这条 token 从哪来"：
+     * <ul>
+     *   <li>中断型：把宿主那条 token <b>搬到</b>边界事件上，宿主待办作废
+     *       （见 {@link #fireEventBoundary}）。</li>
+     *   <li>非中断型：宿主 token 继续停在宿主节点上等人办，
+     *       <b>另建</b>一条 token 停在边界事件上，沿边界自己的出线走下去。</li>
+     * </ul>
+     * 两条 token 随后在下游的汇合点碰头 —— 汇合判定认不认得它们是"同一批"，
+     * 靠的是新 token 的 {@code parentId} 指回宿主那条（见 {@code WfEngine#samePeer}，
+     * 它把"一方是另一方的父"也算同批）。
+     *
+     * <p>新 token 挂在宿主那条<b>之下</b>（parentId 指回它），不是为了表示从属，
+     * 而是为了让汇合判定认得它们是"同一批"：{@code WfEngine#samePeer} 把
+     * "一方是另一方的父"也算同批。挂成兄弟反而不行 —— 那样在汇合点
+     * {@code allSiblingsArrived} 找不到彼此，两条 token 会各自穿过去，
+     * 出现两条并行的后续路径。
+     *
+     * <p>没有出线的情况由校验器挡住：那种定义会让这条 token 永远停着。
+     */
+    private void fireNonInterruptingBoundary(WfContext context, WfProcessInstance instance,
+                                             WfDefinition definition, WfExecution hostToken,
+                                             WfNode boundary, WfJob job, String reason) {
+        WfExecution branch = new WfExecution(idGenerator.nextExecutionId(),
+                instance.getId(), boundary.getId());
+        branch.setActivityId(boundary.getId());
+        branch.setEnteredTime(new Date());
+        branch.setState(WfExecution.State.ACTIVE);
+        branch.setParentId(hostToken.getId());
+        branch.setChild(true);
+        // 进上下文之前登记：汇合判定读的是 context.getProcessExecutions()，
+        // 而宿主那条必须在里面（它就是这条分支要等的兄弟）
+        context.addNewExecution(branch);
+
+        // 结论交给 leave() 写成唯一那条记录（见 WfContext#pendingActivityOutcome）：
+        // 不在这里单独 recordActivity，那会让边界事件在轨迹上出现两行
+        context.setPendingActivityOutcome(reason);
+        context.setCurrentExecution(branch);
+        try {
+            engine.startFrom(context, branch);
+        } finally {
+            context.setCurrentExecution(hostToken);
+        }
+        persistAll(context);
+        // 刻意**不**调 resolveCompletion：它在"还有任何一条活跃 token"时就早退，
+        // 而这条路径上宿主那条必然还活着（上面那道闸门刚确认过它停在宿主节点上，
+        // 否则这里已经 return 了）。所以那个调用在这里可证明是空转 ——
+        // 留着它加一句"以防万一"的注释，比不写更糟：它会让人以为实例终态
+        // 是靠这一行判出来的。
+        // 真正需要重判终态的是**中断型**那条路（那边会结束宿主 token），
+        // 它在 fireEventBoundary 末尾调了。
     }
 
     /**
