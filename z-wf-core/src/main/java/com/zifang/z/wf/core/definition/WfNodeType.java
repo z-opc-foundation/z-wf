@@ -47,6 +47,19 @@ public enum WfNodeType {
     /** 接收任务：等待外部消息触发后继续。 */
     RECEIVE_TASK("receiveTask"),
 
+    /**
+     * 中间抛出事件：token 抵达即把一条信号/消息投递出去，然后<b>自己继续往下走</b>。
+     *
+     * <p>它是<b>发布方</b>，与 {@link #RECEIVE_TASK}（订阅方）、消息/信号边界（拦截方）
+     * 是三种不同的等待语义。穿透是它与 {@code serviceTask} 的共同点，
+     * 区别在于 {@code serviceTask} 要业务方实现 delegate，而抛事件由引擎自己投递。
+     *
+     * <p>此前本引擎把它当"不支持的元素"在部署期挡掉（第 4 轮改的：宁可部署失败，
+     * 也不要静默退化成人工任务）。现在它有了引擎侧的真实语义 ——
+     * 一份真实的 Camunda 流程里出现 throwEvent 时，本引擎能直接部署并正确执行。
+     */
+    THROW_EVENT("intermediateThrowEvent"),
+
     /** 排他网关：按顺序求值条件，只走第一条成立的连线。 */
     EXCLUSIVE_GATEWAY("exclusiveGateway"),
 
@@ -253,7 +266,7 @@ public enum WfNodeType {
                 SEND_TASK.bpmnName, RECEIVE_TASK.bpmnName, EXCLUSIVE_GATEWAY.bpmnName,
                 PARALLEL_GATEWAY.bpmnName, INCLUSIVE_GATEWAY.bpmnName,
                 COMPLEX_GATEWAY.bpmnName, EVENT_BASED_GATEWAY.bpmnName,
-                INTERMEDIATE_CATCH_EVENT.bpmnName,
+                INTERMEDIATE_CATCH_EVENT.bpmnName, THROW_EVENT.bpmnName,
                 SUB_PROCESS.bpmnName, CALL_ACTIVITY.bpmnName,
                 TASK.bpmnName,
                 BOUNDARY_EVENT.bpmnName));

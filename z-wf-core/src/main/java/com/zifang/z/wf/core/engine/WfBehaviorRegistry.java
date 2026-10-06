@@ -13,6 +13,7 @@ import com.zifang.z.wf.core.engine.behavior.WfDefaultBehavior;
 import com.zifang.z.wf.core.engine.behavior.WfEndEventBehavior;
 import com.zifang.z.wf.core.engine.behavior.WfGatewayBehavior;
 import com.zifang.z.wf.core.engine.behavior.WfReceiveTaskBehavior;
+import com.zifang.z.wf.core.engine.behavior.WfThrowEventBehavior;
 import com.zifang.z.wf.core.engine.behavior.WfScriptTaskBehavior;
 import com.zifang.z.wf.core.engine.behavior.WfServiceTaskBehavior;
 import com.zifang.z.wf.core.engine.behavior.WfStartEventBehavior;
@@ -56,6 +57,7 @@ public class WfBehaviorRegistry {
         register(WfNodeType.SCRIPT_TASK, new WfScriptTaskBehavior());
         register(WfNodeType.SEND_TASK, new WfServiceTaskBehavior());
         register(WfNodeType.RECEIVE_TASK, new WfReceiveTaskBehavior());
+        register(WfNodeType.THROW_EVENT, new WfThrowEventBehavior());
         register(WfNodeType.EXCLUSIVE_GATEWAY, new WfGatewayBehavior());
         register(WfNodeType.PARALLEL_GATEWAY, new WfGatewayBehavior());
         register(WfNodeType.INCLUSIVE_GATEWAY, new WfGatewayBehavior());

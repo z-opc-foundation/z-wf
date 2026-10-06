@@ -24,7 +24,7 @@ import com.zifang.z.wf.core.service.WfRepositoryService;
  *
  * <p>本类原先拿 {@code <eventBasedGateway>} 当例子，那是因为它当时尚未实现。
  * 事件网关补上之后，改用仍在退化名单里的 {@code <transaction>}；
- * 另有一条 {@code eventBasedGatewayIsNowNative} 守着"已实现的元素不许再被当成退化节点"，
+ * 另有 {@code eventBasedGatewayIsNowNative} 与 {@code intermediateThrowEventIsNowNative} 守着"已实现的元素不许再被当成退化节点"，
  * 免得有人日后把支持列表改回去时，这里也跟着悄悄失效。
  *
  * <p>所以契约是：<b>解析期宽松，部署期严格</b>。解析仍要成功（能读进来才能给出有用的诊断），
@@ -107,14 +107,43 @@ class UnsupportedBpmnElementTest {
     }
 
     @Test
-    @DisplayName("intermediateThrowEvent 给出等价替代建议 sendTask")
-    void intermediateThrowEventSuggestsSendTask() {
+    @DisplayName("intermediateThrowEvent 第 18 轮已原生支持，不再被当成退化节点")
+    void intermediateThrowEventIsNowNative() {
+        // 这条与 eventBasedGatewayIsNowNative 同理：守着"支持列表不许悄悄缩回去"。
+        // 它此前是被当成退化节点挡掉的（第 4 轮的结论）——
+        // 也就是说一份真实的 Camunda 流程里出现 throwEvent 时，本引擎**部署不了**。
+        // 写法错了的症状不是测试变红，而是一份合法的流程被无理由拒绝。
         WfDefinition definition = new WfXmlParser().parse(bpmnWith("intermediateThrowEvent"));
-        assertEquals("intermediateThrowEvent", nodeOf(definition, "x1").unsupportedBpmnElement());
+        assertEquals(WfNodeType.THROW_EVENT, nodeOf(definition, "x1").getType());
+        assertNull(nodeOf(definition, "x1").unsupportedBpmnElement(),
+                "抛事件已是原生类型，不能再被当成退化节点拦下来");
+        // 但它没有事件引用时仍然报 ERROR —— 那是另一回事（抛不出东西），不是"不支持"
         String rendered = WfDefinitionValidator.render(
                 new WfDefinitionValidator().validate(definition));
-        assertTrue(rendered.contains("sendTask"),
-                "抛出型中间事件与 sendTask 确实等价，应给出替代建议：" + rendered);
+        assertTrue(rendered.contains("没有任何事件定义"),
+                "原生但没配事件引用，与不支持是两回事，要分开说：" + rendered);
+        // 断言的是「没有把它当成不支持的元素」，**不是**「rendered 里不许出现 sendTask」——
+        // 本引擎在"没配事件引用"时本来就会建议改用 sendTask，那是另一条提示，
+        // 用字符串包含去判会把自己写的提示当成失败。
+        assertTrue(!rendered.contains("暂无等价节点") && !rendered.contains("本引擎不支持"),
+                "已有原生实现，不该再按「不支持的元素」处理：" + rendered);
+        assertNull(nodeOf(definition, "x1").unsupportedBpmnElement());
+    }
+
+    @Test
+    @DisplayName("transaction / adHocSubProcess 仍给出替代建议 subProcess")
+    void unsupportedSubProcessLikeStillSuggestsSubProcess() {
+        // 抛事件被实现之后，退化名单只剩 transaction / adHocSubProcess。
+        // 它们与 subProcess 的等价关系成立，所以仍要给建议 —— 别把这条一起删掉。
+        for (String elementTag : new String[]{"transaction", "adHocSubProcess"}) {
+            WfDefinition definition = new WfXmlParser().parse(bpmnWith(elementTag));
+            assertEquals(elementTag, nodeOf(definition, "x1").unsupportedBpmnElement(),
+                    elementTag + " 仍是退化节点");
+            String rendered = WfDefinitionValidator.render(
+                    new WfDefinitionValidator().validate(definition));
+            assertTrue(rendered.contains("subProcess"),
+                    elementTag + " 与 subProcess 等价，应给出替代建议：" + rendered);
+        }
     }
 
     @Test

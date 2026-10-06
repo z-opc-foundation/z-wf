@@ -313,6 +313,16 @@ public class WfDefinitionValidator {
             validateCatchEvent(definition, id, node, definition.incomingFlows(id));
         }
 
+        // ---- 中间抛出事件 ----
+        // 放在图形状校验这一层：它要同时看节点自身与挂在它上面的边界事件
+        for (String id : ids) {
+            WfNode node = definition.node(id);
+            if (node == null || node.getType() != WfNodeType.THROW_EVENT) {
+                continue;
+            }
+            validateThrowEvent(definition, id, node);
+        }
+
         // ---- 孤立节点 ----
         for (String id : ids) {
             WfNode node = definition.node(id);
@@ -393,6 +403,47 @@ public class WfDefinitionValidator {
                                 + "指向别的节点意味着该分支不会挂订阅、不会等事件，"
                                 + "会在分叉当场直接跑完 —— 那是「三条全走」而不是「三选一」");
             }
+        }
+    }
+
+    /**
+     * 中间抛出事件：必须抛得出东西，且不能挂边界事件。
+     *
+     * <p><b>必须给事件引用</b>：没有 {@code signalRef} 也没有 {@code messageRef} 时，
+     * 节点在运行期会抛异常。若放到部署期不管，一份"抛了个空"的流程能部署成功，
+     * 跑到那一步才炸 —— 而作者看到的是"部署没问题"，排查方向会先跑到引擎上去。
+     *
+     * <p><b>不得挂边界事件</b>：抛事件是<b>穿透</b>的 —— token 抵达即投出去并继续往下走，
+     * 它在这个节点上不会停留。BPMN 允许给中间事件挂边界事件，
+     * 但挂上去的边界会找一个"宿主 token"，而这条 token 在抛完就走了：
+     * 结果是订阅挂上、永远不触发，且流程图上看不出任何异常。
+     */
+    private void validateThrowEvent(WfDefinition definition, String id, WfNode node) {
+        boolean hasSignal = !isBlank(node.getSignalName());
+        boolean hasMessage = !isBlank(node.getMessageName());
+        if (!hasSignal && !hasMessage) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "中间抛出事件 " + id + " 没有任何事件定义（signalEventDefinition / "
+                            + "messageEventDefinition），它抛不出任何东西。"
+                            + "要发通知给业务方，请改用 sendTask + delegate");
+        }
+        if (hasSignal && hasMessage) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "中间抛出事件 " + id + " 同时配了 signalRef=" + node.getSignalName()
+                            + " 与 messageRef=" + node.getMessageName()
+                            + "。两者语义不同（广播 / 点对点），本引擎不挑一个生效 —— "
+                            + "请拆成两个连续节点");
+        }
+        for (WfNode boundary : definition.eventBoundariesOf(id)) {
+            String boundaryId = boundary.getId();
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "中间抛出事件 " + id + " 上挂了边界事件 " + boundaryId
+                            + "。抛事件是**穿透**的：token 抵达即投递并继续往下走，"
+                                    + "不会在本节点停留。边界事件需要一个停在宿主上的 token，"
+                                    + "挂上去只会得到一个永远不触发的哑订阅，"
+                                    + "且流程图上看不出任何异常。"
+                                    + "要「抛出去的同时也可能被打断」，"
+                                    + "请把抛事件与被打断的节点分开画");
         }
     }
 
@@ -963,15 +1014,17 @@ public class WfDefinitionValidator {
      * 拿 {@code exclusiveGateway} 顶替它不是简化，是把一个"多路事件竞速"换成
      * "在顺序条件里选一条"，作者照着提示改反而会得到一个更难发现的错误流程。
      * 没有等价物时如实说"暂无"，比给个像模像样的错答案可靠。
+     *
+     * <p><b>这里只列还真的会走到的元素</b>。原名单里的 {@code intermediateThrowEvent}
+     * 与 {@code intermediateCatchEvent} 已分别在第 18 / 7 轮有了原生实现 ——
+     * 原生类型不会再被标记成退化元素，于是这两个分支永远不会被调用。
+     * 留着它们不是"以防万一"，而是一条<b>走不到、但一旦被改回标记就会给出错误建议</b>的路径：
+     * 对已经原生支持的元素说"请改用 sendTask"，作者照着改就把一份能跑的流程改坏了。
      */
     private static String substitutionHint(String elementName) {
         String key = elementName == null ? "" : elementName.trim();
         String replacement;
-        if ("intermediateThrowEvent".equals(key)) {
-            replacement = "sendTask";
-        } else if ("intermediateCatchEvent".equals(key)) {
-            replacement = "receiveTask";
-        } else if ("transaction".equals(key) || "adHocSubProcess".equals(key)) {
+        if ("transaction".equals(key) || "adHocSubProcess".equals(key)) {
             replacement = "subProcess";
         } else {
             return " 本引擎暂无等价节点，请改写流程或等待该元素被支持。";

@@ -87,6 +87,22 @@ public class WfContext {
     }
 
     /**
+     * 登记一条待投递的抛事件。
+     *
+     * <p>登记而不是当场投递，理由写在 {@link WfPendingEvent} 的类注释里：
+     * behavior 处在单实例事务内部，当场投会被外层的回写覆盖掉（丢更新，且不报错）。
+     */
+    public void addPendingEvent(WfPendingEvent event) {
+        if (event != null) {
+            pendingEvents.add(event);
+        }
+    }
+
+    public List<WfPendingEvent> getPendingEvents() {
+        return pendingEvents;
+    }
+
+    /**
      * token 刚进入某个节点，为挂在这个节点上的每个定时器边界起一个 job。
      *
      * <p><b>起算点是"进入本节点这一刻"而不是流程启动时刻</b>：
@@ -245,6 +261,9 @@ public class WfContext {
      * 本次推进中被修改过的既有 token（需要在推进后重新落库）。
      */
     private final List<WfExecution> touchedExecutions = new ArrayList<>();
+
+    /** 本次推进里 intermediateThrowEvent 登记的待投递事件。 */
+    private final List<WfPendingEvent> pendingEvents = new ArrayList<>();
 
     /**
      * 装入本实例全部 token（供汇合判定）。

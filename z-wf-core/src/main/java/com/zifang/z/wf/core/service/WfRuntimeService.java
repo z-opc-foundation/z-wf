@@ -23,6 +23,7 @@ import com.zifang.z.wf.core.engine.WfContext;
 import com.zifang.z.wf.core.engine.WfEngine;
 import com.zifang.z.wf.core.engine.WfIdGenerator;
 import com.zifang.z.wf.core.engine.WfMultiInstance;
+import com.zifang.z.wf.core.engine.WfPendingEvent;
 import com.zifang.z.wf.core.engine.WfSubProcessLauncher;
 import com.zifang.z.wf.core.hook.WfHookDispatcher;
 import com.zifang.z.wf.core.model.WfActivityInstance;
@@ -57,6 +58,33 @@ import com.zifang.z.wf.core.persistence.WfTaskQuery;
 public class WfRuntimeService implements WfSubProcessLauncher {
 
     private static final Logger log = LoggerFactory.getLogger(WfRuntimeService.class);
+
+    /**
+     * 一次事务收口里最多投递多少条抛事件。
+     *
+     * <p>正常流程里 0–2 条。超过这个数说明两个流程在互相抛事件、彼此唤醒，
+     * 那是流程设计问题：引擎该停下来并说清楚，而不是把线程耗死。
+     */
+    private static final int MAX_PENDING_EVENT_DRAIN = 100;
+
+    /**
+     * 待投递事件的队列。<b>按线程隔离</b>（不是 service 字段上的共享队列）。
+     *
+     * <p>为什么按线程：投递是<b>同步嵌套</b>的 —— {@code deliverPendingEvent} 里调的
+     * {@code broadcastSignal} 会一路走到别的流程的 {@code finishTransaction}，
+     * 那时它是内层调用。用 service 上的共享字段就得再加一把锁，
+     * 而锁的粒度与嵌套深度绑在一起，越想越容易漏。
+     * 按线程各管各的，嵌套调用自然落在同一个队列里，语义直白得多。
+     *
+     * <p>也正因为同线程共享，这个队列是「**本次调用链的**待发事件」而不是全局的：
+     * 请求结束后它必为空（发完或抛异常时清空），不会把事件带到下一次请求里。
+     */
+    private final ThreadLocal<List<WfPendingEvent>> pendingEventQueue =
+            ThreadLocal.withInitial(ArrayList::new);
+
+    /** 当前线程的投递嵌套深度：0 表示"我就是那个 drainer"。 */
+    private final ThreadLocal<int[]> pendingDrainDepth =
+            ThreadLocal.withInitial(() -> new int[1]);
 
     /** 子实例 id 在父流程变量里的存放前缀，键为 callActivity 节点 id。 */
     public static final String SUB_INSTANCE_PREFIX = "__wf_sub_";
@@ -235,7 +263,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
 
         // ---- 4. 落库 ----
         persistAll(context);
-        resolveCompletion(context);
+        finishTransaction(context);
 
         // ---- 5. 后置钩子 ----
         hookDispatcher.fireAfterStart(definition.getKey(), instance.getId(), instance.getVariables());
@@ -393,7 +421,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         }
 
         persistAll(context);
-        resolveCompletion(context);
+        finishTransaction(context);
         return instance;
     }
 
@@ -481,7 +509,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                 // 会签未收口：把本 token 停在本节点，流程不往下走
                 execution.setState(WfExecution.State.WAITING);
                 persistAll(context);
-                resolveCompletion(context);
+                finishTransaction(context);
                 recordActivityComplete(instance, definition, task, execution, userId, comment);
                 return instance;
             }
@@ -490,7 +518,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         if (execution != null) {
             engine.advance(context);
             persistAll(context);
-            resolveCompletion(context);
+            finishTransaction(context);
         } else {
             // 找不到 token：说明 token 状态与任务状态已经不一致（多为并发或数据损坏）。
             // 记 ERROR 并仍然保存实例，避免"任务已完成但变量没带上"的静默不一致。
@@ -1398,7 +1426,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                 boundary.getType().bpmnName(), "error:" + errorCode);
         engine.startFrom(context, execution);
         persistAll(context);
-        resolveCompletion(context);
+        finishTransaction(context);
         log.info("流程 {} 的错误 [{}] 已路由到边界事件 {}",
                 instance.getId(), errorCode, boundary.getId());
         return instance;
@@ -1590,7 +1618,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         context.setPendingActivityOutcome(reason);
         engine.startFrom(context, execution);
         persistAll(context);
-        resolveCompletion(context);
+        finishTransaction(context);
         // 通知放在落库之后：钩子实现方常拿 processInstanceId 去查实例与轨迹，
         // 放在 persistAll 之前它读到的是推进前的旧状态（token 还在宿主节点上、
         // 历史还没记），于是"这个 job 触发后流程走到哪了"这类统计永远差一步
@@ -1821,7 +1849,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         context.setPendingActivityOutcome(reason);
         engine.startFrom(context, token);
         persistAll(context);
-        resolveCompletion(context);
+        finishTransaction(context);
         fireJobExecuted(definition, instance.getId(), job, true);
         return true;
     }
@@ -2017,7 +2045,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         context.setAuthenticatedUserId(workerId);
         engine.startFrom(context, token);
         persistAll(context);
-        resolveCompletion(context);
+        finishTransaction(context);
         return instance;
     }
 
@@ -2087,7 +2115,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             engine.resumeLeave(context, token);
         }
         persistAll(context);
-        resolveCompletion(context);
+        finishTransaction(context);
         fireJobExecuted(definition, instance.getId(), job, true);
         log.info("流程 {} 的异步{} job {} 已续跑，token 位于 {}",
                 instance.getId(), before ? "前置" : "后置", job.getId(), token.getActivityId());
@@ -2260,7 +2288,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         // 用 leave 会直接沿它的出线跳过去 —— "迁到人工节点却没有待办"
         engine.enterAt(context, execution);
         persistAll(context);
-        resolveCompletion(context);
+        finishTransaction(context);
     }
 
     /**
@@ -2584,6 +2612,175 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      * 引擎内部做这个判断不可靠 —— 它看不见别的请求建的 token 与任务，
      * 而那正是多节点部署下的常态。
      */
+    /**
+     * 事务收口：判完成 → 投递本次推进登记的抛事件 → 必要时刷新调用方持有的实例快照。
+     *
+     * <p><b>所有推进路径都必须走这一个方法</b>，而不是各自在末尾调
+     * {@link #resolveCompletion}。理由是"抛事件的投递"必须紧跟在落库之后，
+     * 而推进路径有十来条（启动 / 办结 / 迁移 / 边界触发 / 异步续跑 / 外部任务 …），
+     * 逐条各写一遍迟早会漏掉某一条 —— 漏掉的那条症状是
+     * 「这条路径上抛的事件从来没送出去」，而流程看上去完全正常。
+     */
+    private void finishTransaction(WfContext context) {
+        resolveCompletion(context);
+        boolean hadEvent = !context.getPendingEvents().isEmpty();
+        drainPendingEvents(context);
+        if (hadEvent) {
+            WfProcessInstance self = context.getProcessInstance();
+            if (self != null && self.getId() != null) {
+                refreshInstanceInPlace(self);
+            }
+        }
+    }
+
+    /**
+     * 把 {@code intermediateThrowEvent} 登记的事件真正投出去。
+     *
+     * <p><b>必须在 {@link #persistAll} 之后。</b>behavior 跑在单实例事务内部，
+     * 当场投出去的话，被唤醒的那条会读到尚未落库的旧状态并据此推进，
+     * 随后外层把新状态写回 —— 内层的推进被覆盖，现象是"事件到了但流程没动"，
+     * 而且没有任何异常。
+     *
+     * <p><b>用队列而不是单次 for 循环</b>：投递会推进别的流程实例，
+     * 那条实例里可能又有抛事件。队列让它们在同一个收口里依次发完，
+     * 深度不受嵌套调用限制。上限 {@link #MAX_PENDING_EVENT_DRAIN} 是安全阀：
+     * 互相抛事件的两个流程会无限互相触发，而那属于流程设计问题，
+     * 引擎该在这里停下来并说清楚，而不是把线程耗死。
+     */
+    private void drainPendingEvents(WfContext context) {
+        List<WfPendingEvent> queue = pendingEventQueue.get();
+        queue.addAll(context.getPendingEvents());
+        context.getPendingEvents().clear();
+        if (queue.isEmpty()) {
+            return;
+        }
+        int[] depth = pendingDrainDepth.get();
+        if (depth[0] > 0) {
+            // 内层只入队，直接返回。
+            //
+            // 这一句是关键：**drainer 必须唯一**。若每一层都自己把队列发完，
+            // 那么最内层那次调用会把整个队列清空，外层的 while 循环
+            // 第二次迭代时队列必为空 —— 循环就成了不承重的装饰，
+            // 「只发一批」与「发到空」两种写法给出完全一样的结果。
+            // 让最外层当唯一 drainer，循环才真的决定"发不发得完"。
+            return;
+        }
+        depth[0] = 1;
+        int drained = 0;
+        try {
+            while (!queue.isEmpty()) {
+                if (++drained > MAX_PENDING_EVENT_DRAIN) {
+                    List<String> stuck = new ArrayList<>();
+                    for (WfPendingEvent event : queue) {
+                        stuck.add(event.toString());
+                    }
+                    queue.clear();
+                    throw new WfEngineException("抛事件投递超过上限 " + MAX_PENDING_EVENT_DRAIN
+                            + " 条，通常是两个流程互相抛事件、彼此唤醒。"
+                            + "未投递的: " + stuck
+                            + "。请把其中一个改成接收方（消息/信号边界或中间捕获事件），"
+                            + "或给两个事件名加区分");
+                }
+                deliverPendingEvent(queue.remove(0));
+            }
+        } finally {
+            depth[0] = 0;
+        }
+    }
+
+    private void deliverPendingEvent(WfPendingEvent event) {
+        WfProcessInstance source = event.getSourceProcessInstanceId() == null ? null
+                : persistence.findProcessInstance(event.getSourceProcessInstanceId());
+        String comment = "抛事件节点 " + event.getSourceActivityId()
+                + " 投递" + (event.getKind() == WfPendingEvent.Kind.SIGNAL ? "信号 " : "消息 ")
+                + event.getEventName();
+        if (event.getKind() == WfPendingEvent.Kind.SIGNAL) {
+            List<WfProcessInstance> advanced = broadcastSignalOrNull(event.getEventName(),
+                    source == null ? "system" : source.getStartUserId(),
+                    event.getVariables(), comment);
+            // 唤醒 0 个订阅者**不是错误**：抛事件是"我发出一条事实"，
+            // 有没有人听不改变它该继续往下走。与 triggerMessage 的差别就在这里 ——
+            // 那是查找式调用（"找到并推进那一条"，找不到就是调用方错了），
+            // 这里是发布式动作。为"没人听"留下这一条记录，
+            // 免得它变成一次无人知晓的静默。
+            log.info("{}：唤醒 {} 个订阅者", comment, advanced.size());
+            if (source != null) {
+                persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                        source.getId(), "system", "event", comment
+                                + "（唤醒 " + advanced.size() + " 个订阅者）"));
+            }
+            return;
+        }
+        // 消息是点对点：0 个订阅者同样是正常的（见上），
+        // 但**多于一个**必须报错 —— 投递方必须知道自己的消息被谁接了，
+        // 而三个候选时它不知道。静默挑一个等于把消息投给了错误的单。
+        WfProcessInstance hit = triggerMessageOrNull(event.getEventName(),
+                event.getSourceProcessInstanceId(),
+                source == null ? "system" : source.getStartUserId(),
+                event.getVariables(), comment);
+        log.info("{}：{}", comment, hit == null ? "当前没有订阅者" : "已被 " + hit.getId() + " 接走");
+        if (source != null) {
+            persistence.saveComment(new WfComment(idGenerator.nextCommentId(), source.getId(),
+                    "system", "event", comment
+                            + (hit == null ? "（当前没有订阅者）" : "（已被 " + hit.getId() + " 接走）")));
+        }
+    }
+
+    /**
+     * 消息投递：把 {@link #triggerMessage} 的"零候选即报错"改成"返回 null"。
+     *
+     * <p>不直接改 {@code triggerMessage} 本身 —— 那是查找式入口，
+     * 找不到就报错是对的，改了会让所有外部调用方失去保护。
+     */
+    private WfProcessInstance triggerMessageOrNull(String messageName, String sourceInstanceId,
+                                                   String userId, Map<String, Object> variables,
+                                                   String comment) {
+        try {
+            return triggerMessage(messageName, null, userId, variables, comment);
+        } catch (WfEngineException ex) {
+            if (ex.getMessage() != null && ex.getMessage().contains("没有等待消息")) {
+                return null;
+            }
+            throw ex;
+        }
+    }
+
+    /**
+     * 信号广播：把 {@link #broadcastSignal} 的"零订阅即报错"改成"返回空列表"。
+     *
+     * <p>与 {@link #triggerMessageOrNull} 同一理由：抛事件是发布式动作，
+     * 有没有人听不改变它该继续往下走。改的是**抛事件这条路径**，
+     * 外部调用方用的 {@code broadcastSignal} 仍然零订阅即报错。
+     */
+    private List<WfProcessInstance> broadcastSignalOrNull(String signalName, String userId,
+                                                          Map<String, Object> variables,
+                                                          String comment) {
+        try {
+            return broadcastSignal(signalName, userId, variables, comment);
+        } catch (WfEngineException ex) {
+            if (ex.getMessage() != null && ex.getMessage().contains("没有等待信号")) {
+                return new ArrayList<WfProcessInstance>();
+            }
+            throw ex;
+        }
+    }
+
+    /** 就地刷新：把库里的最新状态写回调用方持有的这个对象。 */
+    private void refreshInstanceInPlace(WfProcessInstance held) {
+        WfProcessInstance fresh = persistence.findProcessInstance(held.getId());
+        if (fresh == null) {
+            return;
+        }
+        held.setStatus(fresh.getStatus());
+        held.setResult(fresh.getResult());
+        held.setEndTime(fresh.getEndTime());
+        held.setStartTime(fresh.getStartTime());
+        held.setSuspendReason(fresh.getSuspendReason());
+        held.setDeleteReason(fresh.getDeleteReason());
+        held.setRevision(fresh.getRevision());
+        held.setVariables(new HashMap<>(fresh.getVariables()));
+    }
+
     private void resolveCompletion(WfContext context) {
         WfProcessInstance instance = context.getProcessInstance();
         if (instance.getStatus() != null && instance.getStatus().isTerminal()) {

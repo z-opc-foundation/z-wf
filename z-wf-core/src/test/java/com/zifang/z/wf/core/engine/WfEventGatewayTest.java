@@ -669,17 +669,23 @@ class WfEventGatewayTest {
     }
 
     @Test
-    @DisplayName("intermediateThrowEvent 被挡在部署期，不许退化成人工任务")
-    void throwEventIsRejected() {
+    @DisplayName("事件网关出线指向抛事件必须报错 —— 抛事件不会挂订阅、不会等")
+    void throwEventIsRejectedAsGatewayBranch() {
+        // 报错的**理由换了，但这条约束本身没变**。
+        // 此前这里报的是"抛事件是退化元素"；第 18 轮抛事件有了原生实现，
+        // 于是它作为网关出线报的是另外两条：它不会挂订阅、以及它没配事件引用。
+        // 两条都指着同一件事：这条分支在分叉当场就跑完了，而作者以为它在等。
         String xml = RACE_BPMN.replace(
                 "<intermediateCatchEvent id=\"waitMsg\" name=\"等主管批\">\n"
                         + "      <messageEventDefinition messageRef=\"bossApprove\"/>\n"
                         + "    </intermediateCatchEvent>",
-                "<intermediateThrowEvent id=\"waitMsg\" name=\"抛事件\"/>")
+                "<intermediateThrowEvent id=\"waitMsg\" name=\"抛事件\">\n"
+                        + "      <messageEventDefinition messageRef=\"bossApprove\"/>\n"
+                        + "    </intermediateThrowEvent>")
                 .replace("id=\"raceProcess\"", "id=\"throwProcess\"");
         List<WfValidationIssue> issues = validate(xml);
-        assertTrue(hasErrorAbout(issues, "intermediateThrowEvent"),
-                "抛事件的语义是主动打断别人，退化成等人来点是另一个流程。实际 " + messages(issues));
+        assertTrue(hasErrorAbout(issues, "intermediateCatchEvent"),
+                "出线类型必须是中间捕获事件。实际 " + messages(issues));
     }
 
     @Test

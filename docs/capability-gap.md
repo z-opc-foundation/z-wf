@@ -147,7 +147,7 @@
 | **`multiInstance`**（会签/或签/计数） | ✅ | 并行与串行都已实现，三种展开方式二选一或组合：`loopCardinality`（作者写死个数）/ **`collection` 集合迭代（第 11 轮补上，实例数由集合大小决定）** / **`isSequential="true"` 逐个串行（第 11 轮补上）**，加 `completionCondition` 即或签与计数会签。`elementVariable` 把集合当前元素绑成局部变量（绑**原值**，`loopAssignee` 仍给字符串形式）。**两个易错处都做了 fail-closed**：集合取不到 / 不是集合 ⇒ 停成内部终止而不是当空集合放行（后者会让整个会签节点被静默跳过）；串行下集合中途变短 ⇒ 报错停住而不是少办几个人。**剩余**：`collection` 的下标 EL（`${approvers[loopCounter]}`，见下）、多实例嵌套 |
 | `boundaryEvent` | 🟡 | **错误边界**：`<errorEventDefinition errorRef>` + `WfRuntimeService#handleBpmnError` + `BpmnError`。**定时器边界**：`<timerEventDefinition>` + Job 执行器。**消息/信号边界**：`<messageEventDefinition messageRef>` / `<signalEventDefinition signalRef>`，token 一进入宿主节点就作为订阅挂在 `ZWF_JOB` 上，`triggerMessage`（点对点）/ `broadcastSignal`（广播）到达时**打断**在办的流程：宿主待办作废、token 走补偿分支。**非中断型（`cancelActivity="false"`）第 12 轮补上**：宿主 token 一步不动、待办不撤，**另起一条 token** 从边界出发走补偿分支，两条在下游汇合点碰头 —— 这就是"超时只提醒、不打断审批"。**剩余**：`parallelMultiple="true"`（重复触发，仍报 ERROR，见下） |
 | **`intermediateCatchEvent`** | 🟡 | ✅ 已实现（消息 / 信号 / **定时器**三种事件定义）：token 停在该节点挂一条 `EVENT_MESSAGE` / `EVENT_SIGNAL` / `EVENT_TIMER` 订阅，**不建人工待办** —— 它等的是消息不是某个人，退化成待办的话事件网关就变成"让 N 个人同时点"。**也支持不经网关的普通用法**（流程里直接写、等消息继续），此时只前进自己不与任何分支互斥。**定时器捕获只支持作为事件网关的分支**（**本轮补上**）：孤立的定时器捕获事件仍报 ERROR —— 它要的是另一条"到点就往下走"的续跑路径，本引擎没有，挂上去会得到永不响也不报错的哑表。**剩余**：`conditionalEventDefinition` / `escalationEventDefinition` / `linkEventDefinition` |
-| `intermediateThrowEvent` | ❌ | **部署期报 ERROR**（见 §4），并建议改用等价的 `sendTask` |
+| `intermediateThrowEvent` | ✅ | **第 18 轮原生实现** `WfNodeType.THROW_EVENT` + `WfThrowEventBehavior`。此前它是「不支持的元素」、部署期报 ERROR（见 §4）—— 也就是说**一份真实的 Camunda 流程里只要出现 throwEvent，本引擎就部署不了**。语义：**token 抵达即把事件投出去，自己继续往下走**（穿透、不建待办、不等待）。与 `serviceTask`/`sendTask` 的共同点是穿透，区别是它由引擎自己投递、不需要业务方实现 delegate。`signalRef` 走广播、`messageRef` 走点对点。**投递必须发生在落库之后** —— behavior 处在单实例事务内部，当场投出去的话，被唤醒的那条读到的是尚未落库的旧状态，内层推进完又被外层回写覆盖，现象是「事件到了但流程没动」且无异常（典型丢更新）。为此把十来条推进路径的收口统一到 `finishTransaction`：判完成 → 投递 → 必要时刷新调用方持有的实例快照。**「没人订阅」不是错误**（抛事件是发布式动作，有没有人听不改变它该继续往下走），但会写一条投递记录（唤醒 N 个）——留痕是「不静默」的兑现方式；**多条候选仍然报错**（点对点必须知道被谁接了）。**支持自唤醒**（流程给自己发信号唤醒自己的另一条分支），靠的是投递后刷新返回的实例快照。部署期三条硬规矩：必须给事件引用、不能同时给两个、**不能挂边界事件**（抛事件是穿透的，边界只会得到一个永不触发的哑订阅） |
 | `eventBasedGateway` | 🟡 | ✅ 已实现：token 分叉到各中间捕获事件，**谁的事件先到就走谁，其余分支连同各自的订阅一并作废**（落选分支在轨迹上留 `eventGatewayLost` 一条）。竞速的兄弟集合从**流程定义**反查（捕获事件唯一入线的源头就是网关），不另存副本。订阅用 `EVENT_MESSAGE`/`EVENT_SIGNAL`/**`EVENT_TIMER`** 三种 job 类型，与消息/信号/定时器**边界**订阅分开 —— 后者是打断，前者是竞速，混用时触发路径必须去猜而猜错的后果是流程静默走错分支。**定时器分支本轮补上**：到点即算它赢，其余分支作废。**剩余**：`conditionalEventDefinition` 分支 |
 | `complexGateway` | 🟡 | ✅ 已实现：按变量**取值**分派（`zifang:caseVariable` + 出线 `zifang:caseValue`），`camunda:caseExpression` 同样识别。**剩余**：Camunda 侧的后置条件（`condition` 元素）、配对/非配对语义差异 |
 | `transaction` / `adHocSubProcess` | ❌ | 同上，报错挡住 |
@@ -255,14 +255,23 @@ intermediateCatchEvent -> TASK   adHocSubProcess -> TASK
 
 改之后：解析期仍然宽松（能读进来才给得出有用诊断），但退化出的节点会带上
 原始元素名，校验器报 **ERROR**，`deploy` 据此拒绝部署。
-等价替代关系会给出建议（`intermediateThrowEvent` → `sendTask`），但
+等价替代关系会给出建议（`transaction` / `adHocSubProcess` → `subProcess`），但
 `eventBasedGateway` 刻意不给——拿 `exclusiveGateway` 顶替它不是简化，
 是把"多路竞速"换成"顺序选一"，照着改会得到更难发现的错流程。
 
+> **第 18 轮更新**：`intermediateThrowEvent` 已原生实现（见 §2），不在退化名单里；
+> 退化名单现在只剩 `transaction` / `adHocSubProcess`。
+> 与之配套，`substitutionHint` 里"抛事件 → 请改用 sendTask"那条分支也一并删掉了 ——
+> 原生类型不会再被标记成退化元素，那条分支**永远走不到**，
+> 而留着它不是"以防万一"，是一条一旦被改回标记就会给出错误建议的路径：
+> 对已经原生支持的元素说"请改用 sendTask"，作者照着改就把一份能跑的流程改坏了。
+> （`intermediateCatchEvent` → `receiveTask` 那条同理，第 7 轮就已成死代码。）
+
 > 本节原先还把 `eventBasedGateway` 与 `intermediateCatchEvent` 列为退化元素。
-> 这两者已实现（见 §2），退化名单换成了 `transaction` / `intermediateThrowEvent` /
-> `adHocSubProcess`；`UnsupportedBpmnElementTest` 里另有一条
-> `eventBasedGatewayIsNowNative` 守着"已实现的元素不许再被当成退化节点"。
+> 这两者已实现（见 §2）；`intermediateThrowEvent` 也在第 18 轮补上，
+> 退化名单现在只剩 `transaction` / `adHocSubProcess`。
+> `UnsupportedBpmnElementTest` 里另有 `eventBasedGatewayIsNowNative` 与
+> `intermediateThrowEventIsNowNative` 两条守着"已实现的元素不许再被当成退化节点"。
 
 ---
 
@@ -317,11 +326,26 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 734 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 745 个测试兜着
 - 从测试与审计中逼出并修复的**真实缺陷 43 项**，其中 6 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发、
   嵌入式 `subProcess` 的内联内容永远不执行、默认流程标记两套实现不一致
-- **本轮（活动实例树）写出 1 个自己造的缺陷、挖出 1 个已发布的真缺陷，都在流出前抓住**：
+- **本轮（`intermediateThrowEvent` 原生实现）没有新缺陷，但逼出两处"够不着的防御"与一处死代码**：
+  ① **投递队列的 `while` 循环原本不承重**。第一版是"共享队列 + 每层都完整 drain"，
+     于是最内层那次调用会把整个队列清空，外层循环第二次迭代时队列必为空 ——
+     「只发一批」与「发到空」两种写法给出**完全一样**的结果。
+     改成"**drainer 必须唯一**（按线程记嵌套深度，最外层当唯一 drainer）"之后，
+     循环才真的决定发不发得完，M05 才转红。
+  ② **投递上限 `MAX_PENDING_EVENT_DRAIN` 目前够不到**。写它的理由是
+     "两个流程互相抛事件会无限触发"，写完才发现本引擎**没有常驻订阅** ——
+     消息 / 信号 / 事件网关分支的订阅在事件到达时就被消费，消息边界的订阅在
+     token 离开宿主节点时就被撤，所以互抛会自然收敛。
+     ⇒ 上限作为安全阀保留（将来若引入常驻订阅会用上），但它**没有判据，也不假装自己有**；
+     判据改成钉住它够不到的那个原因：「互抛在有限步内收敛，最后一轮落在没人订阅上」。
+  ③ `substitutionHint` 里"抛事件 → 请改用 sendTask"已成**死代码**
+     （原生类型不会再被标记成退化元素），连同 `intermediateCatchEvent` 那条一并删掉。
+     ⇒ 留着它们不是"以防万一"，而是一条**走不到、但一旦被改回标记就会给出错误建议**的路径。
+- **第 17 轮（活动实例树）写出 1 个自己造的缺陷、挖出 1 个已发布的真缺陷，都在流出前抓住**：
   ① **顶层 token 挂到根下时忘了写 `parentActivityInstanceId`** ——
      `children` 说"你是根的孩子"、`parentActivityInstanceId` 却是 null，
      调用方没法确定该信哪一个，而往下走树时两种走法会给出不同结果。
@@ -1241,3 +1265,63 @@ Controller 里把 DTO 字段拷进 `WfMessageCorrelation` 的那段有 **6 个�
 ⇒ 改成复用已经取到的 map，并把注释里那句错误前提一并改成实测行为。
 ⇒ **写注释时顺手断言的"既有行为"，要真的去看一眼** ——
 我这条是跑 web 测试时（`不存在的实例，overview 仍返回空对象` 直接红了）才发现的。
+
+### 本轮反向验证记录（`intermediateThrowEvent` 原生实现）
+
+**14 条变异全红 + 2 条对照全绿**，745 个测试，逐类 `@Test` 与 surefire 零差异。
+
+**一、变异脚本自己写了一条"没有实现它名字说的那件事"的变异**（M01 首轮打绿）。
+首轮那条叫「投递发生在落库之前（丢更新）」，实际只调换了
+「投递 vs 完成判定」的先后 —— 而这两步**都在 `persistAll` 之后**，
+压根没碰到它声称要测的「投递早于落库」。
+⇒ 这是归因清单之外的第五种：**变异与它的名字不符**。
+症状和「判据没区分力」一模一样（GREEN），但原因既不是判据也不是实现，
+是补丁本身。
+⇒ 与第 15 轮那条（打完补丁没恢复）同族，归因时**先把补丁和它的描述对一遍**。
+本轮换成真正可测的「投递之后不判定完成」，转红。
+
+**二、判据没区分力，根因是"实现里那段循环不承重"**（M05）。
+变异「队列只发一批」打绿。查下来不是判据弱，是**实现有冗余**：
+第一版是"共享队列 + 每一层都完整 drain"，于是最内层那次调用会把整个队列清空，
+外层 `while` 第二次迭代时队列必为空 —— 两种写法给出完全一样的结果。
+⇒ 修法不是补判据，是**去掉冗余**：改成"drainer 必须唯一"
+（`ThreadLocal` 记嵌套深度，最外层当唯一 drainer），循环才真的决定发不发得完。
+⇒ **打不红时先问「这段代码承重吗」**。不承重的实现不该靠判据救 ——
+判据越补越像是给一段装饰做的见证。
+
+**三、第 0 问第三次落在我自己写的"防御"上**（M06 / M08 / M09 首轮打绿）。
+投递上限、以及 behavior 里"没事件引用 / 同时配两个就报错"那两道闸门，首轮全绿。
+逐条问「这段代码在这个输入下**可能**有效吗」：
+① **上限够不到**：本引擎**没有常驻订阅** —— 消息 / 信号 / 事件网关分支的订阅
+在事件到达时就被消费，消息边界的订阅在 token 离开宿主节点时就被撤。
+所以"两个流程互抛事件"会自然收敛：ping 走过 catch 的那一刻 sigA 就没人等了。
+⇒ 上限作为安全阀保留（将来若引入常驻订阅会用上），**但它没有判据，也不假装自己有**；
+判据改成钉住它够不到的**那个原因**：「互抛在有限步内收敛，最后一轮落在没人订阅上」。
+② **behavior 那两道闸门在端到端路径上不可达**（部署期已经挡住）。
+⇒ 判据改成**直接调 behavior**。这两道闸门与 `WfServiceTaskBehavior` 的
+delegate 解析闸门是同一类：部署期挡住一份，配置期挡住另一份，
+运行期那道挡的是"定义从别处进来、或校验规则以后放宽"。
+
+**四、夹具用链式 replace 写，失败模式是"静默产出一份意思相近但不对的流程"**。
+PONG 夹具原本是从 PING 链式 replace 出来的：第二个 replace 把 catch 与 throw
+里的 `sigA` 一起换掉，第三个又因为实际文本里 `sigB` 后面跟的是 `"/>`
+而不是换行而没匹配上 —— 结果 PONG 变成「等 sigB、抛 sigB」的自环，
+**照样收敛、所有断言照样过**，而它已经不再是对面那个流程了。
+⇒ 显式写出来，并把这段教训写进夹具注释。
+⇒ 与第 15 轮「判据的夹具数据不合法时，测的就不是你想测的那件事」同族。
+
+**五、一个断言自己把提示文本当成了失败**。
+「已有原生实现，不该再劝作者改写」我写成 `!rendered.contains("sendTask")`，
+而我自己的新校验文案里恰恰建议"改用 sendTask"—— 被自己写的提示判失败。
+⇒ 改成断言**语义**（「没有把它当成不支持的元素」）而不是某个字符串不出现。
+⇒ 与第 12 / 15 轮那条「断言错误消息 ≠ 断言到了正确的那条错误」同族：
+**断言的是判别式，不是文案。**
+
+**六、两条既有用例的前提随实现一起失效了，改而不是删**。
+`UnsupportedBpmnElementTest.intermediateThrowEventSuggestsSendTask` 与
+`WfEventGatewayTest.throwEventIsRejected` 断言的都是"抛事件被当成不支持的元素"，
+而这正是本轮改掉的东西。
+⇒ 前者改写成 `intermediateThrowEventIsNowNative`（与 `eventBasedGatewayIsNowNative` 同职责：
+守着"支持列表不许悄悄缩回去"）；后者保留**同一条约束**但换掉理由 ——
+出线指向抛事件仍然报 ERROR，只是现在报的是"它不会挂订阅"与"它没配事件引用"。
+⇒ **约束没变、理由变了**的时候，要改的是断言的理由，不是把约束一起删掉。
