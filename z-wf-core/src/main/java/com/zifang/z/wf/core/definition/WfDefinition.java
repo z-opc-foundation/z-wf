@@ -269,6 +269,52 @@ public class WfDefinition implements Serializable {
     }
 
     /**
+     * 按 link 名找出<b>全部</b>链接捕获事件。
+     *
+     * <p>返回列表而不是单个：同名有多个时"跳哪一个"没有答案，
+     * 而这个答案不该由运行期去猜。校验器据此报 ERROR（一个 throw 只能对应
+     * 一个 catch），运行期则只在确认过唯一之后才调用 {@link #linkTargetOf}。
+     *
+     * <p><b>作用域限定在本定义内</b>，不照抄 Camunda 的引擎级全局匹配：
+     * 全局匹配下"跳去哪里"取决于<b>部署里还有哪些别的流程</b>，删掉那个流程
+     * 这条流程就断了，而图上没有任何东西能提示这一点。名字在定义内唯一，
+     * 这件事才由图本身决定。
+     *
+     * @param linkName link 名（空白按 {@code null} 处理）
+     * @return 命中的捕获事件，保持节点声明顺序；没有命中返回空列表
+     */
+    public List<WfNode> linkCatchesOf(String linkName) {
+        List<WfNode> hits = new ArrayList<>();
+        if (linkName == null || linkName.trim().isEmpty()) {
+            return hits;
+        }
+        String key = linkName.trim();
+        for (WfNode node : nodeNodes()) {
+            if (node.getType() == WfNodeType.LINK_CATCH && key.equals(trimToNull(node.getLinkName()))) {
+                hits.add(node);
+            }
+        }
+        return hits;
+    }
+
+    /**
+     * 链接抛出事件的落点 —— 唯一那一个链接捕获事件。
+     *
+     * @return 落点；没有命中、或命中多个（歧义）时返回 {@code null}，
+     *         由调用方决定报错还是放行。运行期一律当成"定义被绕过"处理
+     *         （见 {@code WfEngine#leave}）：部署期已经把歧义挡掉了，
+     *         走到这里只有一种可能 —— 装配时被绕过了校验。
+     */
+    public WfNode linkTargetOf(String linkName) {
+        List<WfNode> hits = linkCatchesOf(linkName);
+        return hits.size() == 1 ? hits.get(0) : null;
+    }
+
+    private static String trimToNull(String value) {
+        return value == null ? null : value.trim();
+    }
+
+    /**
      * 找出<b>无条件</b>的开始节点 —— 即 {@code startProcessInstanceByKey} 的入口。
      *
      * <p>判定顺序：显式 {@link WfNodeType#START_EVENT} 优先；没有则退化为"无入线的节点"
@@ -342,6 +388,14 @@ public class WfDefinition implements Serializable {
                 // 都会凭空多出第二个无条件入口，部署期报「存在多个无条件开始节点」，
                 // 而作者图上确实只画了一个入口。
                 if (node.getType() == WfNodeType.BOUNDARY_EVENT) {
+                    continue;
+                }
+                // 排除 linkCatchEvent 的理由与上面完全一样，只是成因不同：
+                // 它也天然无入线 —— BPMN 里根本没有一条 sequenceFlow 从图上
+                // 走进 link catch，token 是被 link throw「改道」进来的。
+                // 不排除的话，任何用了 link 事件又没写 startEvent 的定义都会
+                // 凭空多出一个无条件入口，报「存在多个无条件开始节点」。
+                if (node.getType() == WfNodeType.LINK_CATCH) {
                     continue;
                 }
                 if (incomingFlows(node.getId()).isEmpty() && !isEventTriggered(node)) {

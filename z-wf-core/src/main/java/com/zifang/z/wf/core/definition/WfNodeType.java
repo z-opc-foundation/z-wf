@@ -102,6 +102,33 @@ public enum WfNodeType {
      */
     INTERMEDIATE_CATCH_EVENT("intermediateCatchEvent"),
 
+    /**
+     * 链接抛出事件：token 抵达即被<b>改道</b>到同名的 {@link #LINK_CATCH}，
+     * 自己不再沿出线前进。
+     *
+     * <p>它解决的是"跳过一整段图"：{@code move} 是运行期的外部 API（要把令牌
+     * 搬到一个已知节点上），排他网关是<b>分支</b>（在若干出线里选一条），
+     * 两者都替代不了"从图上某处直接落到另一处"。典型用法是循环重试
+     * 与"审批通过就走归档、否则整段跳过"。
+     *
+     * <p><b>与 {@link #THROW_EVENT} 的根本差别</b>：中间抛出事件把事件<b>投出去</b>
+     * 然后自己继续往下走，投递对象是别处；链接抛出事件是把<b>自己这条 token</b>
+     * 搬走，投递对象就是它自己。因此它的出线不会被 token 走过 —— 出线在
+     * BPMN 里允许画出来，但只是图上的摆设。
+     */
+    LINK_THROW("linkThrowEvent"),
+
+    /**
+     * 链接捕获事件：link 的<b>落点</b>，token 从 {@link #LINK_THROW} 跳过来后，
+     * 沿<b>自己</b>的出线继续走。它本身不执行任何动作，也不等待。
+     *
+     * <p>与 {@link #INTERMEDIATE_CATCH_EVENT} 不能合并：后者会建
+     * {@code EVENT_*} 订阅等外部事件，而 link catch 等的是"图上另一个节点"
+     * —— 那个跳转在引擎内部同步完成，根本没有"订阅"这回事。
+     * 复用它会得到一个永远等不到、也不报错的哑订阅。
+     */
+    LINK_CATCH("linkCatchEvent"),
+
     /** 子流程：内嵌一个流程定义（或内联子图）。 */
     SUB_PROCESS("subProcess"),
 
@@ -267,6 +294,7 @@ public enum WfNodeType {
                 PARALLEL_GATEWAY.bpmnName, INCLUSIVE_GATEWAY.bpmnName,
                 COMPLEX_GATEWAY.bpmnName, EVENT_BASED_GATEWAY.bpmnName,
                 INTERMEDIATE_CATCH_EVENT.bpmnName, THROW_EVENT.bpmnName,
+                LINK_THROW.bpmnName, LINK_CATCH.bpmnName,
                 SUB_PROCESS.bpmnName, CALL_ACTIVITY.bpmnName,
                 TASK.bpmnName,
                 BOUNDARY_EVENT.bpmnName));

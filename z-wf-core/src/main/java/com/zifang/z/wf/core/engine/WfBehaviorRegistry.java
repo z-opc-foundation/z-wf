@@ -12,6 +12,7 @@ import com.zifang.z.wf.core.engine.behavior.WfCallActivityBehavior;
 import com.zifang.z.wf.core.engine.behavior.WfDefaultBehavior;
 import com.zifang.z.wf.core.engine.behavior.WfEndEventBehavior;
 import com.zifang.z.wf.core.engine.behavior.WfGatewayBehavior;
+import com.zifang.z.wf.core.engine.behavior.WfLinkCatchBehavior;
 import com.zifang.z.wf.core.engine.behavior.WfReceiveTaskBehavior;
 import com.zifang.z.wf.core.engine.behavior.WfThrowEventBehavior;
 import com.zifang.z.wf.core.engine.behavior.WfScriptTaskBehavior;
@@ -58,6 +59,13 @@ public class WfBehaviorRegistry {
         register(WfNodeType.SEND_TASK, new WfServiceTaskBehavior());
         register(WfNodeType.RECEIVE_TASK, new WfReceiveTaskBehavior());
         register(WfNodeType.THROW_EVENT, new WfThrowEventBehavior());
+        register(WfNodeType.LINK_CATCH, new WfLinkCatchBehavior());
+        // LINK_THROW 刻意**不注册**：它的全部语义是「把 token 改道到 catch」，
+        // 而改道发生在**离开**节点时（见 WfEngine#jumpToLinkCatch），不是进入时。
+        // 进入阶段它不该做任何动作，落到兜底行为（返回 null 直接通过）正是这里要的语义。
+        // 给它再注册一个"什么都不做"的类，只会多出第二份"什么都不做"的写法 ——
+        // 将来若有人照着 catch 注册一行，LINK_THROW 看起来就有了"被实现过"的证据，
+        // 而真正该改的地方（leave 里那道特判）并没有被碰。
         register(WfNodeType.EXCLUSIVE_GATEWAY, new WfGatewayBehavior());
         register(WfNodeType.PARALLEL_GATEWAY, new WfGatewayBehavior());
         register(WfNodeType.INCLUSIVE_GATEWAY, new WfGatewayBehavior());

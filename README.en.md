@@ -61,20 +61,41 @@ extension namespace carries approval semantics that standard BPMN has no slot fo
 
 `startEvent` · `endEvent` · `userTask` · `serviceTask` · `scriptTask` · `manualTask` ·
 `sendTask` · `receiveTask` · `task` · `exclusiveGateway` · `parallelGateway` ·
-`inclusiveGateway` · `subProcess` · `callActivity` · `boundaryEvent`
+`inclusiveGateway` · `complexGateway` · `eventBasedGateway` ·
+`intermediateCatchEvent` · `intermediateThrowEvent` ·
+`linkThrowEvent` · `linkCatchEvent` ·
+`subProcess` · `callActivity` · `boundaryEvent`
 
 **Unsupported BPMN elements fail loudly at deploy time.** Elements the engine does not
-implement (`eventBasedGateway`, `transaction`, `intermediateCatchEvent`, …) are parsed
-permissively so the file can be read at all, but the resulting node is tagged with its
-original element name and the validator reports an **ERROR**, which blocks `deploy`.
+implement (`transaction`, `adHocSubProcess`, `dataObject`, `escalationEventDefinition`, …)
+are parsed permissively so the file can be read at all, but the resulting node is tagged with
+its original element name and the validator reports an **ERROR**, which blocks `deploy`.
 
-This is deliberate. Silently degrading `eventBasedGateway` to a plain task is not a loss of
+This is deliberate. Silently degrading an event-based gateway to a plain task is not a loss of
 precision — it replaces an automatic event race with "create a task and wait for a human",
 while the definition still deploys cleanly and leaves a `completed` activity record. An
 author and the running process would disagree with no signal at all.
 
 You can override the inferred type per element with `zifang:type`; an explicit override is
 respected and not blocked.
+
+### Link events (skip a whole section of the diagram)
+
+`linkThrowEvent` redirects the token to the `linkCatchEvent` with the same `@name`; from there
+it continues along **the catch's own** outgoing flow. The throw's outgoing flows are never
+followed — note this is the opposite of escalation, whose outgoing flows *are* taken, so the two
+must not be implemented by copying each other.
+
+```xml
+<linkThrowEvent id="jump" name="toArchive"/>
+<linkCatchEvent id="landing" name="toArchive"/>
+```
+
+A link catch has **no incoming flow** by design — that is what makes it a jump target. It is
+also not treated as a process entry point, otherwise every definition that uses links without
+writing a `startEvent` would suddenly report "multiple unconditional start nodes". Pairing is
+scoped to **one process definition** rather than matched engine-wide, so deleting another
+deployed process can never silently break this one.
 
 ### Multi-instance (countersign / any-one / 2-of-3)
 

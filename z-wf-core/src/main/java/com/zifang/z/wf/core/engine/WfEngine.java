@@ -869,6 +869,24 @@ public class WfEngine {
             return;
         }
 
+        // ---- 链接抛出事件：把 token 改道到 catch ----
+        //
+        // 位置在「取出线」**之前**，这一处就是 link 语义的全部要害：
+        // token 离开 throw 事件的方式只有一条 —— 直接出现在 catch 上。
+        // 放在取线之后会让 token 先沿 throw 的出线走一遍、然后才跳，
+        // 于是「跳过一整段图」变成「跑完整段图再跳一遍」，
+        // 作者以为跳过的那段照跑，而图上看不出任何异常。
+        //
+        // 与 escalation 的处置恰好相反（抛出去的 escalation 会让 throw 自己的
+        // 出线也被走掉），所以这两处不能互相参照着改。
+        //
+        // 放在 clearJobsOf 与 asyncAfter **之后**：这两个动作与"下一步去哪"无关，
+        // 而改道要重入 enter()，那会走一遍新的进入序列。顺序不能倒过来。
+        if (node.getType() == WfNodeType.LINK_THROW) {
+            jumpToLinkCatch(context, node, token, depth);
+            return;
+        }
+
         // ---- 网关离开：先记历史，选线由 handleGateway 在进入时已完成 ----
         List<WfFlow> flows = definition.outgoingFlows(node.getId());
         if (flows.isEmpty()) {
@@ -885,6 +903,42 @@ public class WfEngine {
             return;
         }
         followFlows(context, node, token, selected, depth + 1);
+    }
+
+    /**
+     * 链接改道：把 token 从 link 抛出事件搬到同名的 link 捕获事件上。
+     *
+     * <p>与 {@link #enterSubProcess} 是同一种形状（改 activityId 后重入 {@link #enter}），
+     * 但刻意<b>不是</b>同一个方法：两者对"没找到落点"的处置理由完全不同 ——
+     * 内联子流程找不到起点说明容器画空了，link 找不到落点说明图上少画了一个点。
+     * 合成一个方法的话，错误信息只能说出一个模棱两可的版本。
+     *
+     * <p><b>落点找不到时必须停成内部终止，不能挑一个。</b>部署期已经把"找不到 catch"
+     * 与"同名 catch 有多个"都报成 ERROR 了，走到这里只剩一种可能：定义被绕过了
+     * 部署期校验（自定义装配、或直接调引擎）。此时随便挑一个 catch 跳过去，
+     * 症状是流程走进另一条<b>完全正确</b>的分支并正常结束 —— 没有任何报错。
+     */
+    private void jumpToLinkCatch(WfContext context, WfNode node, WfExecution token, int depth) {
+        WfDefinition definition = context.getDefinition();
+        String linkName = node.getLinkName() == null ? null : node.getLinkName().trim();
+        WfNode target = definition.linkTargetOf(linkName);
+        if (target == null) {
+            fail(context, "链接抛出事件 " + node.getId() + " 找不到落点: link 名 ["
+                    + linkName + "] 对应的链接捕获事件在本流程定义 " + definition.getKey()
+                    + " 里"
+                    + (linkName == null || linkName.isEmpty()
+                    ? "不存在（该节点没有 name，而 name 就是 link 名）"
+                    : "找不到，或叫这个名字的 catch 不止一个（多个时「跳到哪一个」没有答案）")
+                    + "。部署期会把这两种情况报成 ERROR，"
+                    + "走到这一步说明流程定义绕过了部署期校验");
+            return;
+        }
+        log.debug("link 改道: {} (link={}) -> {}", node.getId(), linkName, target.getId());
+        token.setActivityId(target.getId());
+        // 与 enterSubProcess 一样重置进入时间：catch 是一个新到达的节点，
+        // 留着 throw 那个时间会让"在 catch 上停了多久"算成"在 throw 上停了多久"
+        token.setEnteredTime(new Date());
+        enter(context, depth + 1);
     }
 
     /**

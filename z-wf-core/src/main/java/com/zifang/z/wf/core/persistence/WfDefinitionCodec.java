@@ -128,6 +128,7 @@ public final class WfDefinitionCodec {
         private String script;
         private String messageName;
         private String signalName;
+        private String linkName;
         private String topic;
         private String caseVariable;
         private boolean asyncBefore;
@@ -273,6 +274,14 @@ public final class WfDefinitionCodec {
 
         public void setSignalName(String signalName) {
             this.signalName = signalName;
+        }
+
+        public String getLinkName() {
+            return linkName;
+        }
+
+        public void setLinkName(String linkName) {
+            this.linkName = linkName;
         }
 
         public String getTopic() {
@@ -571,6 +580,7 @@ public final class WfDefinitionCodec {
             gn.setScript(node.getScript());
             gn.setMessageName(node.getMessageName());
             gn.setSignalName(node.getSignalName());
+            gn.setLinkName(node.getLinkName());
             gn.setTopic(node.getTopic());
             gn.setResultVariable(node.getResultVariable());
             gn.setCaseVariable(node.getCaseVariable());
@@ -665,6 +675,7 @@ public final class WfDefinitionCodec {
             node.setScript(gn.getScript());
             node.setMessageName(gn.getMessageName());
             node.setSignalName(gn.getSignalName());
+            node.setLinkName(gn.getLinkName());
             node.setTopic(gn.getTopic());
             node.setResultVariable(gn.getResultVariable());
             node.setCaseVariable(gn.getCaseVariable());

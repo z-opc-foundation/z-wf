@@ -323,6 +323,10 @@ public class WfDefinitionValidator {
             validateThrowEvent(definition, id, node);
         }
 
+        // ---- 链接事件 ----
+        // 同样在这一层：throw 与 catch 的配对是跨节点的，一个循环里看不到对面。
+        validateLinkEvents(definition, ids);
+
         // ---- 孤立节点 ----
         for (String id : ids) {
             WfNode node = definition.node(id);
@@ -445,6 +449,196 @@ public class WfDefinitionValidator {
                                     + "要「抛出去的同时也可能被打断」，"
                                     + "请把抛事件与被打断的节点分开画");
         }
+    }
+
+    /**
+     * 链接事件（{@code linkThrowEvent} / {@code linkCatchEvent}）的全部部署期校验。
+     *
+     * <p>放这一层而不是节点遍历里：每一条都要看<b>别的</b>节点 —— throw 要查
+     * 有没有对应的 catch，catch 要反查有没有 throw 指向它。同一条问题
+     * （比如"三个 catch 抢同一个名字"）在一个循环里只能报出第一个。
+     *
+     * <p><b>语义基线（与 Camunda 一致）</b>：
+     * <ul>
+     *   <li>配对键是元素自己的 {@code @name}，作用域<b>限定在本流程定义内</b>；
+     *       跨定义的全局匹配会让"跳去哪里"取决于部署里还有哪些别的流程。</li>
+     *   <li>一个 throw 只能对应<b>一个</b> catch；多个 throw 可以汇到同一个 catch。</li>
+     *   <li>token 从 throw 改道到 catch 后，沿 <b>catch 自己</b>的出线走，
+     *       <b>throw 的出线不会被 token 走过</b>。</li>
+     * </ul>
+     *
+     * <p>第三条与 escalation <b>恰好相反</b>（Camunda 的 escalation 文档明写
+     * "if the throwing event has any outgoing sequence flows, they will be taken"），
+     * 所以这两处不能互相参照着写 —— 一旦照抄，link 的出线会被当成有效路径，
+     * 症状是"多跑了一段作者以为跳过了的流程"，且图上完全看不出异常。
+     */
+    private void validateLinkEvents(WfDefinition definition, Set<String> ids) {
+        Map<String, List<WfNode>> catchesByLink = new LinkedHashMap<String, List<WfNode>>();
+        List<WfNode> linkThrows = new ArrayList<WfNode>();
+
+        for (String id : ids) {
+            WfNode node = definition.node(id);
+            if (node == null) {
+                continue;
+            }
+            boolean isThrow = node.getType() == WfNodeType.LINK_THROW;
+            boolean isCatch = node.getType() == WfNodeType.LINK_CATCH;
+            if (!isThrow && !isCatch) {
+                continue;
+            }
+            String label = (isThrow ? "链接抛出事件 " : "链接捕获事件 ") + id;
+
+            // ---- 缺 name：既跳不过去，也跳不过来 ----
+            if (isBlank(node.getLinkName())) {
+                add(WfValidationIssue.Severity.ERROR, id,
+                        label + " 没有 name。链接事件的 name 就是 link 名 —— "
+                                + "throw 靠它找到 catch，catch 靠它被 throw 找到，"
+                                + "两者都没有第二个地方可以配对。"
+                                + (isThrow
+                                ? "token 抵达后无处可去，只能停成内部终止"
+                                : "它不会被任何 token 抵达，它后面的整段流程都不会执行"));
+                continue;
+            }
+            String linkName = node.getLinkName().trim();
+
+            // ---- 不许挂边界事件：两个方向都是穿透的 ----
+            for (WfNode boundary : definition.eventBoundariesOf(id)) {
+                add(WfValidationIssue.Severity.ERROR, id,
+                        label + " 上挂了边界事件 " + boundary.getId()
+                                + "。链接事件是**穿透**的：catch 不停留，"
+                                + "throw 更是瞬间改道。边界事件需要一个停在宿主上的 token，"
+                                + "挂上去只会得到一个永远不触发的哑订阅，"
+                                + "且流程图上看不出任何异常");
+            }
+
+            if (isThrow) {
+                linkThrows.add(node);
+            } else {
+                List<WfNode> bucket = catchesByLink.get(linkName);
+                if (bucket == null) {
+                    bucket = new ArrayList<WfNode>();
+                    catchesByLink.put(linkName, bucket);
+                }
+                bucket.add(node);
+            }
+        }
+
+        // ---- 同名 catch 多个 ----
+        for (Map.Entry<String, List<WfNode>> entry : catchesByLink.entrySet()) {
+            List<WfNode> bucket = entry.getValue();
+            if (bucket.size() > 1) {
+                add(WfValidationIssue.Severity.ERROR, bucket.get(0).getId(),
+                        "link 名 [" + entry.getKey() + "] 对应多个链接捕获事件: "
+                                + join(nodeIdsOf(bucket))
+                                + "。一个链接抛出事件只能跳到一个落点 —— "
+                                + "「跳到哪一个」在此时没有答案，引擎只能去猜，"
+                                + "而猜错的表现是流程走进了另一个完全正确的分支。");
+            }
+        }
+
+        // ---- throw 找不到落点 ----
+        for (WfNode throwNode : linkThrows) {
+            String linkName = throwNode.getLinkName().trim();
+            List<WfNode> bucket = catchesByLink.get(linkName);
+            if (bucket == null || bucket.isEmpty()) {
+                add(WfValidationIssue.Severity.ERROR, throwNode.getId(),
+                        "链接抛出事件 " + throwNode.getId() + " 找不到 link 名 ["
+                                + linkName + "] 对应的链接捕获事件。"
+                                + "本流程里叫这个名字的 catch 一个都没有，跳过去无处可去 —— "
+                                + "这类错误留到运行期只会表现为「某一次执行突然停了」，"
+                                + "而真正的原因是流程图上少画了一个点");
+            }
+        }
+
+        // ---- catch 没人跳过来 ----
+        for (Map.Entry<String, List<WfNode>> entry : catchesByLink.entrySet()) {
+            boolean jumped = false;
+            for (WfNode throwNode : linkThrows) {
+                if (entry.getKey().equals(throwNode.getLinkName().trim())) {
+                    jumped = true;
+                    break;
+                }
+            }
+            if (!jumped) {
+                // WARN 不是 ERROR：设计期"先画好 catch、之后再补 throw"是正常画法，
+                // 而 link catch 被 token 抵达时是穿透的、它不会等任何人，
+                // 所以一个没人跳的 catch 不是"少了一步"，是"后面整段永远不跑"。
+                // 但部署这一刻它尚未真的失效，堵死它会拦住正在画的半成品图。
+                add(WfValidationIssue.Severity.WARN, entry.getValue().get(0).getId(),
+                        "链接捕获事件 " + entry.getValue().get(0).getId()
+                                + "（link 名 [" + entry.getKey() + "]）"
+                                + "没有任何链接抛出事件指向它，token 永远不会抵达，"
+                                + "它后面的整段流程都不会执行。"
+                                + "若本意是「用连线走到这里」，那不该用 link catch");
+            }
+        }
+
+        // ---- catch 的入线 / 出线 ----
+        for (String id : ids) {
+            WfNode node = definition.node(id);
+            if (node == null || node.getType() != WfNodeType.LINK_CATCH) {
+                continue;
+            }
+            String label = "链接捕获事件 " + id;
+            List<WfFlow> ins = definition.incomingFlows(id);
+            if (ins != null && !ins.isEmpty()) {
+                // 报 ERROR 而不是 WARN：token 只由 link 改道进入 catch，
+                // 那条连线**永远不会被 token 走过**，于是它上游的整段流程
+                // 静默失效 —— 作者以为会跑，实际一次都没跑过。
+                // 这比「出线是摆设」严重得多，后者至少不隐藏一整段流程。
+                add(WfValidationIssue.Severity.ERROR, id,
+                        label + " 有入线（来自 " + join(sourceRefsOf(ins))
+                                + "）。token 只能由链接抛出事件改道进入 catch，"
+                                + "这条连线永远不会被走过，它上游的整段流程一次都不会执行，"
+                                + "且流程图上完全看不出异常。"
+                                + "要那条路径真的生效，请直接用 sequenceFlow 接到这个节点上、"
+                                + "改用普通任务，而不是保留一个 link catch");
+            }
+            if (definition.outgoingFlows(id).isEmpty()) {
+                add(WfValidationIssue.Severity.ERROR, id,
+                        label + " 没有出线。token 从 throw 跳过来后无处可去，"
+                                + "流程会在这里直接结束 —— 而作者图上画的是"
+                                + "「跳到这一段」，不是「跳到终点」");
+            }
+        }
+
+        // ---- throw 的出线：允许画着，但不走 ----
+        for (String id : ids) {
+            WfNode node = definition.node(id);
+            if (node == null || node.getType() != WfNodeType.LINK_THROW) {
+                continue;
+            }
+            List<WfFlow> outs = definition.outgoingFlows(id);
+            if (outs == null || outs.isEmpty()) {
+                continue;
+            }
+            add(WfValidationIssue.Severity.WARN, id,
+                    "链接抛出事件 " + id + " 有 " + outs.size()
+                            + " 条出线，但**token 不会走过它们**："
+                            + "link 抛出事件是「把 token 改道到 catch」，"
+                            + "改道之后就在 catch 处沿 catch 自己的出线继续了。"
+                            + "（这与 escalation 恰好相反 —— 抛出去的 escalation "
+                            + "会让 throw 自己的出线也被走掉。）"
+                            + "若本意是「跳过去之后还继续走这一段」，"
+                            + "那不该用 link throw：把这段接在 catch 的出线上");
+        }
+    }
+
+    private List<String> sourceRefsOf(List<WfFlow> flows) {
+        List<String> refs = new ArrayList<String>();
+        for (WfFlow flow : flows) {
+            refs.add(flow.getSourceRef());
+        }
+        return refs;
+    }
+
+    /** 节点 id 清单（诊断信息用，与 {@code WfEngine#idsOf} 同名不同类 —— 那边是运行期的）。 */
+    private List<String> nodeIdsOf(List<WfNode> nodes) {
+        List<String> ids = new ArrayList<String>();
+        for (WfNode node : nodes) {
+            ids.add(node.getId());
+        }
+        return ids;
     }
 
     /**
@@ -1079,8 +1273,9 @@ public class WfDefinitionValidator {
      * 没有等价物时如实说"暂无"，比给个像模像样的错答案可靠。
      *
      * <p><b>这里只列还真的会走到的元素</b>。原名单里的 {@code intermediateThrowEvent}
-     * 与 {@code intermediateCatchEvent} 已分别在第 18 / 7 轮有了原生实现 ——
-     * 原生类型不会再被标记成退化元素，于是这两个分支永远不会被调用。
+     * 与 {@code intermediateCatchEvent} 已分别在第 18 / 7 轮有了原生实现，
+     * {@code linkThrowEvent} / {@code linkCatchEvent} 也在第 22 轮有了原生实现 ——
+     * 原生类型不会再被标记成退化元素，于是这几个分支永远不会被调用。
      * 留着它们不是"以防万一"，而是一条<b>走不到、但一旦被改回标记就会给出错误建议</b>的路径：
      * 对已经原生支持的元素说"请改用 sendTask"，作者照着改就把一份能跑的流程改坏了。
      */

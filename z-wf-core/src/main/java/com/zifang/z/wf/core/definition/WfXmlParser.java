@@ -117,6 +117,11 @@ public class WfXmlParser {
             // "主动打断别人"，退化成"等人来点"是另一个流程
             {"intermediateCatchEvent", "intermediateCatchEvent"},
             {"intermediateThrowEvent", "intermediateThrowEvent"},
+            // 链接事件：配对键是 @name，语义是"把 token 从图上一处搬到另一处"。
+            // 此前它们不在表里，会走未知元素路径 —— 而未知元素不是报错，是
+            // parseNode 里按 TASK 收进来并在部署期报「不支持」。
+            {"linkThrowEvent", "linkThrowEvent"},
+            {"linkCatchEvent", "linkCatchEvent"},
             {"subProcess", "subProcess"},
             {"transaction", "transaction"},
             {"adHocSubProcess", "adHocSubProcess"},
@@ -310,6 +315,18 @@ public class WfXmlParser {
         }
         parseTimerDefinition(element, node);
         parseEventDefinition(element, node);
+
+        // ---- 链接事件：配对键取自元素自己的 @name ----
+        // BPMN 2.0 的 XSD 里 link 事件的 name 既是显示名也是配对键，没有
+        // <linkEventDefinition> 子元素（那是它继承来的抽象基类，实例里不出现）。
+        // 所以这里读 @name 而不是探测子元素。
+        //
+        // 存进 linkName 而不复用上面那个 node.setName(...)：那份是显示用的，
+        // 这一份是引擎配对用的，两个用途不能共用一个槽位（理由见 WfNode#linkName）。
+        // 只在这两个类型上写，其余节点该字段恒为 null —— "属性必须数据真具备"。
+        if (resolved == WfNodeType.LINK_THROW || resolved == WfNodeType.LINK_CATCH) {
+            node.setLinkName(attr(element, "name"));
+        }
 
         node.setDueDateDuration(extension(element, "dueDate"));
 

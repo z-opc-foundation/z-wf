@@ -81,6 +81,19 @@ public class WfNode implements Serializable {
     private String signalName;
 
     /**
+     * 链接名（{@code linkEventDefinition}），对应 BPMN 的 {@code @name}。
+     *
+     * <p><b>不复用 {@link #name}</b>：{@code name} 是"给人看的节点名"，
+     * 在轨迹上、在待办里、在图上显示；{@code linkName} 是"给引擎看的配对键"。
+     * 两者恰好在 link 事件上重合（都来自 XML 的 {@code @name}），但用途完全不同 ——
+     * 一旦复用，将来给 link 事件加一个显示名（很多建模工具会这么做），
+     * 配对关系就跟着改了，而且改得悄无声息。
+     *
+     * <p>只存这两个类型上有值：解析期按类型写入，其余节点该字段恒为 null。
+     */
+    private String linkName;
+
+    /**
      * 外部任务主题名。给了 topic 的 serviceTask 不在引擎里执行，
      * 而是停在这一步等外部 worker 领走。
      *
@@ -710,6 +723,14 @@ public class WfNode implements Serializable {
 
     public void setSignalName(String signalName) {
         this.signalName = signalName;
+    }
+
+    public String getLinkName() {
+        return linkName;
+    }
+
+    public void setLinkName(String linkName) {
+        this.linkName = linkName;
     }
 
     public String getCalledElementKey() {
