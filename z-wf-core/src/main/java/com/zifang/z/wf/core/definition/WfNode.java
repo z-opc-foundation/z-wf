@@ -313,11 +313,38 @@ public class WfNode implements Serializable {
     /**
      * 实例个数：字面量数字或 {@code ${}} 表达式。
      *
-     * <p>不与集合迭代（{@code collection}）二选一：本版只支持按个数展开。
-     * 两者都配时报 ERROR，而不是猜一个用 —— 会签"3 个人"与"3 个候选人"
-     * 在实现上是同一件事，但写错成另一个的作者会拿到一个他没预期的流程。
+     * <p>与集合迭代（{@link #loopCollection}）<b>二选一</b>，两者都配时报 ERROR。
+     * 会签"3 个人"与"3 个候选人"在实现上是同一件事，但写错成另一个的作者
+     * 会拿到一个他没预期的流程 —— 而这里猜不出来该听谁的，所以不猜。
      */
     private String loopCardinality;
+
+    /**
+     * 集合迭代：指向流程变量里的一个集合，逐个元素展开。
+     *
+     * <p>与 {@link #loopCardinality} 二选一。配了它之后<b>实例数由集合大小决定</b>，
+     * 不再由作者手写 —— 这正是"会签部门所有领导"这类流程需要的写法，
+     * 而 {@code loopCardinality} 要求作者先知道人数。
+     *
+     * <p>值可以是 {@code ${变量}} 表达式，也可以直接写变量名。
+     * 求值结果必须<b>是集合或数组</b>；求不出、类型不对都按 fail-closed 报错，
+     * 不当空集合处理 —— 空集合会让流程直接跳过整个会签节点往下走，
+     * 而"取不到人"和"确实没人"在业务上是两件事。
+     */
+    private String loopCollection;
+
+    /**
+     * 集合迭代时，当前元素绑定的<b>局部变量名</b>。
+     *
+     * <p>不配就不绑定元素，只按集合大小展开（退化成"按个数展开"，
+     * 而那个 {@link #loopCardinality} 就能写，不必绕这一圈）。
+     *
+     * <p>绑的是<b>元素原值</b>而不是它的字符串形式：集合里放的是对象时，
+     * 拿到对象才能引用它的字段。与此同时 {@code loopAssignee} 仍然拿到
+     * 字符串形式（{@code String.valueOf(element)}），
+     * 于是 {@code zifang:assignee="${loopAssignee}"} 两种写法都能用。
+     */
+    private String loopElement;
 
     /**
      * 完成条件（会签的判定式）。
@@ -354,6 +381,11 @@ public class WfNode implements Serializable {
      * 实测 z-util 的 EL <b>不支持变量下标</b>（{@code approvers[1]} 可以，
      * {@code approvers[loopCounter]} 抛 ElException）。把索引求值挪到分叉时用
      * Java 做掉，比在表达式引擎里补一个索引解析更可控。
+     *
+     * <p>与 {@link #loopCollection} 的差别只有一处：{@code collection} 还能通过
+     * {@link #loopElement} 把元素<b>原值</b>绑给办理表达式，并且它决定实例数；
+     * 这里只取办理人，实例数仍由 {@link #loopCardinality} 给。
+     * 保留它是因为已有流程定义在用它。
      */
     private String loopAssignees;
 
@@ -416,6 +448,22 @@ public class WfNode implements Serializable {
 
     public void setSequential(boolean sequential) {
         this.sequential = sequential;
+    }
+
+    public String getLoopCollection() {
+        return loopCollection;
+    }
+
+    public void setLoopCollection(String loopCollection) {
+        this.loopCollection = loopCollection;
+    }
+
+    public String getLoopElement() {
+        return loopElement;
+    }
+
+    public void setLoopElement(String loopElement) {
+        this.loopElement = loopElement;
     }
 
     public String getLoopAssignees() {

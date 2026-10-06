@@ -643,17 +643,10 @@ public class WfDefinitionValidator {
     }
 
     /**
-     * 多实例节点校验。
+     * 异步配置的校验：异步与外部任务、多实例的互斥关系。
      *
-     * <p>三条规则都报 ERROR，因为它们各自的失败模式都是"部署成功、运行时出错"：
-     * <ul>
-     *   <li>没有 loopCardinality ⇒ 不知道要造几个实例，运行时才发现</li>
-     *   <li>写了 collection 迭代 ⇒ 本版不支持，运行时才发现</li>
-     *   <li>isSequential=true ⇒ 串行与并行的完成判定不同，运行时才发现</li>
-     *   <li>完成条件里没有标准循环变量 ⇒ 变量名多半写错了 ⇒ fail-closed 判 false
-     *       ⇒ 流程<b>永远</b>等不到"完成"而卡死，且没有任何报错</li>
-     * </ul>
-     * 最后一条是这组规则里最要紧的：它不会立刻失败，它让整个流程静默停住。
+     * <p>都报 ERROR，因为它们共同的失败模式是"部署成功、运行时卡住"：
+     * 排了 job 却没有 worker 会来领它，而流程就在那一格等着，不报错也不动。
      */
     private void validateAsync(WfNode node) {
         if (!node.isAsync()) {
@@ -687,6 +680,20 @@ public class WfDefinitionValidator {
         }
     }
 
+    /**
+     * 多实例节点校验。
+     *
+     * <p>四条规则都报 ERROR，因为它们各自的失败模式都是"部署成功、运行时出错"：
+     * <ul>
+     *   <li>loopCardinality 与 collection 一个都没配 ⇒ 不知道要造几个实例</li>
+     *   <li>两个都配 ⇒ 猜不出来该听谁的，而猜错是"派错了人且不报错"</li>
+     *   <li>配了 elementVariable 却没有 collection ⇒ 元素永远绑不上，
+     *       办理表达式解析成空办理人，且从头到尾不报错</li>
+     *   <li>完成条件里没有标准循环变量 ⇒ 变量名多半写错了 ⇒ fail-closed 判 false
+     *       ⇒ 流程<b>永远</b>等不到"完成"而卡死，且没有任何报错</li>
+     * </ul>
+     * 最后一条是这组规则里最要紧的：它不会立刻失败，它让整个流程静默停住。
+     */
     private void validateMultiInstance(WfNode node) {
         if (!node.isMultiInstance()) {
             return;
@@ -697,19 +704,28 @@ public class WfDefinitionValidator {
                             + "当前节点类型是 " + node.getType().bpmnName());
             return;
         }
-        Object collection = node.property(WfXmlParser.PROPERTY_LOOP_COLLECTION);
-        if (collection != null && !String.valueOf(collection).trim().isEmpty()) {
+        boolean hasCollection = !isBlank(node.getLoopCollection());
+        boolean hasCardinality = !isBlank(node.getLoopCardinality());
+        // 两者都配时报 ERROR 而不是挑一个用：会签"3 个人"与"3 个候选人"
+        // 在实现上是同一件事，作者写错成另一个时猜不出来该听谁的，
+        // 而猜错的表现是"跑了 3 个人，其中 2 个没派对人"——不报错、也看不出来
+        if (hasCollection && hasCardinality) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
-                    "多实例的 collection 集合迭代本版不支持（collection="
-                            + collection + "）。本版按 loopCardinality 展开固定个数，"
-                            + "请改用 loopCardinality");
+                    "多实例的 collection 与 loopCardinality 只能二选一（当前两个都配了："
+                            + "collection=" + node.getLoopCollection().trim()
+                            + "，loopCardinality=" + node.getLoopCardinality().trim()
+                            + "）。前者让实例数由集合大小决定，后者由作者写死个数，"
+                            + "同时给两个无法判断该听谁的");
+        } else if (!hasCollection && !hasCardinality) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "多实例节点缺少 loopCardinality 与 collection，无法确定要展开几个实例。"
+                            + "「固定 3 个人会签」用 loopCardinality，"
+                            + "「部门所有领导会签」用 collection 指向一个人员列表");
         }
-        if (isBlank(node.getLoopCardinality())) {
-            add(WfValidationIssue.Severity.ERROR, node.getId(),
-                    "多实例节点缺少 loopCardinality，无法确定要展开几个实例");
-        } else if (node.getLoopCardinality().trim().matches("\\d+")) {
-            // 字面量个数在部署期就是已知的：超上限要在部署时挡，
-            // 而不是等到运行时一次性造出上亿个 token 把库打满
+        // loopCardinality 是字面量时，实例数在部署期就已知：
+        // 超上限要在部署时挡，而不是等运行时一次性造出上亿个 token 把库打满。
+        // 走表达式或 collection 的拿不到部署期数值，由运行期的同一道闸门兜
+        if (hasCardinality && node.getLoopCardinality().trim().matches("\\d+")) {
             long literal = Long.parseLong(node.getLoopCardinality().trim());
             if (literal > WfEngine.MAX_LOOP_INSTANCES) {
                 add(WfValidationIssue.Severity.ERROR, node.getId(),
@@ -718,11 +734,15 @@ public class WfDefinitionValidator {
                                 + "，拒绝展开（一个手滑的表达式不该把内存和数据库同时打满）");
             }
         }
-        if (node.isSequential()) {
+        // elementVariable 只在配了 collection 时才有意义：没有集合就没有"当前元素"。
+        // 放过它的话，办理表达式里的 ${那个名字} 会因 fail-closed 取不到值，
+        // 派出来的待办没有办理人，且从头到尾不报错
+        if (!isBlank(node.getLoopElement()) && !hasCollection) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
-                    "多实例的 isSequential=true（逐个串行）本版不支持。"
-                            + "串行与并行的完成判定不同，半套实现比不做更危险，"
-                            + "请改成并行（去掉 isSequential）");
+                    "多实例配了 elementVariable=" + node.getLoopElement().trim()
+                            + " 却没有 collection：没有集合就没有「当前元素」，"
+                            + "这个变量永远取不到值，办理表达式 ${" + node.getLoopElement().trim()
+                            + "} 会解析成空办理人且不报错。elementVariable 只能与 collection 搭配");
         }
         String condition = node.getCompletionCondition();
         if (condition != null && !condition.trim().isEmpty()

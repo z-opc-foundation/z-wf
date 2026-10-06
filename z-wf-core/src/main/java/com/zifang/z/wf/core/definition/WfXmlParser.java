@@ -44,10 +44,6 @@ import org.w3c.dom.NodeList;
  */
 public class WfXmlParser {
 
-    /** {@link WfNode#getProperties()} 里记录 collection 元素文本的键。
-     *  只用于识别"作者写了集合迭代"，以便校验器给出可操作的拒绝理由。 */
-    public static final String PROPERTY_LOOP_COLLECTION = "zifang:loopCollection";
-
     /**
      * {@code timerEventDefinition} 里同时出现了多个子元素时记在这里。
      *
@@ -283,8 +279,12 @@ public class WfXmlParser {
             node.setSequential("true".equalsIgnoreCase(loop.getAttribute("isSequential")));
             node.setLoopCardinality(childText(loop, "loopCardinality"));
             node.setCompletionCondition(childText(loop, "completionCondition"));
-            // collection / elementVariable 暂不支持，识别出来是为了给出可操作的报错
-            node.getProperties().put(PROPERTY_LOOP_COLLECTION, childText(loop, "collection"));
+            // collection 与 loopCardinality 二选一（校验器会拦下同时配的情况）。
+            // elementVariable 只在配了 collection 时才有意义：它给当前元素起名，
+            // 办理表达式靠 ${那个名字} 引用。collection 单独配（不配 elementVariable）
+            // 是合法的，语义退化成"按集合大小展开"，不绑元素
+            node.setLoopCollection(childText(loop, "collection"));
+            node.setLoopElement(childText(loop, "elementVariable"));
             // 办理人列表是 zifang 扩展（标准 BPMN 没有对应位置）：
             // 值是流程变量里的一个集合，逐实例派人时用 ${loopAssignee} 引用
             node.setLoopAssignees(extension(element, "loopAssignees"));

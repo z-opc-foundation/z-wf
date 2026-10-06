@@ -144,7 +144,7 @@
 | `exclusiveGateway` / `parallelGateway` / `inclusiveGateway` | ✅ | |
 | `callActivity` | ✅ | 本轮修好 `resultExpression` 死字段（解析了但从不求值），并拆出 `resultVariable`；被调流程启动失败不再被吞掉 |
 | **嵌入式 `subProcess`** | ❌ | **内联内容永远不执行。** 解析器把内联节点收进扁平表，引擎却直接穿透。现在部署期报 ERROR 挡住，可用 callActivity 代替 |
-| **`multiInstance`**（会签/或签/计数） | 🟡 | **本轮补上**：`loopCardinality` + `completionCondition`，任务类节点并行展开。缺 `collection` 集合迭代与 `isSequential` 串行（部署期报 ERROR 挡住，不做半套） |
+| **`multiInstance`**（会签/或签/计数） | ✅ | 并行与串行都已实现，三种展开方式二选一或组合：`loopCardinality`（作者写死个数）/ **`collection` 集合迭代（第 11 轮补上，实例数由集合大小决定）** / **`isSequential="true"` 逐个串行（第 11 轮补上）**，加 `completionCondition` 即或签与计数会签。`elementVariable` 把集合当前元素绑成局部变量（绑**原值**，`loopAssignee` 仍给字符串形式）。**两个易错处都做了 fail-closed**：集合取不到 / 不是集合 ⇒ 停成内部终止而不是当空集合放行（后者会让整个会签节点被静默跳过）；串行下集合中途变短 ⇒ 报错停住而不是少办几个人。**剩余**：`collection` 的下标 EL（`${approvers[loopCounter]}`，见下）、多实例嵌套 |
 | `boundaryEvent` | 🟡 | **错误边界**：`<errorEventDefinition errorRef>` + `WfRuntimeService#handleBpmnError` + `BpmnError`。**定时器边界**：`<timerEventDefinition>` + Job 执行器。**消息/信号边界**：`<messageEventDefinition messageRef>` / `<signalEventDefinition signalRef>`，token 一进入宿主节点就作为订阅挂在 `ZWF_JOB` 上，`triggerMessage`（点对点）/ `broadcastSignal`（广播）到达时**打断**在办的流程：宿主待办作废、token 走补偿分支。非中断型（`cancelActivity="false"`）**部署期报 ERROR**（需要另一套订阅存活状态，不做半套） |
 | **`intermediateCatchEvent`** | 🟡 | ✅ 已实现（消息 / 信号 / **定时器**三种事件定义）：token 停在该节点挂一条 `EVENT_MESSAGE` / `EVENT_SIGNAL` / `EVENT_TIMER` 订阅，**不建人工待办** —— 它等的是消息不是某个人，退化成待办的话事件网关就变成"让 N 个人同时点"。**也支持不经网关的普通用法**（流程里直接写、等消息继续），此时只前进自己不与任何分支互斥。**定时器捕获只支持作为事件网关的分支**（**本轮补上**）：孤立的定时器捕获事件仍报 ERROR —— 它要的是另一条"到点就往下走"的续跑路径，本引擎没有，挂上去会得到永不响也不报错的哑表。**剩余**：`conditionalEventDefinition` / `escalationEventDefinition` / `linkEventDefinition` |
 | `intermediateThrowEvent` | ❌ | **部署期报 ERROR**（见 §4），并建议改用等价的 `sendTask` |
@@ -159,13 +159,26 @@
 | `dataObject` / `dataStore` / 数据关联 | ❌ | |
 | `linkEvent` | ❌ | |
 
-**关于 `multiInstance`**：会签是审批场景的默认需求。本轮已实现并行会签，
-但仍有两处已知限制：
+**关于 `multiInstance`**：会签是审批场景的默认需求，并行与串行都已实现。
+三处需要讲清的设计：
 
-- 不支持 `collection` 集合迭代与 `isSequential` 串行，配置了会在部署期报 ERROR
+- **串行复用同一条 token**（第 11 轮）。任何时刻只有一条实例在办，办结一次就把
+  这条 token 的循环变量推进一格再建下一条任务。为什么不每轮新建 token：串行下
+  「这个节点总共几个实例」**从任务数不出来**（同一时刻只有一条任务，办结的那条
+  还没被下一条取代），计划数只能存在驱动循环的那条 token 上，而它正是随后要
+  继续往下走的那个「当前 token」——换一条就得把它的身份在多处传递下去。
+  由此也拆出了 `isComplete` 里那条「没有在办实例就收口」的兜底：串行套用它会
+  **办完第一个就往下走**。
+- **实例数在进入时冻结，集合本身不冻结**。串行每建一个实例都重新求值一次
+  `collection`，所以冻结一份集合快照会让元素走一遍 JSON 往返
+  （BigDecimal 变 Double、Date 变字符串），第 2 个人拿到的东西和第 1 个人
+  在内存里看到的不一样。代价是「中途加签不加进来」——文档里明确写了这一点。
+  集合中途**变短**则报错停住：实例数定了 3 个却取不到第 3 个，悄悄收口的后果是
+  「以为三个人都批了，其实只批了两个」。
 - **EL 不支持变量下标**：实测 `${approvers[loopCounter]}` 抛 ElException
-  （`${approvers[1]}` 可以）。所以逐实例派不同人靠 `zifang:loopAssignees="${approvers}"`
-  + `zifang:assignee="${loopAssignee}"`，索引在分叉时用 Java 取，不在表达式里做
+  （`${approvers[1]}` 可以）。所以逐实例派不同人靠 `collection` + `elementVariable`
+  （或旧写法 `zifang:loopAssignees`）+ `zifang:assignee="${loopAssignee}"`，
+  索引在分叉时用 Java 取，不在表达式里做
 
 **关于异步的现状**：载体（`WfJob` / `ZWF_JOB` / `WfJobService`）从定时器边界开始就是通用的，
 现在定时器、消息、信号、外部任务、异步前置、异步后置七种都落在同一张表上，靠 `JOB_TYPE` 区分。
@@ -276,10 +289,10 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 | # | 项目 | 理由 |
 |---|---|---|
-| 1 | ~~**多实例（会签/或签/计数）**~~ | ✅ 本轮已实现（并行）。剩余：`collection` 迭代、串行、变量下标 EL |
+| 1 | ~~**多实例（会签/或签/计数）**~~ | ✅ **并行 + 串行 + `collection` 集合迭代均已实现**（第 11 轮）。剩余：变量下标 EL（引擎侧限制）、多实例嵌套 |
 | 2 | ~~**变量服务**~~ | ✅ 本轮已补（`WfVariableService` + REST `GET/POST /api/wf/process/variables`）。剩余缺口：变量实例查询、类型化变量、变量作用域链（execution 级） |
 | 3 | ~~**BPMN 错误事件 + `handleBpmnError`**~~ | ✅ 本轮已实现（错误边界）。剩余：escalation / compensation / 超时与消息边界 |
-| 4 | ~~**边界事件 + 定时器 + Job 执行器**~~ | ✅ **已实现**：定时器 / 错误 / 消息 / 信号 / 外部 / 异步前置 / 异步后置七种共用 `ZWF_JOB` 一个载体，靠 `JOB_TYPE` 区分。**剩余**：循环定时器、异步 job 优先级 |
+| 4 | ~~**边界事件 + 定时器 + Job 执行器**~~ | ✅ **已实现**：定时器 / 错误 / 消息 / 信号 / 外部 / 异步前置 / 异步后置七种共用 `ZWF_JOB` 一个载体，靠 `JOB_TYPE` 区分；事件网关的定时器分支（第 10 轮）也接上了同一个执行器。**剩余**：循环定时器 `timeCycle`、异步 job 优先级 |
 
 ### P1 —— 引擎成熟度
 
@@ -296,8 +309,8 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 586 个测试兜着
-- 从测试与审计中逼出并修复的**真实缺陷 33 项**，其中 4 项属于"能力看着在、实际不生效"：
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 605 个测试兜着
+- 从测试与审计中逼出并修复的**真实缺陷 34 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **本轮（变量实例查询）写出 3 个自己造的缺陷，都在流出前抓住**，但其中两个的形态值得记：
   ① **派生视图的 id 在 setter 之前就拼好了**。`base()` 回头去读视图上的
@@ -682,3 +695,63 @@ SQL 不写 `ORDER BY` 时顺序由存储引擎决定，那里才真的能观察�
 本轮它出现在**建 job / 触发 / 部署期校验 / 订阅视图**四处，
 三份副本的漂移代价已经超过抽出来的收益，于是收进 `WfDefinition`。
 判据是**调用点数**，不是"这段逻辑复不复杂"。
+
+### 本轮反向验证记录（多实例 collection + 串行）
+
+17 条变异，**17 红**。逐条在**独立 worktree**（`/tmp/z-wf-rv11`）里跑，跑完逐文件 `diff`
+确认无残留（`WfDefinitionRoundTripTest` 那一轮备份失败，改为直接与源目录比对确认）。
+
+| 变异 | 结果 | 被哪条判据抓住 |
+|---|---|---|
+| M1 串行误用并行的「在办为 0 就收口」 | 🔴 4+4 | `sequentialDoesNotAdvanceAfterTheFirstOne` 等 |
+| M2 计划实例数读不到就退回按任务数算 | 🔴 4+4 | 同上 |
+| M3 `collection` 取不到时当成空集合 | 🔴 1 | `unresolvableCollectionFailsClosed` |
+| M4 `collection` 不是集合时按单元素凑合 | 🔴 1 | `collectionMustBeACollection` |
+| M5 串行改成每轮新建 token | 🔴 3+1 | `sequentialReusesOneToken` |
+| M6 `elementVariable` 绑字符串而非元素原值 | 🔴 1 | `elementVariableKeepsTheOriginalObject` |
+| M7 上限放大 100 倍 | 🔴 1 | `oversizedCollectionFailsOnEntry` |
+| M8 集合中途变短时悄悄收口 | 🔴 1 | `shrunkenCollectionFailsLoudly` |
+| M9 串行忽略完成条件 | 🔴 1 | `sequentialHonoursCompletionCondition` |
+| M10 `collection` 与 `loopCardinality` 同时配不报错 | 🔴 1 | `collectionAndCardinalityTogetherAreRejected` |
+| M11 `elementVariable` 没有 `collection` 不报错 | 🔴 1 | `elementVariableWithoutCollectionIsRejected` |
+| M12 codec 丢掉 `loopCollection` 的拷贝 | 🔴 1 | `richNodeFieldsSurviveRoundTrip`（**首轮绿**） |
+| M12b codec 丢掉 `loopElement` 的拷贝 | 🔴 1 | 同上（**首轮绿**） |
+| M13 parser 漏读 `collection` | 🔴 11 errors | 全部 `collection` 用例 |
+| M14 parser 漏读 `elementVariable` | 🔴 3 | 元素绑定三条 |
+
+**本轮自己写出来、并被反向验证抓住的一个缺陷**：
+
+**`closeMultiInstanceIfDone` 重新读了一遍 execution，于是同一轮推进里出现了两个
+不同的 execution 对象。** `findExecution` 返回**副本**（与 `findDefinition` 同样），
+调用方手里是副本 A、这个方法里又读了副本 B；而落库写的是 A。于是串行推进时写在
+B 上的 `loopCounter` 被丢掉，**每一轮都读到 0、每轮都建第 1 个实例**。
+症状是「三个人都办了一遍 alice」，且每一步单看都正常。
+
+⇒ 修法是把**对象**传进去而不是传 id 再读一遍。
+⇒ 这与第 10 轮那条「引擎侧闸门判的是启动时手里那个定义对象」是同一族的两个面：
+**副本语义不只影响「读到的内容」，还影响「改了以后谁能落库」。**
+凡是「传 id 进去、在里面重新查」的地方，都要问一句：调用方是不是已经拿着一个对象了？
+
+**两条判据缺口，其中一条是我在上一轮刚学过一次又踩的**：
+
+- **M12/M12b 首轮打不红**：`codecCoversEveryEntityField` 那个反射守卫能抓
+  「字段没进 DTO」，抓不到「字段在 DTO 里、**拷贝语句**没了」——
+  它比的是字段名，而 M12 是把 `gn.setLoopCollection(node.getLoopCollection())`
+  改成传 `null`。⇒ 反射守卫要配**值级断言**才闭环。
+  已在 `RICH_BPMN` 里加了一个用 `collection` + `elementVariable` 的节点并断言取值。
+- **M13 首轮是 `PATCH NOT FOUND`（归因③ 变异压根没打上）**，不是 GREEN：
+  脚本里把 `node.setLoopCollection(...)` 的位置写成了 `WfNode`，
+  而它其实在 `WfXmlParser` 里。补丁没打上时测试当然全绿 ——
+  **这正是「首轮绿」必须逐条归因、不能直接当成判据没区分力的原因。**
+
+**又一条关于「怎么验」的收获**（M6）：
+
+`elementVariable` 该绑**元素原值**还是**字符串**？变异把原值换成
+`String.valueOf(element)`，判据是「用 `${approver.id}` 引用元素字段后，
+待办办理人应当是 alice/bob」。若只断言办理人**非空**或**互不相同**，
+这个变异照样绿 —— 因为字符串形式非空、且各实例仍然不同。
+⇒ 判据必须引用**元素的字段**，才能区分「原值」与「字符串形式」。
+
+**新补的一条自检**：断言里凡是给「互不相同 / 非空 / 大于 0」的，
+先问「把取值换成它的字符串形式，这个断言还会过吗」。
+会过 ⇒ 它分不清「拿到了对象」与「拿到了对象的描述」。

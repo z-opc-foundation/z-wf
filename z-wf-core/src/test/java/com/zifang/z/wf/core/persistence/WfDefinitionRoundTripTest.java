@@ -82,9 +82,17 @@ class WfDefinitionRoundTripTest {
             + "    <callActivity id=\"ca\" name=\"子流程调用\" zifang:resultVariable=\"rv\">\n"
             + "      <calledElement>other</calledElement>\n"
             + "    </callActivity>\n"
+            + "    <userTask id=\"colSign\" name=\"部门领导会签\""
+            + " zifang:assignee=\"${leader}\">\n"
+            + "      <multiInstanceLoopCharacteristics isSequential=\"true\">\n"
+            + "        <collection>${leaders}</collection>\n"
+            + "        <elementVariable>leader</elementVariable>\n"
+            + "      </multiInstanceLoopCharacteristics>\n"
+            + "    </userTask>\n"
             + "    <endEvent id=\"e1\"/>\n"
             + "    <sequenceFlow id=\"f1\" sourceRef=\"s1\" targetRef=\"sub\"/>\n"
-            + "    <sequenceFlow id=\"f2\" sourceRef=\"sub\" targetRef=\"call\"/>\n"
+            + "    <sequenceFlow id=\"f2\" sourceRef=\"sub\" targetRef=\"colSign\"/>\n"
+            + "    <sequenceFlow id=\"f8\" sourceRef=\"colSign\" targetRef=\"call\"/>\n"
             + "    <sequenceFlow id=\"f3\" sourceRef=\"call\" targetRef=\"ca\"/>\n"
             + "    <sequenceFlow id=\"f4\" sourceRef=\"ca\" targetRef=\"e1\"/>\n"
             + "  </process>\n"
@@ -156,6 +164,15 @@ class WfDefinitionRoundTripTest {
             assertEquals("${done}", sub.getCompletionCondition(), who);
             assertEquals("${pool}", sub.getLoopAssignees(), who);
             assertTrue(!sub.isSequential(), who + ": isSequential 丢了");
+
+            WfNode colSign = reloaded.node("colSign");
+            assertEquals("${leaders}", colSign.getLoopCollection(), who
+                    + ": collection 丢了 ⇒ 取回的定义不知道要按几个人展开，"
+                    + "而部署校验会因「既无 loopCardinality 也无 collection」直接拒绝");
+            assertEquals("leader", colSign.getLoopElement(), who
+                    + ": elementVariable 丢了 ⇒ 办理表达式 ${leader} 取不到值，"
+                    + "派出来的待办没有办理人且不报错");
+            assertTrue(colSign.isSequential(), who + ": isSequential 丢了");
 
             WfNode call = reloaded.node("call");
             assertEquals("com.x.Y", call.getDelegateClass(), who);

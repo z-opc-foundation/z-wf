@@ -30,6 +30,26 @@ public final class WfMultiInstance {
     /** 当前实例的办理人，token 局部变量。流程定义里用 {@code ${loopAssignee}} 引用。 */
     public static final String LOOP_ASSIGNEE = "loopAssignee";
 
+    /**
+     * 串行多实例的<b>计划实例数</b>，token 局部变量，进入时写一次。
+     *
+     * <p>只串行需要它，因为串行下"这个节点总共几个实例"<b>从任务数不出来</b>：
+     * 同一时刻只有一条任务在办，办结的那条还没被下一条取代，数任务永远得到 1。
+     * 而"办完几个了"同样数不出来 —— 并行时可以数已 COMPLETED 的任务，
+     * 串行时那一条会被复用。
+     *
+     * <p>所以计划数只能存在<b>驱动这个循环的那条 token</b> 上，而它正是
+     * {@code PLANNED_TOTAL} 的读者与写入者（{@code WfEngine#enterMultiInstance} 写、
+     * {@code WfRuntimeService#closeMultiInstanceIfDone} 读）。存的地方与
+     * 改它的地方是同一个，于是它没有第二个可能不一致的副本 ——
+     * 这与"计数另存一份"的做法在抗漂移上是同一件事，只是载体选得更窄。
+     *
+     * <p>它只冻结<b>个数</b>，不冻结集合本身：元素每次建实例时重新求值，
+     * 免得把用户数据复制进 JSON 往返会改写类型的 Map 里（见
+     * {@code WfEngine#resolveCollection}）。
+     */
+    public static final String PLANNED_TOTAL = "miPlannedTotal";
+
     /** 实例总数，流程级变量。 */
     public static final String NR_OF_INSTANCES = "nrOfInstances";
 
@@ -67,6 +87,21 @@ public final class WfMultiInstance {
         public int getCompleted() {
             return completed;
         }
+    }
+
+    /**
+     * 直接给定三个数的统计 —— <b>只给串行多实例用</b>。
+     *
+     * <p>串行的"实例总数"从任务集合数不出来（同一时刻只有一条任务在办），
+     * 它来自 {@link #PLANNED_TOTAL} 冻在 token 上的计划数。
+     * {@link #stats(List)} 给的 total 是"在办 + 已办"，对并行成立、对串行会永远是 1。
+     *
+     * <p>不把它做成 {@link Stats} 的公开构造器：构造器一公开，
+     * 就等于允许"任何地方都能编一个统计出来"，而这三个数在串行下
+     * 只有一个合法的来源（计划数 + 任务数）。
+     */
+    public static Stats statsOf(int total, int active, int completed) {
+        return new Stats(total, active, completed);
     }
 
     /**
@@ -113,11 +148,25 @@ public final class WfMultiInstance {
     public static boolean isComplete(String completionCondition,
                                      com.zifang.z.wf.core.engine.expression.WfExpressionEvaluator evaluator,
                                      Stats stats, Map<String, Object> variables) {
-        if (completionCondition != null && !completionCondition.trim().isEmpty()
-                && evaluator.evaluateForLoop(variables, completionCondition)) {
+        if (isCompletionConditionMet(completionCondition, evaluator, variables)) {
             return true;
         }
         return stats.getActive() == 0;
+    }
+
+    /**
+     * 只问完成条件本身，不含"没有在办实例就收口"那条兜底。
+     *
+     * <p>拆出来是因为<b>串行不能套用那条兜底</b>：串行下办结一个实例之后，
+     * 下一个还没建，此刻库里的在办任务数就是 0 ——
+     * 而 {@link #isComplete} 判"在办为 0 ⇒ 完成"，套过去会第一个办完就往下走。
+     * 串行该问的是"计划里的几个办完了没有"（见 {@link #PLANNED_TOTAL}）。
+     */
+    public static boolean isCompletionConditionMet(String completionCondition,
+                                                   com.zifang.z.wf.core.engine.expression.WfExpressionEvaluator evaluator,
+                                                   Map<String, Object> variables) {
+        return completionCondition != null && !completionCondition.trim().isEmpty()
+                && evaluator.evaluateForLoop(variables, completionCondition);
     }
 
     /**

@@ -135,6 +135,8 @@ public final class WfDefinitionCodec {
         private String resultVariable;
         private boolean multiInstance;
         private String loopCardinality;
+        private String loopCollection;
+        private String loopElement;
         private String completionCondition;
         private boolean sequential;
         private String loopAssignees;
@@ -321,6 +323,22 @@ public final class WfDefinitionCodec {
 
         public void setLoopCardinality(String loopCardinality) {
             this.loopCardinality = loopCardinality;
+        }
+
+        public String getLoopCollection() {
+            return loopCollection;
+        }
+
+        public void setLoopCollection(String loopCollection) {
+            this.loopCollection = loopCollection;
+        }
+
+        public String getLoopElement() {
+            return loopElement;
+        }
+
+        public void setLoopElement(String loopElement) {
+            this.loopElement = loopElement;
         }
 
         public String getCompletionCondition() {
@@ -542,6 +560,8 @@ public final class WfDefinitionCodec {
             gn.setAsyncAfter(node.isAsyncAfter());
             gn.setMultiInstance(node.isMultiInstance());
             gn.setLoopCardinality(node.getLoopCardinality());
+            gn.setLoopCollection(node.getLoopCollection());
+            gn.setLoopElement(node.getLoopElement());
             gn.setCompletionCondition(node.getCompletionCondition());
             gn.setSequential(node.isSequential());
             gn.setLoopAssignees(node.getLoopAssignees());
@@ -632,6 +652,8 @@ public final class WfDefinitionCodec {
             node.setAsyncAfter(gn.isAsyncAfter());
             node.setMultiInstance(gn.isMultiInstance());
             node.setLoopCardinality(gn.getLoopCardinality());
+            node.setLoopCollection(gn.getLoopCollection());
+            node.setLoopElement(gn.getLoopElement());
             node.setCompletionCondition(gn.getCompletionCondition());
             node.setSequential(gn.isSequential());
             node.setLoopAssignees(gn.getLoopAssignees());

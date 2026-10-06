@@ -326,36 +326,42 @@ class WfMultiInstanceTest {
     }
 
     @Test
-    @DisplayName("isSequential=true 必须报 ERROR，不做半套串行")
-    void sequentialIsRejected() {
+    @DisplayName("collection 与 loopCardinality 同时配必须报 ERROR —— 猜不出来该听谁的")
+    void collectionAndCardinalityTogetherAreRejected() {
+        String xml = counterSignBpmn(null)
+                .replace("<multiInstanceLoopCharacteristics>",
+                        "<multiInstanceLoopCharacteristics>")
+                .replace("<loopCardinality>3</loopCardinality>",
+                        "<loopCardinality>3</loopCardinality>\n"
+                                + "        <collection>${approvers}</collection>");
+        WfDefinition parsed = new WfXmlParser().parse(xml);
+        WfDefinitionException ex = assertThrows(WfDefinitionException.class,
+                () -> repository.deploy(parsed));
+        assertTrue(ex.getMessage().contains("二选一"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("elementVariable 却没有 collection 必须报 ERROR —— 元素永远绑不上")
+    void elementVariableWithoutCollectionIsRejected() {
         String xml = counterSignBpmn(null).replace(
                 "<multiInstanceLoopCharacteristics>",
-                "<multiInstanceLoopCharacteristics isSequential=\"true\">");
+                "<multiInstanceLoopCharacteristics>\n"
+                        + "        <elementVariable>approver</elementVariable>");
         WfDefinition parsed = new WfXmlParser().parse(xml);
         WfDefinitionException ex = assertThrows(WfDefinitionException.class,
                 () -> repository.deploy(parsed));
-        assertTrue(ex.getMessage().contains("isSequential"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("elementVariable"), ex.getMessage());
     }
 
     @Test
-    @DisplayName("collection 集合迭代必须报 ERROR")
-    void collectionIterationIsRejected() {
-        String xml = counterSignBpmn(null).replace(
-                "<loopCardinality>3</loopCardinality>",
-                "<collection>${approvers}</collection>");
-        WfDefinition parsed = new WfXmlParser().parse(xml);
-        WfDefinitionException ex = assertThrows(WfDefinitionException.class,
-                () -> repository.deploy(parsed));
-        assertTrue(ex.getMessage().contains("collection"), ex.getMessage());
-    }
-
-    @Test
-    @DisplayName("缺少 loopCardinality 必须报 ERROR")
+    @DisplayName("loopCardinality 与 collection 一个都没配必须报 ERROR")
     void missingCardinalityIsRejected() {
         String xml = counterSignBpmn(null).replace(
                 "        <loopCardinality>3</loopCardinality>\n", "");
         WfDefinition parsed = new WfXmlParser().parse(xml);
-        assertThrows(WfDefinitionException.class, () -> repository.deploy(parsed));
+        WfDefinitionException ex = assertThrows(WfDefinitionException.class,
+                () -> repository.deploy(parsed));
+        assertTrue(ex.getMessage().contains("loopCardinality"), ex.getMessage());
     }
 
     @Test

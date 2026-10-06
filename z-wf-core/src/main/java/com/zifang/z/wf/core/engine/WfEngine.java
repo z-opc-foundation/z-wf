@@ -1,6 +1,7 @@
 package com.zifang.z.wf.core.engine;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -457,67 +458,152 @@ public class WfEngine {
     }
 
     /**
-     * 进入多实例节点：按 {@code loopCardinality} 展开 N 个实例。
+     * 进入多实例节点：展开 N 个实例。
      *
-     * <p>每个实例是一个<b>独立的 token</b>，各自停在同一节点上、各自建一条任务。
-     * 之所以用独立 token 而不是一条 token 记计数：实例之间会真的并行存在
-     * （三个人同时在办），用一条 token 就没法表达"谁办完了谁没办"。
+     * <p><b>实例数从哪来</b>：{@code loopCardinality}（作者写死的个数）
+     * 或 {@code collection}（集合大小），二选一。
      *
-     * <p>每个 token 带两个<b>局部</b>变量：{@code loopCounter}（0 起的序号）
-     * 与 {@code loopAssignee}（该实例的办理人）。
+     * <p><b>并行与串行是两种形状，不是同一条路的两个参数</b>：
+     * <ul>
+     *   <li><b>并行</b>（默认）：一次把 N 条实例全建出来，每条一个独立的 token，
+     *       各自停在同一节点上、各自建一条任务。之所以用独立 token 而不是
+     *       一条 token 记计数：实例之间会真的并行存在（三个人同时在办），
+     *       用一条 token 就没法表达"谁办完了谁没办"。</li>
+     *   <li><b>串行</b>（{@code isSequential="true"}）：任何时刻只有<b>一条</b>
+     *       实例在办，办完一个才建下一个。而这恰恰是"同一条 token 迭代"——
+     *       每办结一次就把这条 token 上的循环变量推进一格、再建一条新任务。
+     *       复用同一条 token 是有意的：串行下"这个节点上总共几个实例"从任务数
+     *       数不出来（同一时刻只有一条任务），所以计划数必须冻在这条 token 上，
+     *       而它正是驱动这个循环的那条。</li>
+     * </ul>
+     *
+     * <p>每个 token 带<b>局部</b>变量：{@code loopCounter}（0 起的序号）、
+     * 配了 {@code collection} 时的 {@code elementVariable}（元素原值）与
+     * {@code loopAssignee}（元素的字符串形式）。
      * 用局部而非流程级，是因为它们属于单个实例——
      * 放进流程变量会互相覆盖，最后一个实例的值会把前面的盖掉。
      *
-     * <p>办理人列表在<b>分叉时用 Java 取</b>，而不是在表达式里写
+     * <p>集合元素在<b>分叉时用 Java 取</b>，而不是在表达式里写
      * {@code ${approvers[loopCounter]}}：实测 z-util 的 EL 不支持变量下标
      * （{@code approvers[1]} 可以，{@code approvers[loopCounter]} 抛 ElException）。
      */
     private void enterMultiInstance(WfContext context, WfNode node, WfExecution token) {
-        int count = resolveLoopCardinality(context, node);
+        int count = resolveLoopCount(context, node);
         if (count <= 0) {
-            // 展开 0 个实例：BPMN 语义是直接完成该节点，往下走
+            // 展开 0 个实例：BPMN 语义是直接完成该节点，往下走。
+            // 注意这不是"出错"：collection 指向一个空列表时，作者要的就是"这一步没人办"
+            if (isFailed(context)) {
+                return;
+            }
             leave(context, 0);
             return;
         }
         if (count > MAX_LOOP_INSTANCES) {
-            fail(context, "多实例节点 " + node.getId() + " 的 loopCardinality=" + count
+            fail(context, "多实例节点 " + node.getId() + " 的实例数 " + count
                     + " 超过上限 " + MAX_LOOP_INSTANCES + "，拒绝展开");
             return;
         }
 
-        List<?> assignees = resolveLoopAssignees(context, node);
+        if (node.isSequential()) {
+            // 串行：只建第一个实例，并把计划数冻在这条 token 上
+            bindLoopVariables(context, node, token, 0, null);
+            token.getVariables().put(WfMultiInstance.PLANNED_TOTAL, count);
+            createInstanceTask(context, node, token, 0);
+            return;
+        }
+
+        // 集合在这里求值**一次**并传下去，而不是每个实例求一遍：
+        // 次数来自第 1 次求值、元素来自第 2..N 次，两次结果不一致时
+        // 会出现"实例数按 A、元素按 B"而越界报错 —— 那种不一致没有任何价值，
+        // 只是白跑 N 次表达式
+        List<Object> elements = isBlank(node.getLoopCollection()) ? null
+                : resolveCollection(context, node);
         for (int i = 0; i < count; i++) {
             WfExecution branch = i == 0 ? token : new WfExecution(
                     idGenerator.nextExecutionId(), context.getProcessInstanceId(), node.getId());
             branch.setActivityId(node.getId());
             branch.setEnteredTime(new Date());
             branch.setState(WfExecution.State.ACTIVE);
-            branch.getVariables().put(WfMultiInstance.LOOP_COUNTER, i);
-            if (assignees != null && i < assignees.size()) {
-                branch.getVariables().put(WfMultiInstance.LOOP_ASSIGNEE,
-                        String.valueOf(assignees.get(i)));
-            }
             if (i > 0) {
                 branch.setParentId(token.getId());
                 branch.setChild(true);
                 token.getChildren().add(branch.getId());
                 context.addNewExecution(branch);
             }
+            bindLoopVariables(context, node, branch, i, elements);
+            createInstanceTask(context, node, branch, i);
+        }
+    }
 
-            WfExecution saved = context.getCurrentExecution();
-            context.setCurrentExecution(branch);
-            try {
-                WfTask task = behaviorRegistry.getBehavior(node.getType())
-                        .execute(context, node, branch);
-                if (task != null) {
-                    context.addCreatedTask(task);
-                    branch.setState(WfExecution.State.WAITING);
-                }
-            } catch (Exception e) {
-                fail(context, "多实例第 " + i + " 个实例创建任务失败: " + e.getMessage());
+    /**
+     * 串行多实例：当前实例办完后，把<b>同一条 token</b> 推进到第 {@code next} 个实例。
+     *
+     * <p>由 {@code WfRuntimeService#closeMultiInstanceIfDone} 在"任务已办结、
+     * 流程还没往下走"的那一刻调用。返回 false 表示流程应当继续等这条新实例。
+     *
+     * <p>不新建 token 是刻意的：串行下"这个节点总共几个实例"从任务集合数不出来
+     * （同一时刻只有一条任务在办），计划数只能存在驱动它的那条 token 上；
+     * 而这条 token 正是随后要继续往下走的那个"当前 token"，
+     * 换一条就得把当前 token 的身份在多处传递下去。
+     *
+     * @return 是否真的建出了下一个实例（false = 调用方应当收口，让 token 离开本节点）
+     */
+    public boolean advanceSequentialInstance(WfContext context, WfNode node,
+                                             WfExecution token, int next) {
+        if (next >= MAX_LOOP_INSTANCES) {
+            fail(context, "多实例节点 " + node.getId() + " 的实例序号 " + next
+                    + " 超过上限 " + MAX_LOOP_INSTANCES + "，拒绝展开");
+            return false;
+        }
+        bindLoopVariables(context, node, token, next, null);
+        token.setState(WfExecution.State.ACTIVE);
+        token.setEnteredTime(new Date());
+        return createInstanceTask(context, node, token, next);
+    }
+
+    /**
+     * 在 token 上建出第 {@code index} 个实例的任务。
+     *
+     * <p>建不出任务（behavior 返回 null）时返回 false：调用方据此判断
+     * "这个实例到底有没有真的开起来"，而不是以为它挂上了正在等人办。
+     */
+    private boolean createInstanceTask(WfContext context, WfNode node, WfExecution token, int index) {
+        WfExecution saved = context.getCurrentExecution();
+        context.setCurrentExecution(token);
+        try {
+            WfTask task = behaviorRegistry.getBehavior(node.getType())
+                    .execute(context, node, token);
+            if (task != null) {
+                context.addCreatedTask(task);
+                token.setState(WfExecution.State.WAITING);
+                return true;
             }
+            return false;
+        } catch (Exception e) {
+            fail(context, "多实例第 " + index + " 个实例创建任务失败: " + e.getMessage());
+            return false;
+        } finally {
             context.setCurrentExecution(saved);
         }
+    }
+
+    /**
+     * 实例数：{@code collection} 优先（它由集合大小决定），否则取 {@code loopCardinality}。
+     *
+     * <p>两者都没配时校验器已经报过 ERROR；这里返回 0 只是为了让运行期
+     * 有一条确定的行为（跳过该节点）而不是 NPE。
+     */
+    private int resolveLoopCount(WfContext context, WfNode node) {
+        if (!isBlank(node.getLoopCollection())) {
+            List<Object> elements = resolveCollection(context, node);
+            if (elements == null) {
+                // resolveCollection 已经 fail 过了：取不到集合时按"取不到人"处理，
+                // 不能当成"没人"——后者会让流程直接跳过整个会签节点往下走
+                return 0;
+            }
+            return elements.size();
+        }
+        return resolveLoopCardinality(context, node);
     }
 
     /** loopCardinality：纯数字直接取；{@code ${}} 表达式求值后转 int。 */
@@ -541,6 +627,122 @@ public class WfEngine {
                     + " 的 loopCardinality 不是整数: " + raw);
             return 0;
         }
+    }
+
+    /**
+     * 求 {@code collection} 指向的集合。
+     *
+     * <p>每次调用都重新求值，<b>不缓存</b>：串行多实例每个实例都要取一次，
+     * 而缓存下来就得把用户数据复制进 token 的局部变量里 ——
+     * 那个 Map 走 JSON 存库，元素类型会被 JSON 往返改写（BigDecimal 变 Double、
+     * Date 变字符串），于是"第 2 个人拿到的东西和第 1 个人在内存里看到的不一样"。
+     * 实例数在<b>进入时</b>就冻在 token 上（{@link WfMultiInstance#PLANNED_TOTAL}），
+     * 所以"循环按进入时的人数走"这件事有保证，不依赖缓存。
+     *
+     * <p>取不到 / 类型不对都 fail-closed 报错并返回 null，绝不当成空集合。
+     */
+    private List<Object> resolveCollection(WfContext context, WfNode node) {
+        String expression = node.getLoopCollection();
+        Object value = expressionEvaluator.evalRaw(expression, context.mergedVariables());
+        if (value == null) {
+            fail(context, "多实例节点 " + node.getId() + " 的 collection=" + expression
+                    + " 求值为空或未定义。变量不存在时按 fail-closed 处理为「取不到人」，"
+                    + "而不是「没人」——后者会让流程直接跳过这个会签节点往下走");
+            return null;
+        }
+        if (value instanceof List) {
+            return (List<Object>) value;
+        }
+        if (value instanceof Object[]) {
+            return java.util.Arrays.asList((Object[]) value);
+        }
+        if (value instanceof Collection) {
+            return new java.util.ArrayList<>((Collection<Object>) value);
+        }
+        fail(context, "多实例节点 " + node.getId() + " 的 collection=" + expression
+                + " 必须是集合或数组，实际类型: " + value.getClass().getName());
+        return null;
+    }
+
+    /**
+     * 把第 {@code index} 个实例的循环变量绑到 token 上。
+     *
+     * <p>绑三样东西：{@code loopCounter}、{@code elementVariable}（元素原值，
+     * 仅当配了 collection 与 elementVariable）、{@code loopAssignee}（元素或
+     * 兼容写法 {@code zifang:loopAssignees} 里那一项的字符串形式）。
+     *
+     * <p>元素<b>每次重新求值</b>而不是入循环时取一次：串行下每个实例建任务的
+     * 时机不同，取一次就得缓存在 token 上（同上，JSON 往返会改写元素类型）。
+     * 取不到第 index 个时报错停住——实例数已经冻住了，集合却变短了，
+     * 悄悄少办几个人比报错危险得多。
+     */
+    private void bindLoopVariables(WfContext context, WfNode node, WfExecution token, int index,
+                                   List<Object> preResolved) {
+        token.getVariables().put(WfMultiInstance.LOOP_COUNTER, index);
+        Object element = null;
+        boolean hasCollection = !isBlank(node.getLoopCollection());
+        if (hasCollection) {
+            // 并行路径传进来的是同一次求值的结果；串行传 null —— 每个实例
+            // 建任务的时机不同，重取一次比缓存一份用户数据更可控（见 resolveCollection）
+            List<Object> elements = preResolved != null ? preResolved : resolveCollection(context, node);
+            if (elements == null) {
+                return;
+            }
+            if (index >= elements.size()) {
+                fail(context, "多实例节点 " + node.getId() + " 取第 " + index
+                        + " 个实例的元素时越界：collection=" + node.getLoopCollection().trim()
+                        + " 现在只有 " + elements.size() + " 个元素。"
+                        + "实例数是在进入这个节点时定的，不会跟着集合变；"
+                        + "请在进入前把人员列表备齐");
+                return;
+            }
+            element = elements.get(index);
+            if (!isBlank(node.getLoopElement())) {
+                token.getVariables().put(node.getLoopElement().trim(), element);
+            }
+        }
+        // loopAssignee 给的是**字符串形式**：集合里放对象时，
+        // zifang:assignee="${loopAssignee}" 拼出来的仍是办理人 id 字符串，
+        // 而要读元素字段的作者有 loopElement 可用
+        String assignee = hasCollection
+                ? (element == null ? null : String.valueOf(element))
+                : legacyAssigneeAt(context, node, index);
+        if (assignee != null) {
+            token.getVariables().put(WfMultiInstance.LOOP_ASSIGNEE, assignee);
+        } else {
+            // 串行复用同一条 token：上一轮的元素值必须清掉，
+            // 否则第 2 个实例会在自己的 loopElement 里看到第 1 个人的数据
+            token.getVariables().remove(WfMultiInstance.LOOP_ASSIGNEE);
+            if (!isBlank(node.getLoopElement())) {
+                token.getVariables().remove(node.getLoopElement().trim());
+            }
+        }
+    }
+
+    /**
+     * 兼容写法 {@code zifang:loopAssignees}：第 {@code index} 个办理人。
+     *
+     * <p>与 {@code collection} 的差别只有一处：它<b>不决定实例数</b>，
+     * 实例数仍由 {@code loopCardinality} 给。因此列表比实例数短时，
+     * 后面那几个实例没有办理人——这是这条老写法的既有行为，不改。
+     */
+    private String legacyAssigneeAt(WfContext context, WfNode node, int index) {
+        if (isBlank(node.getLoopAssignees())) {
+            return null;
+        }
+        List<?> assignees = resolveLoopAssignees(context, node);
+        return assignees != null && index < assignees.size()
+                ? String.valueOf(assignees.get(index)) : null;
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
+    }
+
+    /** 这次推进是否已经被 {@link #fail} 标成了内部终止。 */
+    private boolean isFailed(WfContext context) {
+        WfProcessInstance instance = context.getProcessInstance();
+        return instance != null && instance.getStatus() == WfProcessStatus.INTERNALLY_TERMINATED;
     }
 
     /** 每个实例的办理人列表；未配置返回 null。 */

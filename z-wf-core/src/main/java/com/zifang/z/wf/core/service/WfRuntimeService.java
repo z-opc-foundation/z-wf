@@ -434,7 +434,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         // 流程会在"还差 2 个人没批"的时候就跑到了下一节点 —— 那不是会签，那是抢占。
         if (execution != null && isMultiInstance(definition, task.getDefinitionId())) {
             if (!closeMultiInstanceIfDone(context, instance, definition,
-                    task.getDefinitionId(), task.getExecutionId())) {
+                    task.getDefinitionId(), execution)) {
                 // 会签未收口：把本 token 停在本节点，流程不往下走
                 execution.setState(WfExecution.State.WAITING);
                 persistAll(context);
@@ -870,25 +870,34 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      * 已下发出去的待办要从办理人的列表里消失，但"曾经有过这个会签实例"
      * 是审计要问的事，删了就答不上来了。
      *
+     * <p><b>{@code current} 必须传调用方手里那个对象，不能只传 id 再读一遍</b>：
+     * {@code findExecution} 返回的是<b>副本</b>。重新读一次会让同一次推进里
+     * 出现两个不同的 execution 对象，而落库写的是调用方那一个 ——
+     * 于是串行推进时写在副本上的 {@code loopCounter} 会被丢掉，
+     * 每一轮都读到 0、每轮都建第 1 个实例。症状是"三个人都办了一遍 alice"。
+     *
+     * @param current 当前这条 token（<b>传对象而不是 id</b>，见上）
      * @return true = 已收口，流程可以继续往下；false = 还要继续等
      */
     private boolean closeMultiInstanceIfDone(WfContext context, WfProcessInstance instance,
                                              WfDefinition definition, String nodeId,
-                                             String currentExecutionId) {
+                                             WfExecution current) {
         WfNode node = definition.node(nodeId);
         List<WfTask> nodeTasks = persistence.queryTasks(new WfTaskQuery()
                 .setProcessInstanceId(instance.getId())
                 .setDefinitionId(nodeId)
                 .setPageNum(1).setPageSize(Integer.MAX_VALUE));
-        WfMultiInstance.Stats stats = WfMultiInstance.stats(nodeTasks);
+        int loopCounter = loopCounterOf(current);
 
-        int loopCounter = 0;
-        WfExecution current = currentExecutionId == null
-                ? null : persistence.findExecution(currentExecutionId);
-        if (current != null && current.getVariables().get(WfMultiInstance.LOOP_COUNTER) != null) {
-            loopCounter = ((Number) current.getVariables()
-                    .get(WfMultiInstance.LOOP_COUNTER)).intValue();
+        // 串行与并行的完成判定是**两件事**，不能共用：串行下"办结了一个实例"
+        // 之后本来就该再办一个，此刻库里的在办任务数是 0，
+        // 而并行的判定恰恰是"在办为 0 就收口" —— 套过去会办完第一个就往下走
+        if (node.isSequential()) {
+            return closeSequentialIfDone(context, instance, node, nodeTasks,
+                    current, loopCounter);
         }
+
+        WfMultiInstance.Stats stats = WfMultiInstance.stats(nodeTasks);
         Map<String, Object> loopVars = WfMultiInstance.loopVariables(
                 instance.getVariables(), stats, loopCounter);
         boolean done = WfMultiInstance.isComplete(node.getCompletionCondition(),
@@ -900,8 +909,66 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         if (!done) {
             return false;
         }
+        return closeMultiInstanceNow(context, instance, node, nodeTasks,
+                current == null ? null : current.getId());
+    }
 
-        // ---- 收口：作废剩余实例的待办 ----
+    /**
+     * 串行多实例：办结一个实例之后，是该建下一个还是收口。
+     *
+     * <p>判定的依据是<b>冻在 token 上的计划数</b>（{@link WfMultiInstance#PLANNED_TOTAL}），
+     * 不是库里的任务数：串行下同一时刻只有一条任务，办结的那条还没被下一条取代，
+     * 数任务永远得到"在办 0、已办 1"，照并行那套判就会第一个办完就往下走。
+     *
+     * <p>完成条件仍然照常生效（{@code ${nrOfCompletedInstances >= 2}} 这类或签/计数会签），
+     * 它在"下一个实例建出来之前"求值 —— 与 Camunda 一致：
+     * 决定要不要继续的是"上一个实例办完之后"的局面。
+     */
+    private boolean closeSequentialIfDone(WfContext context, WfProcessInstance instance,
+                                          WfNode node, List<WfTask> nodeTasks,
+                                          WfExecution current, int loopCounter) {
+        WfMultiInstance.Stats raw = WfMultiInstance.stats(nodeTasks);
+        int total = plannedTotalOf(current, raw.getTotal());
+        boolean conditionMet = WfMultiInstance.isCompletionConditionMet(
+                node.getCompletionCondition(), engine.getExpressionEvaluator(),
+                WfMultiInstance.loopVariables(instance.getVariables(), raw, loopCounter));
+        boolean isLast = loopCounter + 1 >= total;
+
+        if (conditionMet || isLast) {
+            // 收口时发布的在办数就是 0：串行此刻确实没有实例在办
+            WfMultiInstance.publishStats(context, WfMultiInstance.statsOf(total, 0, raw.getCompleted()));
+            log.info("串行多实例 {} 第 {} 个办结（共 {} 个，完成条件 {}）-> 收口",
+                    node.getId(), loopCounter, total,
+                    conditionMet ? "成立" : "已是最后一个");
+            return closeMultiInstanceNow(context, instance, node, nodeTasks,
+                    current == null ? null : current.getId());
+        }
+
+        // 建下一个实例。建不出来时 advanceSequentialInstance 已经 fail 过了，
+        // 这里返回 false 让调用方把本 token 停在本节点 —— 实例已内部终止，
+        // 不会再有人来推进它，但也不会凭空往下走
+        boolean advanced = engine.advanceSequentialInstance(context, node, current, loopCounter + 1);
+        if (advanced) {
+            // 下一个实例已经在办，发布出去的"在办"要是 1：
+            // 完成条件常按 nrOfActiveInstances 判断，写 0 会让下一次求值判错
+            WfMultiInstance.publishStats(context,
+                    WfMultiInstance.statsOf(total, 1, raw.getCompleted()));
+        }
+        log.info("串行多实例 {} 第 {} 个办结（共 {} 个）-> 继续第 {} 个",
+                node.getId(), loopCounter, total, loopCounter + 1);
+        return false;
+    }
+
+    /**
+     * 真的收口：作废剩余实例的待办、结束仍停在本节点的其他 token。
+     *
+     * <p>串行跑到这里时通常已经没有"剩余实例"了 —— 这段是并行那条路的主逻辑，
+     * 串行复用它是为了让"收口"这件事只有一份实现（作废待办 + 结束兄弟 token
+     * 各有一条容易漏的细节，比如结束 token 时必须一并把它停掉）。
+     */
+    private boolean closeMultiInstanceNow(WfContext context, WfProcessInstance instance,
+                                          WfNode node, List<WfTask> nodeTasks,
+                                          String currentExecutionId) {
         for (WfTask pending : WfMultiInstance.cancellable(nodeTasks)) {
             pending.setStatus(WfTask.Status.CANCELLED);
             pending.setEndTime(new Date());
@@ -911,10 +978,9 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                     instance.getId(), "multi-instance-closed");
         }
 
-        // ---- 收口：结束仍停在本节点的其他 token ----
         for (WfExecution token : persistence.findExecutionsByProcessInstance(instance.getId())) {
             if (token.isEnded()
-                    || !nodeId.equals(token.getActivityId())
+                    || !node.getId().equals(token.getActivityId())
                     || (currentExecutionId != null && currentExecutionId.equals(token.getId()))) {
                 continue;
             }
@@ -922,6 +988,30 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             persistence.saveExecution(token);
         }
         return true;
+    }
+
+    private int loopCounterOf(WfExecution token) {
+        if (token == null || token.getVariables() == null) {
+            return 0;
+        }
+        Object counter = token.getVariables().get(WfMultiInstance.LOOP_COUNTER);
+        return counter instanceof Number ? ((Number) counter).intValue() : 0;
+    }
+
+    /**
+     * 这条 token 上冻着的计划实例数；读不到就退回按任务数算。
+     *
+     * <p>读不到只可能发生在"定义里写了 isSequential 而 token 上没有这个标记"
+     * （老数据、或外部直接改库造出来的 token）。这时退回按任务数算，
+     * 并让它继续跑完——不是静默跳过，而是让结果由已有的数据决定，
+     * 总好过因为一个标记缺失就把整条流程判成非法。
+     */
+    private int plannedTotalOf(WfExecution token, int fallback) {
+        if (token == null || token.getVariables() == null) {
+            return fallback;
+        }
+        Object planned = token.getVariables().get(WfMultiInstance.PLANNED_TOTAL);
+        return planned instanceof Number ? ((Number) planned).intValue() : fallback;
     }
 
     // ==================== 错误路由（BPMN Error） ====================
