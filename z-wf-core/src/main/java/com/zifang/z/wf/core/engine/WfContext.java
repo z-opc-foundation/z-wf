@@ -10,6 +10,7 @@ import java.util.Map;
 import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.WfNode;
 import com.zifang.z.wf.core.definition.WfTimerSupport;
+import com.zifang.z.wf.core.definition.WfTimerType;
 import com.zifang.z.wf.core.engine.expression.WfExpressionEvaluator;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfExecution;
@@ -132,6 +133,12 @@ public class WfContext {
             } catch (IllegalArgumentException e) {
                 throw new WfEngineException("边界事件 " + boundary.getId()
                         + " 的定时器算不出触发时刻: " + e.getMessage(), e);
+            }
+            if (boundary.getTimerType() == WfTimerType.CYCLE) {
+                // 循环定时器的初始那条就是**第 1 次**：cycleIndex 记的是
+                // 「这是第几次触发」（1 起）而不是「已经响过几次」——
+                // 后者会差出一个 1，而差的这一下会让 R3 照响第 4 次
+                job.setCycleIndex(1);
             }
             createdJobs.add(job);
         }

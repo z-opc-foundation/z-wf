@@ -830,6 +830,36 @@ class JdbcWorkflowPersistenceTest {
     }
 
     @Test
+    @DisplayName("循环定时器的次数要活过 INSERT 与 UPDATE 两段")
+    void cycleIndexSurvivesBothWrites() {
+        // 循环定时器「响过几次」存在这一列上，漏掉任何一段都会让
+        // R3/PT1H 重新从头数 —— 症状是「作者写三次、实际催了无数次」
+        WfJob job = newJob("j-cycle", "p1", "e1", "urge", 3600000L);
+        job.setCycleIndex(2);
+        job.nextRevision();
+        persistence.saveJob(job);
+        assertEquals(2, persistence.findJob("j-cycle").getCycleIndex(),
+                "首次保存之后读不回来 ⇒ 循环会把自己当成第 0 次");
+
+        // 再存一次走的是 UPDATE 而非 INSERT —— 这一段最容易漏
+        WfJob reread = persistence.findJob("j-cycle");
+        reread.setCycleIndex(3);
+        reread.nextRevision();
+        persistence.saveJob(reread);
+        assertEquals(3, persistence.findJob("j-cycle").getCycleIndex(),
+                "第二次保存之后读不回来 ⇒ 每次重新挂下一次都会把计数抹掉，"
+                        + "于是永远停在同一个数上，循环变成无限");
+    }
+
+    @Test
+    @DisplayName("非循环 job 的 cycleIndex 恒为 0，不占额外语义")
+    void nonCycleJobHasZeroIndex() {
+        WfJob job = newJob("j-plain", "p1", "e1", "timeout", 1000L);
+        assertEquals(0, persistence.findJob("j-plain").getCycleIndex(),
+                "普通定时器不该带循环计数");
+    }
+
+    @Test
     @DisplayName("job 往返：到期时刻、重试次数、失败信息都不丢")
     void jobRoundTrip() {
         WfJob job = newJob("j1", "p1", "e1", "timeout", 60000L);

@@ -76,8 +76,13 @@ public final class WfTimerSupport {
             case DATE:
                 return parseInstant(resolved);
             case CYCLE:
-                throw new IllegalArgumentException(
-                        "循环定时器（timeCycle）本实现不支持: " + resolved);
+                Cycle cycle = parseCycle(resolved);
+                // 第一次触发是 anchor + 一个周期，而不是 anchor 本身：
+                // R3/PT1H 的语义是"从现在起 1 小时后、2 小时后、3 小时后各触发一次"，
+                // 若把 anchor 当成第一次，R3/PT1H 会在 0 时刻就响一下，
+                // 而那正是"刚进入节点"的瞬间 —— 等于没有等待
+                Date anchor = cycle.getStart() != null ? cycle.getStart() : base;
+                return new Date(anchor.getTime() + cycle.getPeriodMillis());
             default:
                 throw new IllegalArgumentException("未知的定时器类型: " + type);
         }
@@ -172,6 +177,167 @@ public final class WfTimerSupport {
                     "不是合法的 ISO-8601 时刻: " + iso
                             + "（形如 2026-12-31T18:00:00Z；不带时区按 UTC 处理）");
         }
+    }
+
+    /**
+     * 循环定时器（{@code timeCycle}）解析出来的规格。
+     *
+     * <p>刻意只保留三个量：<b>周期</b>、<b>最多触发几次</b>、<b>可选的起始时刻</b>。
+     * 每次触发的时刻不存 —— 它就是"上一次的时刻 + 周期"，
+     * 所以重新挂下一次定时器不需要知道锚点是什么。
+     */
+    public static final class Cycle {
+        private final long periodMillis;
+        private final int maxFires;
+        private final boolean unbounded;
+        private final Date start;
+
+        Cycle(long periodMillis, int maxFires, boolean unbounded, Date start) {
+            this.periodMillis = periodMillis;
+            this.maxFires = maxFires;
+            this.unbounded = unbounded;
+            this.start = start;
+        }
+
+        public long getPeriodMillis() {
+            return periodMillis;
+        }
+
+        /**
+         * 最多触发几次。
+         *
+         * <p>无界写法（{@code R/PT10M}）时这里是 {@link #UNBOUNDED_FIRES}。
+         */
+        public int getMaxFires() {
+            return maxFires;
+        }
+
+        public boolean isUnbounded() {
+            return unbounded;
+        }
+
+        /** 表达式里显式写了起始时刻时用它，否则为 null（由调用方取进入节点的时刻）。 */
+        public Date getStart() {
+            return start == null ? null : new Date(start.getTime());
+        }
+    }
+
+    /**
+     * 无界写法的触发次数占位值。
+     *
+     * <p>引擎另有 {@link #MAX_CYCLE_FIRES} 硬上限兜底 —— 无界是合法的 BPMN 写法，
+     * 但"每 10 分钟催一次"在一个没人管的单子上会一直催下去，
+     * 每次还多出一条并行分支。触顶后停挂并写日志，而不是无限跑。
+     */
+    public static final int UNBOUNDED_FIRES = -1;
+
+    /** 循环定时器触发次数的硬上限（无界写法的兜底）。 */
+    public static final int MAX_CYCLE_FIRES = 100;
+
+    /** ISO-8601 重复间隔的重复次数段：{@code R} 或 {@code R3}。 */
+    private static final Pattern REPEAT = Pattern.compile("^R(?:(\\d+))?$");
+
+    /**
+     * 解析 ISO-8601 重复间隔。
+     *
+     * <p>支持的四种写法（都是 BPMN 里真实出现过的）：
+     * <ul>
+     *   <li>{@code R3/PT1H} —— 一共响 3 次，每隔 1 小时</li>
+     *   <li>{@code R/PT10M} —— 不限次数（引擎有硬上限兜底）</li>
+     *   <li>{@code P1D/T1H} —— 响到满 1 天为止（换算成 24 次）</li>
+     *   <li>{@code 2026-01-01T09:00:00Z/P1D/T1H} —— 显式起始时刻</li>
+     * </ul>
+     *
+     * <p>按 {@code /} 切开再逐段**辨认**（而不是按固定位置取），
+     * 因为 ISO 8601 允许省略中间的段：同一份文法在四个写法里
+     * 起始时刻既可能在第 1 段也可能在第 2 段，按位置取会认错。
+     */
+    public static Cycle parseCycle(String iso) {
+        String text = iso.trim();
+        if (text.isEmpty()) {
+            throw new IllegalArgumentException("循环定时器表达式为空");
+        }
+        String[] parts = text.split("/");
+        if (parts.length < 2) {
+            throw new IllegalArgumentException(
+                    "不是合法的 ISO-8601 重复间隔: " + iso
+                            + "（形如 R3/PT1H / R/PT10M / P1D/T1H）");
+        }
+        int index = 0;
+        int maxFires = UNBOUNDED_FIRES;
+        Matcher repeat = REPEAT.matcher(parts[0]);
+        if (repeat.matches()) {
+            if (repeat.group(1) != null) {
+                maxFires = Integer.parseInt(repeat.group(1));
+                if (maxFires <= 0) {
+                    throw new IllegalArgumentException(
+                            "循环定时器的重复次数不大于零: " + iso + "（R0 一次都不会响）");
+                }
+            }
+            index = 1;
+        }
+        Date start = null;
+        if (index < parts.length - 1 && isDateTime(parts[index])) {
+            start = parseInstant(parts[index]);
+            index++;
+        }
+        if (index < parts.length - 1) {
+            // 形如 P1D/T1H：前一段是"响到什么时候为止"的总时长
+            long boundMillis = parseDuration(parts[index]);
+            long period = parsePeriod(parts[parts.length - 1]);
+            maxFires = (int) (boundMillis / period);
+            if (maxFires <= 0) {
+                throw new IllegalArgumentException(
+                        "循环定时器的总时长小于一个周期: " + iso
+                                + "（等于说一次都不会响）");
+            }
+        }
+        long period = parsePeriod(parts[parts.length - 1]);
+        if (period <= 0L) {
+            throw new IllegalArgumentException("循环定时器的周期不大于零: " + iso);
+        }
+        return new Cycle(period, maxFires, maxFires == UNBOUNDED_FIRES, start);
+    }
+
+    /**
+     * 再响一次的时刻；{@code firedIndex} 已经是最后一次则返回 null。
+     *
+     * @param firedIndex 刚响过的那一条是<b>第几次</b>触发（1 起）。
+     *                   写成"这次是第几次"而不是"已经响过几次"，
+     *                   是为了让 {@code R3/PT1H} 恰好响 3 次：
+     *                   两种写法差一个 1，而差的这一下会让第 4 次照响，
+     *                   表现是"作者写三次、实际催了四次"。
+     *
+     * <p><b>用上一次的时刻加周期</b>而不是"锚点 + (n+1) × 周期"：
+     * 锚点是进入宿主节点的那个时刻，它不在 job 上，而重新挂下一次时
+     * 手里的只有上一条 job。两种算法在理想情况下结果相同，
+     * 但累加法不依赖任何存下来的锚点，也就不会漂。
+     */
+    public static Date nextDueDate(Cycle cycle, Date previousDue, int firedIndex) {
+        int limit = cycle.isUnbounded() ? MAX_CYCLE_FIRES : cycle.getMaxFires();
+        if (firedIndex >= limit) {
+            return null;
+        }
+        return new Date(previousDue.getTime() + cycle.getPeriodMillis());
+    }
+
+    /**
+     * 解析重复间隔里的<b>周期</b>段。
+     *
+     * <p>它可能只写时间部分：{@code P1D/T1H} 里的周期是 {@code T1H} 而不是
+     * {@code PT1H}。ISO 8601 的完整时长必须带日期部分 {@code P}，
+     * 直接丢给 {@link #parseDuration} 会报"不是合法的 ISO-8601 时长"，
+     * 而 {@code P1D/T1H} 恰恰是 BPMN 里最常见的写法之一。
+     */
+    private static long parsePeriod(String part) {
+        String text = part.trim().toUpperCase();
+        return parseDuration(text.startsWith("T") ? "P" + text : text);
+    }
+
+    /** 这一段是不是一个 ISO-8601 时刻（用来在切分后的段里认出起始时刻）。 */
+    private static boolean isDateTime(String part) {
+        String text = part.trim();
+        return text.indexOf('T') > 0 && !text.startsWith("P");
     }
 
     /** 组序号 1..6 都是整数字符串，缺失时为 null。 */

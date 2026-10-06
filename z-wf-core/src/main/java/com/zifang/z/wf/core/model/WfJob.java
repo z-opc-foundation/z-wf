@@ -70,6 +70,21 @@ public class WfJob implements Serializable {
      */
     private int retries = DEFAULT_RETRIES;
 
+    /**
+     * 循环定时器已经响过几次（{@code timeCycle}）。
+     *
+     * <p>只为循环定时器而存在，其余 job 恒为 0。它不可省：
+     * 重新挂下一次触发时要判断"还响不响"，而
+     * {@code R3/PT1H} 的锚点（进入宿主节点的那一刻）<b>不在 job 上</b>，
+     * 手上只有上一条 job 的触发时刻。少了这个计数就没法区分
+     * "第 3 次（响完就停）"与"第 1 次（还得再挂两次）"。
+     *
+     * <p>与 {@link #retries} 分列而不是复用：两者都会递减，但一个数的是
+     * "还能失败几次"、一个数的是"已经响过几次"，
+     * 挤在一列的话排障时看到 retries=0 分不清是重试耗尽还是循环响完了。
+     */
+    private int cycleIndex;
+
     public static final int DEFAULT_RETRIES = 3;
 
     /** 最近一次失败的异常信息，排障时直接看得到为什么它不执行。 */
@@ -226,6 +241,14 @@ public class WfJob implements Serializable {
 
     public void setRetries(int retries) {
         this.retries = retries;
+    }
+
+    public int getCycleIndex() {
+        return cycleIndex;
+    }
+
+    public void setCycleIndex(int cycleIndex) {
+        this.cycleIndex = cycleIndex;
     }
 
     public String getExceptionMessage() {

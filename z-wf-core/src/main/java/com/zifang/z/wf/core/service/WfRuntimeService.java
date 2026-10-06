@@ -17,6 +17,7 @@ import com.zifang.z.wf.core.definition.WfFlow;
 import com.zifang.z.wf.core.definition.WfNode;
 import com.zifang.z.wf.core.definition.WfNodeType;
 import com.zifang.z.wf.core.definition.WfTimerSupport;
+import com.zifang.z.wf.core.definition.WfTimerType;
 import com.zifang.z.wf.core.engine.WfContext;
 import com.zifang.z.wf.core.engine.WfEngine;
 import com.zifang.z.wf.core.engine.WfIdGenerator;
@@ -1276,6 +1277,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             fireNonInterruptingBoundary(contextForError(instance, definition, execution, null),
                     instance, definition, execution, boundary, job, reason);
             fireJobExecuted(definition, instance.getId(), job, true);
+            rearmCycleTimer(definition, instance, job, boundary);
             return instance;
         }
 
@@ -1356,6 +1358,60 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         // 是靠这一行判出来的。
         // 真正需要重判终态的是**中断型**那条路（那边会结束宿主 token），
         // 它在 fireEventBoundary 末尾调了。
+    }
+
+    /**
+     * 循环定时器（{@code timeCycle}）响过一次后，把下一次重新挂上。
+     *
+     * <p><b>只有非中断型边界会走这里</b>：中断型响过之后宿主 token 就走了，
+     * 再挂一条也只会撞上 {@link #fireEventBoundary} 开头那道"token 已不在宿主
+     * 节点上"的闸门然后什么都不做 —— 挂一条明知不会响的 job 没有意义。
+     *
+     * <p><b>新建一条 job 而不是改原来那条</b>：执行器是"先删 job 再推进"的
+     * （{@code WfJobService#fire}），响的时候那条已经不在库里了。
+     * 而且每次触发各占一条记录更利于排障 —— "这个提醒响过几次、每次几点响的"
+     * 在轮次记录里一眼可见，不必去数时间戳。
+     *
+     * <p>响满了就不再挂：无界写法（{@code R/PT10M}）由
+     * {@link WfTimerSupport#MAX_CYCLE_FIRES} 兜底，避免一个没人管的单子
+     * 被无限催下去、每次还多出一条并行分支。
+     */
+    private void rearmCycleTimer(WfDefinition definition, WfProcessInstance instance,
+                                 WfJob consumed, WfNode boundary) {
+        if (boundary.getTimerType() != WfTimerType.CYCLE) {
+            return;
+        }
+        WfTimerSupport.Cycle cycle;
+        try {
+            cycle = WfTimerSupport.parseCycle(boundary.getTimerExpression());
+        } catch (IllegalArgumentException e) {
+            // 解析期已经过校验器一道；这里仍失败说明定义被运行时改过
+            throw new WfEngineException("循环定时器 " + boundary.getId() + " 的表达式无法解析: "
+                    + e.getMessage(), e);
+        }
+        Date next = WfTimerSupport.nextDueDate(cycle, consumed.getDuedate(),
+                consumed.getCycleIndex());
+        if (next == null) {
+            log.info("循环定时器 {} 已响满 {} 次，不再挂下一次",
+                    boundary.getId(), cycle.isUnbounded()
+                            ? "硬上限 " + WfTimerSupport.MAX_CYCLE_FIRES : cycle.getMaxFires());
+            return;
+        }
+        WfJob rearmed = new WfJob();
+        rearmed.setId(idGenerator.nextJobId());
+        rearmed.setProcessInstanceId(consumed.getProcessInstanceId());
+        rearmed.setExecutionId(consumed.getExecutionId());
+        rearmed.setElementId(consumed.getElementId());
+        rearmed.setAttachedToRef(consumed.getAttachedToRef());
+        rearmed.setType(consumed.getType());
+        rearmed.setDuedate(next);
+        rearmed.setCreateTime(new Date());
+        rearmed.setRetries(WfJob.DEFAULT_RETRIES);
+        rearmed.setCycleIndex(consumed.getCycleIndex() + 1);
+        rearmed.nextRevision();
+        persistence.saveJob(rearmed);
+        log.info("循环定时器 {} 第 {} 次已触发，重新挂下一次：{}",
+                boundary.getId(), consumed.getCycleIndex() + 1, next);
     }
 
     /**

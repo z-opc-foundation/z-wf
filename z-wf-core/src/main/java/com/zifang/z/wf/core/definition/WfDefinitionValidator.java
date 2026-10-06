@@ -473,6 +473,52 @@ public class WfDefinitionValidator {
         return source != null && source.getType() == WfNodeType.EVENT_BASED_GATEWAY;
     }
 
+    /**
+     * 循环定时器（{@code timeCycle}）的校验。
+     *
+     * <p>本实现把循环定时器限定在<b>非中断型边界事件</b>上，这不是实现偷懒，
+     * 而是「响过之后还有没有东西可以打断」这件事决定的：
+     * <ul>
+     *   <li><b>非中断型边界</b>：宿主 token 留在原地等人办，下一周期还有宿主
+     *       可提醒 —— 这正是「每 2 小时催一次」。</li>
+     *   <li><b>中断型边界</b>：第一次响宿主 token 就被搬到边界事件上走了，
+     *       后续周期<b>没有宿主可以打断</b>。挂着让它继续响毫无意义。</li>
+     * </ul>
+     * 放过后一种等于「作者写每次催一次、实际只催一次」，
+     * 而流程图上看不出任何异常 —— 与 {@code parallelMultiple} 是同一类偏差。
+     */
+    private void validateCycleTimer(WfNode node) {
+        if (!node.isNonInterrupting()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "循环定时器（timeCycle）只支持用在**非中断型边界事件**上"
+                            + "（cancelActivity=false）。"
+                            + "中断型边界第一次触发后宿主 token 就被搬到边界事件上，"
+                            + "后续周期没有宿主可以打断 —— 照单全收只会在图上写着"
+                            + "「每 1 小时一次」而实际只响一次，且没有任何报错。"
+                            + "要「每隔一段时间提醒一次」请加 cancelActivity=false；"
+                            + "要一次性的超时打断请改用 timeDuration");
+            return;
+        }
+        if (isBlank(node.getTimerExpression())) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "timeCycle 内容为空，循环定时器算不出触发时刻");
+            return;
+        }
+        if (WfTimerSupport.isVariableReference(node.getTimerExpression())) {
+            // 变量值要到实例启动时才有，部署期无法判断它是否合法。
+            // 取不到变量时 WfContext#startTimerJobs 会抛，那里报得出的原因更准
+            return;
+        }
+        try {
+            WfTimerSupport.parseCycle(node.getTimerExpression());
+        } catch (IllegalArgumentException e) {
+            // 字面量在部署期就能验：等到第一次触发才发现格式错，
+            // 意味着这个提醒从头到尾一次都没响过，而没人会知道它本该响
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "timeCycle 表达式无法解析: " + e.getMessage());
+        }
+    }
+
     private String describeUnsupportedCatch(WfNode node) {
         if (node.isTimerEvent()) {
             return "timerEventDefinition（定时器捕获）";
@@ -624,10 +670,7 @@ public class WfDefinitionValidator {
      */
     private void validateTimerBoundary(WfNode node) {
         if (node.getTimerType() == WfTimerType.CYCLE) {
-            add(WfValidationIssue.Severity.ERROR, node.getId(),
-                    "循环定时器（timeCycle）本实现不支持。循环周期需要独立的"
-                            + "『下一次触发时间』状态，还要在实例终止时清理，"
-                            + "并与会签、补偿事务纠缠。请改用 timeDuration 或 timeDate");
+            validateCycleTimer(node);
             return;
         }
         if (isBlank(node.getTimerExpression())) {

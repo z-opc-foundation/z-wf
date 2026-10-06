@@ -151,7 +151,7 @@
 | `eventBasedGateway` | 🟡 | ✅ 已实现：token 分叉到各中间捕获事件，**谁的事件先到就走谁，其余分支连同各自的订阅一并作废**（落选分支在轨迹上留 `eventGatewayLost` 一条）。竞速的兄弟集合从**流程定义**反查（捕获事件唯一入线的源头就是网关），不另存副本。订阅用 `EVENT_MESSAGE`/`EVENT_SIGNAL`/**`EVENT_TIMER`** 三种 job 类型，与消息/信号/定时器**边界**订阅分开 —— 后者是打断，前者是竞速，混用时触发路径必须去猜而猜错的后果是流程静默走错分支。**定时器分支本轮补上**：到点即算它赢，其余分支作废。**剩余**：`conditionalEventDefinition` 分支 |
 | `complexGateway` | 🟡 | ✅ 已实现：按变量**取值**分派（`zifang:caseVariable` + 出线 `zifang:caseValue`），`camunda:caseExpression` 同样识别。**剩余**：Camunda 侧的后置条件（`condition` 元素）、配对/非配对语义差异 |
 | `transaction` / `adHocSubProcess` | ❌ | 同上，报错挡住 |
-| **定时器** `timerEventDefinition` | ✅ | `timeDuration`（PT5M / P1DT2H / P1Y）与 `timeDate`（2026-12-31T18:00:00Z）已实现，可写 `${变量}` 由流程实例决定时限。**边界定时器（打断）与事件网关定时器分支（竞速）都已接上执行器**（`TIMER` / `EVENT_TIMER` 两种 job 类型，`WfJobService#executeDueJobs` 逐类型各扫一遍）。**`timeCycle` 循环定时器刻意不支持**，部署期报 ERROR |
+| **定时器** `timerEventDefinition` | ✅ | 三种都实现了：`timeDuration`（PT5M / P1DT2H / P1Y）、`timeDate`（2026-12-31T18:00:00Z）、**`timeCycle`（第 13 轮补上）**，都可写 `${变量}` 由流程实例决定时限。**边界定时器（打断）与事件网关定时器分支（竞速）都已接上执行器**（`TIMER` / `EVENT_TIMER` 两种 job 类型，`WfJobService#executeDueJobs` 逐类型各扫一遍）。**`timeCycle` 的限制**：只支持用在**非中断型边界事件**上（`R3/PT1H` / `R/PT10M` / `P1D/T1H` / 带显式起始时刻的写法都支持），因为只有非中断型才有"下一周期可以提醒"的宿主；无界写法 `R/PT10M` 有 100 次的硬上限兜底 |
 | **异步** `asyncBefore` / `asyncAfter` | 🟡 | ✅ 已实现：`zifang:` 与 `camunda:` 双前缀；`ASYNC_BEFORE`/`ASYNC_AFTER` 两个 job 类型 + `WfJobService#executeAsyncJobs`。**剩余**：异步 job 的优先级（`asyncBefore` 配 exclusive/priority）、`timeCycle` 循环定时器、多实例+异步（部署期已挡） |
 | **外部任务** `externalTask` / `ExternalTaskService` | ✅ | `serviceTask` + `zifang:topic` 标注（`<externalTask>` 不是 BPMN 2.0 元素，Camunda 同样靠标注在 serviceTask 上）。原子"选出+上锁"、租约制、`fail` 解锁+退避、重试耗尽留档。REST 7 端点在 `/api/wf/external-tasks` |
 | `errorRef` / `errorEventDefinition` | ✅ | 见上。**刻意不支持「空 errorRef = 捕获所有错误」**——宽泛捕获会把不相关异常也吸走，让本该崩的流程继续走 |
@@ -292,7 +292,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 | 1 | ~~**多实例（会签/或签/计数）**~~ | ✅ **并行 + 串行 + `collection` 集合迭代均已实现**（第 11 轮）。剩余：变量下标 EL（引擎侧限制）、多实例嵌套 |
 | 2 | ~~**变量服务**~~ | ✅ 本轮已补（`WfVariableService` + REST `GET/POST /api/wf/process/variables`）。剩余缺口：变量实例查询、类型化变量、变量作用域链（execution 级） |
 | 3 | ~~**BPMN 错误事件 + `handleBpmnError`**~~ | ✅ 本轮已实现（错误边界）。剩余：escalation / compensation |
-| 4 | ~~**边界事件 + 定时器 + Job 执行器**~~ | ✅ **已实现**：定时器 / 错误 / 消息 / 信号 / 外部 / 异步前置 / 异步后置七种共用 `ZWF_JOB` 一个载体，靠 `JOB_TYPE` 区分；事件网关的定时器分支（第 10 轮）也接上了同一个执行器。**剩余**：循环定时器 `timeCycle`、异步 job 优先级 |
+| 4 | ~~**边界事件 + 定时器 + Job 执行器**~~ | ✅ **已实现**：定时器 / 错误 / 消息 / 信号 / 外部 / 异步前置 / 异步后置七种共用 `ZWF_JOB` 一个载体，靠 `JOB_TYPE` 区分；事件网关的定时器分支（第 10 轮）与循环定时器 `timeCycle`（第 13 轮）也接上了同一个执行器。**剩余**：异步 job 优先级 |
 
 ### P1 —— 引擎成熟度
 
@@ -309,8 +309,8 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 620 个测试兜着
-- 从测试与审计中逼出并修复的**真实缺陷 35 项**，其中 4 项属于"能力看着在、实际不生效"：
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 638 个测试兜着
+- 从测试与审计中逼出并修复的**真实缺陷 36 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **本轮（变量实例查询）写出 3 个自己造的缺陷，都在流出前抓住**，但其中两个的形态值得记：
   ① **派生视图的 id 在 setter 之前就拼好了**。`base()` 回头去读视图上的
@@ -819,3 +819,76 @@ B 上的 `loopCounter` 被丢掉，**每一轮都读到 0、每轮都建第 1 �
 M12 之外还发现并修掉一处**注释说了假话**：`fireNonInterruptingBoundary` 末尾原本写着
 "汇合判定可能因为这条分支到达而放行后续，实例状态要跟着重新判一次"，
 而那个重判在这条路径上永远早退。
+
+### 本轮反向验证记录（循环定时器 `timeCycle`）
+
+15 条变异，**15 红**。逐条在**独立 worktree**（`/tmp/z-wf-rv13`）里跑，跑完逐文件与源目录
+`diff` 确认无残留。
+
+| 变异 | 结果 | 被哪条判据抓住 |
+|---|---|---|
+| M1 不重新挂下一次 | 🔴 4+1 | `rearmHappensAndHostIsUntouched` 等 |
+| M2 次数上限差一个（`>=` 变 `>`） | 🔴 4 | `firesExactlyThreeTimes` / `noNextOccurrenceAfterTheLast` |
+| M3 无界写法的硬上限失效 | 🔴 4 | `unboundedStopsAtTheCap` 等 |
+| M4 首次触发用锚点本身 | 🔴 1 | `firstFireIsOnePeriodAfterTheAnchor` |
+| M5 下一时刻按次数累加 | 🔴 1 | `nextDueIsPreviousPlusOnePeriod` |
+| M6 周期段不补 `P`（`P1D/T1H` 解析不了） | 🔴 2 errors | `durationBoundBecomesCount` 等 |
+| M7 显式起始时刻不被认出 | 🔴 1 error | `explicitStartIsUsedAsAnchor` |
+| M8 新 job 不记 cycleIndex | 🔴 3 | `rearmHappensAndHostIsUntouched` 等 |
+| M9 新 job 不设 id | 🔴 4+1 | 同 M1 |
+| M10 中断型也放行循环定时器 | 🔴 1 | `cycleOnInterruptingBoundaryIsRejected` |
+| M11 部署期不验表达式格式 | 🔴 2 | `malformedCycleIsRejectedAtDeployTime` 等 |
+| M12 老库不补 `CYCLE_INDEX` 列 | 🔴 1 error | `legacySubscriptionNameIsBackfilled` |
+| M13 行映射漏读 cycleIndex | ⚪ **绿 → 已修判据** | — |
+| M14 UPDATE 不带 `CYCLE_INDEX` | 🔴 4 | `cycleIndexSurvivesBothWrites` 等 |
+| M15 初始 job 的 cycleIndex 不置 1 | 🔴 3 | 同 M2 |
+
+**M12 抓到的不是"我漏写了一列"，而是"加列这件事本身有没有被做"**：
+`CREATE TABLE IF NOT EXISTS` **不会**给已存在的表补列，所以线上跑着 2.0.0 之前建的库时，
+新列压根不存在，`findJob` 直接报 `Column "CYCLE_INDEX" not found` ——
+表现为"引擎启动即炸"，而不是某个功能悄悄坏掉。
+⇒ 补了 `addJobColumnIfMissing(connection, "CYCLE_INDEX INT")`，走的是本仓既有的补列惯例
+（`TOPIC` / `LOCKED_BY` / `SUBSCRIPTION_NAME` 当年都是这么加的）。
+判据是既有的 `legacySubscriptionNameIsBackfilled` —— 它手工造了一张"老版本的表"再调
+`initialize()`，正好是这个场景的现成夹具。
+
+**M13 是真判据缺口，且它是 M12 的孪生兄弟**：列加了、行也映射了，可**没有任何测试断言
+`cycleIndex` 真的活过了 INSERT / UPDATE**。两段都要断：
+`INSERT` 漏了读回来是 0（循环把自己当成第 0 次），`UPDATE` 漏了每次重新挂下一次都把计数
+抹掉（永远停在同一个数上，循环变成无限）。
+⇒ 在 `JdbcWorkflowPersistenceTest` 里补了两条，分别断这两段。
+⇒ 这与第 11、12 轮那条同源：**一条链路上每一段都要各有一条断言**，
+"保存 + 读取 + 更新 + 再读取"是四段，不是两段。
+
+**本轮自己写出来、被变异抓到的两个真 bug**：
+
+1. **新 job 忘了设 id**（M9）。`rearmCycleTimer` 里把各个字段都填了，唯独漏了
+   `setId` —— 而 `WfJob` 的主键是调用方给的，引擎不补。存进去的是一条 id 为 null 的行，
+   症状是「响过之后库里查不到任何待触发的 job」，
+   而所有「响了几次」的断言都还在前面通过了。
+2. **周期段没补 `P`**（M6）。`P1D/T1H` 里的周期写的是 `T1H` 而不是 `PT1H` ——
+   ISO 8601 的完整时长必须带日期部分，而 `P1D/T1H` 恰恰是 BPMN 里最常见的写法之一。
+   直接丢给 `parseDuration` 会报"不是合法的 ISO-8601 时长"，
+   于是**所有带"总时长上限"的循环定时器都部署不了**，而 `R3/PT1H` 那条路完全正常 ——
+   也就是说这个 bug 只在一条分支上出现，很容易被漏掉。
+   ⇒ 加了 `parsePeriod`：以 `T` 开头就补上 `P`。
+
+**一个 off-by-one，是判据逼出来的**（M2 / M8 / M15 三条一起指向它）：
+`cycleIndex` 最初我记的是「已经响过几次」，初始 job 记 0。
+可那样算下来 `R3/PT1H` 会响 **4** 次 —— 差的那一个正好是"第 4 次照响"，
+而症状是「作者写三次、实际催了四次」，从图上看不出任何异常。
+⇒ 把语义改成「这是第几次触发」（1 起），初始 job 记 1。
+⇒ 三条变异都断在同一个数上，是本轮最有说服力的一组：
+**同一个 off-by-one 可以从三个方向被测出来**，
+所以判据里"响了几次"和"下一次记着第几"要各断一次，缺一个就留下一半。
+
+**一个必须靠对照才成立的限制**（M10）：
+`timeCycle` 只放行**非中断型**边界。理由不是"没实现"，而是**响过之后还有没有宿主
+可以打断**：中断型第一次响就把宿主 token 搬到边界事件上走了。
+放行它等于"作者写每次催一次、实际只催一次"，
+所以部署期报 ERROR 而不是让它跑起来再让人发现。
+
+**无界写法的处理**（M3）：`R/PT10M` 是合法 BPMN 写法，直接拒等于做半套；
+而完全放行则会让一个没人管的单子被无限催下去、每次还多出一条并行分支。
+⇒ 引擎侧 100 次硬上限，触顶后停挂并写日志。判据真的循环到上限（造满 105 轮扫描），
+不是只试两下就断言。

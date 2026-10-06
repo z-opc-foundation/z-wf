@@ -205,6 +205,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 + "LOCK_AT TIMESTAMP,"
                 + "DUEDATE TIMESTAMP,"
                 + "RETRIES INT,"
+                // 循环定时器已响过几次。与 RETRIES 分列的理由见 WfJob#cycleIndex
+                + "CYCLE_INDEX INT,"
                 + "EXCEPTION_MSG VARCHAR(2048),"
                 // 订阅型 job 在等什么。与 EXCEPTION_MSG 分列：排障视图要同时
                 // 看到「在等什么」与「错在哪」，挤在一列只能二选一（见 WfJob#subscriptionName）
@@ -339,6 +341,11 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         // 症状是"部署升级后所有等消息的流程都不再被触发"，且没有任何报错
         addJobColumnIfMissing(connection, "SUBSCRIPTION_NAME VARCHAR(128)");
         backfillSubscriptionName(connection);
+        // 循环定时器已响过几次。缺这一列的后果比订阅名还隐蔽：
+        // 老库里全是 NULL，而读出来是 0 —— 对非循环 job 恰好是对的值，
+        // 对循环 job 则是「从头响过 0 次」，于是 R3/PT1H 会一直以为还能再响两次。
+        // 所以必须补列，而不是靠 NULL 兜。
+        addJobColumnIfMissing(connection, "CYCLE_INDEX INT");
     }
 
     /**
@@ -1823,10 +1830,10 @@ public class JdbcWorkflowPersistence implements WfPersistence {
     public void saveJob(WfJob job) {
         boolean exists = exists("SELECT 1 FROM ZWF_JOB WHERE JOB_ID=?", job.getId());
         if (exists) {
-            int affected = update("UPDATE ZWF_JOB SET RETRIES=?, EXCEPTION_MSG=?, LAST_FAIL_TIME=?, "
-                            + "DUEDATE=?, JOB_TYPE=?, TOPIC=?, LOCKED_BY=?, LOCK_AT=?, "
-                            + "SUBSCRIPTION_NAME=?, REV=? WHERE JOB_ID=? AND REV=?",
-                    job.getRetries(), job.getExceptionMessage(),
+            int affected = update("UPDATE ZWF_JOB SET RETRIES=?, CYCLE_INDEX=?, EXCEPTION_MSG=?, "
+                            + "LAST_FAIL_TIME=?, DUEDATE=?, JOB_TYPE=?, TOPIC=?, LOCKED_BY=?, "
+                            + "LOCK_AT=?, SUBSCRIPTION_NAME=?, REV=? WHERE JOB_ID=? AND REV=?",
+                    job.getRetries(), job.getCycleIndex(), job.getExceptionMessage(),
                     timestamp(job.getLastFailureTime()), timestamp(job.getDuedate()),
                     // 类型必须跟着 UPDATE 走。只写 INSERT 的话，任何对已有 job 的
                     // 类型调整存回去都会被抹回 TIMER —— 而 job 的类型决定扫描器
@@ -1851,8 +1858,9 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             PreparedStatement ps = connection.prepareStatement(
                     "INSERT INTO ZWF_JOB (JOB_ID, PROC_ID, EXEC_ID, ELEMENT_ID, ATTACHED_TO, "
                             + "JOB_TYPE, TOPIC, LOCKED_BY, LOCK_AT, DUEDATE, RETRIES, "
-                            + "EXCEPTION_MSG, SUBSCRIPTION_NAME, CREATE_TIME, LAST_FAIL_TIME, REV) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                            + "CYCLE_INDEX, EXCEPTION_MSG, SUBSCRIPTION_NAME, CREATE_TIME, "
+                            + "LAST_FAIL_TIME, REV) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
             try {
                 int i = 1;
                 ps.setString(i++, job.getId());
@@ -1866,6 +1874,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 ps.setTimestamp(i++, timestamp(job.getLockedAt()));
                 ps.setTimestamp(i++, timestamp(job.getDuedate()));
                 ps.setInt(i++, job.getRetries());
+                ps.setInt(i++, job.getCycleIndex());
                 ps.setString(i++, job.getExceptionMessage());
                 ps.setString(i++, job.getSubscriptionName());
                 ps.setTimestamp(i++, timestamp(job.getCreateTime()));
@@ -2041,6 +2050,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             job.setLockedAt(date(rs.getTimestamp("LOCK_AT")));
             job.setDuedate(date(rs.getTimestamp("DUEDATE")));
             job.setRetries(rs.getInt("RETRIES"));
+            job.setCycleIndex(rs.getInt("CYCLE_INDEX"));
             job.setExceptionMessage(rs.getString("EXCEPTION_MSG"));
             job.setSubscriptionName(rs.getString("SUBSCRIPTION_NAME"));
             job.setCreateTime(date(rs.getTimestamp("CREATE_TIME")));
