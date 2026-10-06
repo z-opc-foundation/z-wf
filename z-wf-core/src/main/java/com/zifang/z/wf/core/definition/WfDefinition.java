@@ -218,6 +218,40 @@ public class WfDefinition implements Serializable {
     }
 
     /**
+     * 中间捕获事件所属的事件网关 —— 顺着它唯一的入线找源头。
+     *
+     * <p>入线不唯一时返回 {@code null}（并由调用方决定要不要报错）：
+     * 认不出网关就不知道该作废哪些兄弟分支，而"把全部分支都跑一遍"
+     * 正是这个功能存在理由被推翻的那种形态。
+     *
+     * <p><b>这里曾是三份各自抄一遍的实现</b>（校验器、运行期、订阅视图），
+     * 当时注释写着"跨类抽工具类的收益抵不上逻辑一眼看得见"。
+     * 加定时器分支时那份理由不再成立：判定要出现在<b>建 job</b>、<b>触发</b>、
+     * <b>部署期校验</b>、<b>订阅视图</b>四处，四份副本里只要有一处改了判定，
+     * 症状是"某一处认得出网关、另一处认不出"，而那不会报错，
+     * 只表现为某一条分支的兄弟没被作废。所以收在这里。
+     *
+     * @return 所属网关；入线不唯一、或源头不是事件网关时为 {@code null}
+     */
+    public WfNode gatewayOf(WfNode catchEvent) {
+        if (catchEvent == null
+                || catchEvent.getType() != WfNodeType.INTERMEDIATE_CATCH_EVENT) {
+            return null;
+        }
+        List<WfFlow> inFlows = incomingFlows(catchEvent.getId());
+        if (inFlows.size() != 1) {
+            return null;
+        }
+        WfNode source = node(inFlows.get(0).getSourceRef());
+        return source != null && source.getType() == WfNodeType.EVENT_BASED_GATEWAY ? source : null;
+    }
+
+    /** 该捕获事件是不是一个事件网关的分支（{@link #gatewayOf} 认得出网关）。 */
+    public boolean isEventGatewayBranch(WfNode catchEvent) {
+        return gatewayOf(catchEvent) != null;
+    }
+
+    /**
      * 找出<b>无条件</b>的开始节点 —— 即 {@code startProcessInstanceByKey} 的入口。
      *
      * <p>判定顺序：显式 {@link WfNodeType#START_EVENT} 优先；没有则退化为"无入线的节点"

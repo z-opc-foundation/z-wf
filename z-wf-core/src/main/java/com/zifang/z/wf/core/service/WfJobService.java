@@ -24,14 +24,32 @@ import com.zifang.z.wf.core.persistence.WfPersistence;
  * 引擎内嵌调度会让"引依赖就跑起来"成为默认行为。引擎只提供
  * {@link #executeDueJobs(Date)}：扫到期的、逐个执行、返回执行了几个。
  *
- * <p>目前唯一的 job 种类是<b>定时器边界事件</b>：到点后把 token 从宿主节点
- * 挪到边界事件上，沿它的出线走补偿/升级分支。
+ * <p>由时间触发的 job 有两种形态，各自对应 BPMN 里两种不同的语义：
+ * <ul>
+ *   <li><b>定时器边界事件</b>：到点后把 token 从宿主节点挪到边界事件上，
+ *       沿它的出线走补偿/升级分支（打断）。</li>
+ *   <li><b>事件网关的定时器分支</b>：到点即算这一格赢了，其余分支作废（竞速）。</li>
+ * </ul>
+ * 两者用不同的 job 类型（{@code TIMER} / {@code EVENT_TIMER}），
+ * 见 {@link #TIME_TRIGGERED_TYPES}。
  *
  * @author zifang
  */
 public class WfJobService {
 
     private static final Logger log = LoggerFactory.getLogger(WfJobService.class);
+
+    /**
+     * 由时间触发的 job 类型。
+     *
+     * <p>刻意列成显式清单而不是"凡是带 duedate 的都算"：
+     * 消息 / 信号订阅的 duedate 恒为 null，但"恒为 null"是一条约定，
+     * 而约定迟早会被某次改动破坏 —— 破坏后的症状是
+     * "还没发消息流程自己往前走了"，那比多一次查询贵得多。
+     */
+    private static final com.zifang.z.wf.core.model.WfJobType[] TIME_TRIGGERED_TYPES = {
+            com.zifang.z.wf.core.model.WfJobType.TIMER,
+            com.zifang.z.wf.core.model.WfJobType.EVENT_TIMER};
 
     private final WfPersistence persistence;
     private final WfRuntimeService runtimeService;
@@ -52,24 +70,32 @@ public class WfJobService {
             throw new WfEngineException("执行时刻不能为空：没有时间点就没有到点这个概念，"
                     + "传 null 会在下游变成扫描全部 job");
         }
-        // 显式限定 TIMER：消息 / 信号订阅不由时间触发。
-        // 只靠"duedate 为 null 所以 DUEDATE<? 捞不到"是不够的 —— 哪天谁给订阅填了
-        // duedate，"还没发消息流程自己往前走了"就是这么来的
-        WfJobQuery query = new WfJobQuery().setDueBefore(now)
-                .setType(com.zifang.z.wf.core.model.WfJobType.TIMER)
-                .setRetriesExhausted(Boolean.FALSE);
         int executed = 0;
-        // 分批取而不是一次全取：job 表在跑了一年的系统里可能堆着几十万条历史残留，
-        // 一次性读进内存会把它变成一次 OOM
-        for (WfJob job : persistence.queryJobs(query.setPageNum(1).setPageSize(200))) {
-            try {
-                if (fire(job)) {
-                    executed++;
+        // 逐个时间触发的类型各扫一遍，而不是一次查两种类型：
+        // 「哪些类型由时间触发」是个很小且固定的集合（定时器边界 + 事件网关定时器分支），
+        // 为它把 WfJobQuery 扩成多类型要同时改内存与 JDBC 两套实现，
+        // 而多一次查询的代价远小于那种改动带来的面。
+        // 缺了 EVENT_TIMER 的症状：事件网关的定时器分支**永远不响**，而流程一直等着 ——
+        // 没有任何报错，只是那条分支上的待办始终不出现
+        for (com.zifang.z.wf.core.model.WfJobType each : TIME_TRIGGERED_TYPES) {
+            // 显式限定类型：消息 / 信号订阅不由时间触发。
+            // 只靠"duedate 为 null 所以 DUEDATE<? 捞不到"是不够的 —— 哪天谁给订阅填了
+            // duedate，"还没发消息流程自己往前走了"就是这么来的
+            WfJobQuery query = new WfJobQuery().setDueBefore(now)
+                    .setType(each)
+                    .setRetriesExhausted(Boolean.FALSE);
+            // 分批取而不是一次全取：job 表在跑了一年的系统里可能堆着几十万条历史残留，
+            // 一次性读进内存会把它变成一次 OOM
+            for (WfJob job : persistence.queryJobs(query.setPageNum(1).setPageSize(200))) {
+                try {
+                    if (fire(job)) {
+                        executed++;
+                    }
+                } catch (RuntimeException e) {
+                    // 一个 job 失败不该让整批停摆 —— 后面还有别的单的提醒要发
+                    log.warn("job {} 执行失败: {}", job.getId(), e.getMessage(), e);
+                    recordFailure(job, e);
                 }
-            } catch (RuntimeException e) {
-                // 一个 job 失败不该让整批停摆 —— 后面还有别的单的提醒要发
-                log.warn("job {} 执行失败: {}", job.getId(), e.getMessage(), e);
-                recordFailure(job, e);
             }
         }
         if (executed > 0) {
@@ -79,18 +105,26 @@ public class WfJobService {
     }
 
     /**
-     * 触发一个定时器边界事件。
+     * 触发一个到期的定时器 job。
      *
-     * <p>先删 job 再推进流程：边界事件一旦触发就不该再触发第二次。
-     * 反过来的话，并发的两个执行器（或同一批里的两次扫描）会各推一次，
-     * 补偿分支被执行两遍 —— 那正是超时升级里最不能接受的后果。
+     * <p><b>校验 → 删 job → 推进</b>，三步的顺序不能换：
+     * <ul>
+     *   <li>删在前，是为了让定时器只触发一次。反过来的话，并发的两个执行器
+     *       （或同一批里的两次扫描）会各推一次，补偿分支或竞速分支被执行两遍 ——
+     *       那正是超时升级里最不能接受的后果。</li>
+     *   <li>校验在删之前，是因为校验是<b>抛异常</b>的。抛的时候 job 已经在库里没了，
+     *       {@code executeDueJobs} 的兜底 {@link #recordFailure} 回头
+     *       {@code findJob} 拿到 null，"执行失败"就只剩一行日志 ——
+     *       而故障是从 job 派生的，于是这条失败在故障视图里<b>彻底看不见</b>。</li>
+     * </ul>
      *
      * @return 是否真的触发了 —— 流程已结束、token 已挪走这类"该响没响"要能被
      *         调用方区分开，它们不是失败，也不该被算进执行计数
      */
     private boolean fire(WfJob job) {
+        runtimeService.checkTimerJobDispatch(job);
         persistence.deleteJob(job.getId());
-        return runtimeService.fireTimerBoundary(job);
+        return runtimeService.fireTimer(job);
     }
 
     /**
@@ -158,8 +192,8 @@ public class WfJobService {
      * 路径会把 job 一起吞掉 —— 那是把一件还没做的事当成做完了。
      * 与 {@code completeExternalTask} 的处理一致：被忽略的交差/续跑不删 job。
      *
-     * <p>（对比 {@link #fire}：那里 job 在推进前就删掉是对的，因为
-     * {@code fireTimerBoundary} 没有任何早退分支，删了必然接着推进。）
+     * <p>（对比 {@link #fire}：那里是"校验 → 删 → 推进"，删在推进之前是为了并发下
+     * 只触发一次；代价是校验必须排在删除之前，理由见那里的注释。）
      */
     private boolean resumeAsync(WfJob job) {
         return runtimeService.executeAsyncJob(job);
@@ -175,7 +209,11 @@ public class WfJobService {
     private void recordFailure(WfJob job, RuntimeException e) {
         WfJob latest = persistence.findJob(job.getId());
         if (latest == null) {
-            // 执行到一半自己删掉了（流程已结束），不是错误
+            // 跑到一半 job 已经不在了：续跑路径（resumeAsync 不删 job，由
+            // executeAsyncJob 在校验通过后才删）里，异常可能在删除之后才抛出来。
+            // 这时"失败原因"没有载体可写，只能留在日志里 ——
+            // 与其凭空造一条 job 出来（那会让一条早已作废的提醒重新出现在
+            // 待执行列表里），不如不写
             return;
         }
         latest.recordFailure(e.getClass().getSimpleName() + ": " + e.getMessage());

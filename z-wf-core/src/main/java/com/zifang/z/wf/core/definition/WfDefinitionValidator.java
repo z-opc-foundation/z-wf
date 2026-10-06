@@ -419,13 +419,27 @@ public class WfDefinitionValidator {
                     "中间捕获事件没有任何事件定义（messageEventDefinition / "
                             + "signalEventDefinition / timerEventDefinition），"
                             + "它在图上是一条永远等不到的死路");
-        } else if (!node.isSupportedCatchEvent()) {
+        } else if (node.isTimerEvent() && !isGatewayBranch(definition, node, inFlows)) {
+            // 定时器只有**作为事件网关的分支**时才支持。
+            // 孤立的定时器捕获事件（流程里直接写一个"等 5 分钟再继续"的节点）
+            // 需要的续跑路径认的是"边界事件的宿主"，而它没有宿主 ——
+            // 结果是定时器永远不响且没有任何报错。这类图在部署期就拒掉，
+            // 并说清缺的是哪一块。
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "中间捕获事件 " + id + " 用的是 timerEventDefinition（定时器捕获），"
+                            + "但它不是某个事件网关的分支。本引擎的定时器捕获"
+                            + "**只支持作为事件网关的分支** —— 那条路径有完整的竞速语义"
+                            + "（到点即算它赢了，其余分支作废）。"
+                            + "孤立的定时器捕获事件要的是另一条续跑路径，本引擎没有，"
+                            + "挂上去会得到一个永不响、也不报错的哑表。"
+                            + "要表达「等一会儿再继续」，请把它放在事件网关下，"
+                            + "与等消息 / 等信号的那几条分支并列");
+        } else if (!node.isSupportedGatewayBranch()) {
             add(WfValidationIssue.Severity.ERROR, id,
                     "中间捕获事件 " + id + " 用的是 " + describeUnsupportedCatch(node)
-                            + "，本引擎目前只支持 messageEventDefinition 与 "
-                            + "signalEventDefinition。定时器捕获事件要等 duedate 到点、"
-                            + "由扫描器捞起来续跑，而那条续跑路径认的是「宿主节点」——"
-                            + "中间捕获事件没有宿主，挂上去只会得到一个永不响、也不报错的哑表");
+                            + "，本引擎目前只支持 messageEventDefinition、"
+                            + "signalEventDefinition，以及作为事件网关分支的 "
+                            + "timerEventDefinition");
         }
         if (inFlows.size() != 1) {
             add(WfValidationIssue.Severity.ERROR, id,
@@ -442,6 +456,21 @@ public class WfDefinitionValidator {
                     "中间捕获事件 " + id + " 不是从事件网关进来的，"
                             + "它会一直等到事件到达为止，且不会与任何其他分支互斥");
         }
+    }
+
+    /**
+     * 这个捕获事件是不是事件网关的分支。
+     *
+     * <p>用入线参数而不是 {@code definition.gatewayOf(node)}：入线不唯一时
+     * 本方法后面会单独报错，这里先按"不是分支"处理，
+     * 免得同一条定义上刷出两条互相矛盾的诊断。
+     */
+    private boolean isGatewayBranch(WfDefinition definition, WfNode node, List<WfFlow> inFlows) {
+        if (inFlows.size() != 1) {
+            return false;
+        }
+        WfNode source = definition.node(inFlows.get(0).getSourceRef());
+        return source != null && source.getType() == WfNodeType.EVENT_BASED_GATEWAY;
     }
 
     private String describeUnsupportedCatch(WfNode node) {

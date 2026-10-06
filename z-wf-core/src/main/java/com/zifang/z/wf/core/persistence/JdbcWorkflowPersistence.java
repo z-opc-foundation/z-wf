@@ -363,7 +363,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             statement = connection.createStatement();
             int moved = statement.executeUpdate(
                     "UPDATE ZWF_JOB SET SUBSCRIPTION_NAME = EXCEPTION_MSG "
-                            + "WHERE JOB_TYPE IN ('MESSAGE','SIGNAL','EVENT_MESSAGE','EVENT_SIGNAL') "
+                            + "WHERE JOB_TYPE IN ('MESSAGE','SIGNAL','EVENT_MESSAGE','EVENT_SIGNAL','EVENT_TIMER') "
                             + "AND SUBSCRIPTION_NAME IS NULL AND EXCEPTION_MSG IS NOT NULL");
             if (moved > 0) {
                 log.info("已把 {} 条存量订阅的等待事件名搬到 SUBSCRIPTION_NAME 列", moved);

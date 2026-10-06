@@ -1021,6 +1021,101 @@ public class WfRuntimeService implements WfSubProcessLauncher {
     }
 
     /**
+     * 定时器 job 触发前的交叉校验：job 类型与它指向的节点类型必须对得上。
+     *
+     * <p><b>单独抽出来、且必须在删 job 之前调用</b>，原因是一个具体的坑：
+     * {@code WfJobService#fire} 的形状是"先删 job 再推进"（并发投递时后到的那次
+     * 根本查不到 job，于是同一条分支不会被走两遍）。可这道校验是<b>抛异常</b>的，
+     * 抛的时候 job 已经被删了 —— 于是 {@code executeDueJobs} 的兜底
+     * {@code recordFailure} 回头 {@code findJob} 只会拿到 null，
+     * "执行失败"就只剩一行日志，而故障是从 job 派生的（见
+     * {@code WfJobService#incidentsOf}），于是这条失败<b>在故障视图里彻底看不见</b>。
+     * 一条永远等不到提醒的定时器，连报错线索都没有。
+     *
+     * <p>因此执行器在删之前先问一句"这条 job 到底该按哪条路走"，答不上来就
+     * 当场失败、job 完好地留在原地被记成失败。
+     *
+     * @param job 待校验的定时器 job
+     * @throws WfEngineException 类型与节点类型对不上
+     */
+    public void checkTimerJobDispatch(WfJob job) {
+        WfProcessInstance instance = persistence.findProcessInstance(job.getProcessInstanceId());
+        if (instance == null || instance.getStatus() == null || instance.getStatus().isTerminal()) {
+            // 流程已终态：交给 fireTimer / fireEventBoundary 各自的早退分支去写日志与钩子。
+            // 这里不拦 —— "流程结束了还有残留定时器"是清理没做干净，不是脏 job
+            return;
+        }
+        WfNode node = definitionOf(instance).node(job.getElementId());
+        if (node == null) {
+            // 定义里已经没这个节点：同一条 job 早已无路可走，那两条路径各自认得出这种脏数据，
+            // 不在这里替它们决定
+            return;
+        }
+        // 先按 job 类型判 —— EVENT_* 三种是竞速，TIMER 是边界打断。
+        // 节点类型只作交叉校验：两者对不上说明定义被替换过而残留了旧 job，
+        // 那时报出来比"猜一个继续跑"好
+        boolean race = isEventGatewayJob(job.getType());
+        boolean nodeLooksRight = race
+                ? node.getType() == WfNodeType.INTERMEDIATE_CATCH_EVENT
+                : node.getType() == WfNodeType.BOUNDARY_EVENT;
+        if (!nodeLooksRight) {
+            throw new WfEngineException("job " + job.getId() + " 的类型（" + job.getType()
+                    + "）与它指向的节点类型（" + node.getType() + "）对不上："
+                    + "竞速型应指向 intermediateCatchEvent，打断型应指向 boundaryEvent。"
+                    + "这多半是定义被替换过而残留的旧 job");
+        }
+    }
+
+    /**
+     * 触发一个到期的定时器 job。
+     *
+     * <p><b>按 job 类型分派</b>，而不是按 {@code elementId} 解析出的节点类型
+     * 或 {@code attachedToRef} 是否为空：
+     * <ul>
+     *   <li><b>{@code EVENT_TIMER}（事件网关的定时器分支）</b>：
+     *       {@code elementId} 指向那个 intermediateCatchEvent，它<b>没有宿主</b>
+     *       （它自己就是那一格）。语义是<b>竞速</b>：到点即算它赢了，其余分支作废。</li>
+     *   <li><b>{@code TIMER}（边界事件的定时器）</b>：{@code elementId} 指向 boundaryEvent，
+     *       {@code attachedToRef} 指向被挂的宿主。语义是<b>打断</b>：
+     *       宿主上的待办作废、token 拉到边界事件上走补偿分支。</li>
+     * </ul>
+     *
+     * <p>两者<b>刻意用不同的 job 类型</b>，而不是共用 {@code TIMER} 再靠节点类型区分：
+     * 共用会让"哪些是竞速型 job"变成一处需要按节点类型反推的判断 ——
+     * 而落选分支的清理（{@link #deleteCatchJobsOf}）正是按类型白名单删的，
+     * 一旦漏掉一种，症状是"那条分支输掉了但它的 job 还挂着"，
+     * 到点时它会去触发一条已经不在那一格上的 token，把流程静默地多推一遍。
+     *
+     * <p>节点类型只留作<b>交叉校验</b>（{@link #checkTimerJobDispatch}）：
+     * 两者对不上说明定义被替换过而残留了旧 job，那时报出来比"猜一个继续跑"好。
+     *
+     * @param job 已到期的 job（调用方保证它已被删除，不会重复触发）
+     * @return 是否真的触发了
+     */
+    public boolean fireTimer(WfJob job) {
+        // 这里也校验一次而不是只靠执行器：直接调本方法的调用方（如消息边界那条续跑路径）
+        // 同样要拿到这道闸门。checkTimerJobDispatch 是纯读，重复调用没有代价
+        checkTimerJobDispatch(job);
+        WfProcessInstance instance = persistence.findProcessInstance(job.getProcessInstanceId());
+        WfNode node = instance == null || instance.getStatus() == null
+                || instance.getStatus().isTerminal() ? null
+                : definitionOf(instance).node(job.getElementId());
+        if (node == null) {
+            // 流程已终态、或定义里已经没有这个节点：交给下面两条路径各自的早退分支，
+            // 它们会把"为什么没触发"写进日志与钩子，而不是让这里猜
+            return fireTimerBoundary(job);
+        }
+        if (isEventGatewayJob(job.getType())) {
+            return fireEventGatewayBranch(job, "system", "timer:事件网关分支 " + node.getId()
+                    + " 的定时器到点（已等 " + WfTimerSupport.describeDuration(
+                    System.currentTimeMillis() - (job.getCreateTime() == null
+                            ? System.currentTimeMillis() : job.getCreateTime().getTime()))
+                    + "）");
+        }
+        return fireTimerBoundary(job);
+    }
+
+    /**
      * 触发定时器边界事件 —— 由 {@link WfJobService} 在 job 到期时调用。
      *
      * <p>形状与 {@link #handleBpmnError} 一致：把 token 从宿主节点挪到边界事件上，
@@ -1281,14 +1376,19 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             throw new WfEngineException("事件网关订阅指向的节点在定义里不存在："
                     + "多半是定义被换过而残留的旧 job");
         }
+        // 判定本身在 WfDefinition#gatewayOf（见那里的注释：这份判定现在有四个调用点，
+        // 各自抄一份的漂移代价已经超过抽出来的收益）。这里只保留运行期特有的严格性：
+        // 入线不唯一时**抛异常**而不是静默返回 null ——
+        // 返回 null 的话这一轮竞速会因为"没有网关"而一个兄弟都不作废，
+        // 流程于是把全部分支都跑一遍，那正是这个功能存在的理由被推翻，且从外面看一切正常
+        WfNode gateway = definition.gatewayOf(catchEvent);
         List<WfFlow> inFlows = definition.incomingFlows(catchEvent.getId());
         if (inFlows.size() != 1) {
             throw new WfEngineException("中间捕获事件 " + catchEvent.getId() + " 有 "
                     + inFlows.size() + " 条入线，认不出它属于哪个事件网关，"
                     + "也就不知道该作废哪些兄弟分支。这是部署期就应当拦下的定义错误");
         }
-        WfNode source = definition.node(inFlows.get(0).getSourceRef());
-        return source != null && source.getType() == WfNodeType.EVENT_BASED_GATEWAY ? source : null;
+        return gateway;
     }
 
     /** 删掉某个 token 上还挂着的捕获事件订阅。 */
@@ -1304,9 +1404,18 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         }
     }
 
+    /**
+     * 竞速型 job —— 落选分支清理时按这份名单删。
+     *
+     * <p>三种竞速形态（消息 / 信号 / 定时器）必须<b>都在</b>名单里：
+     * 漏掉一种的症状是"那条分支输掉了，但它的 job 还挂着"，
+     * 到点/到事件时它会去触发一条已经不在那一格上的 token。
+     * 这不是"顶多多跑一次"，而是流程被静默地多推一次且无人报错。
+     */
     private static boolean isEventGatewayJob(WfJobType type) {
         return type == WfJobType.EVENT_MESSAGE
-                || type == WfJobType.EVENT_SIGNAL;
+                || type == WfJobType.EVENT_SIGNAL
+                || type == WfJobType.EVENT_TIMER;
     }
 
     /**

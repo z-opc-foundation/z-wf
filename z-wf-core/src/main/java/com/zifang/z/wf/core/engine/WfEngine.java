@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory;
 import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.WfFlow;
 import com.zifang.z.wf.core.definition.WfNode;
+import com.zifang.z.wf.core.definition.WfTimerSupport;
 import com.zifang.z.wf.core.definition.WfNodeType;
 import com.zifang.z.wf.core.engine.expression.WfExpressionEvaluator;
 import com.zifang.z.wf.core.model.WfActivityInstance;
@@ -363,7 +364,7 @@ public class WfEngine {
     }
 
     /**
-     * 为中间捕获事件建一条"等消息 / 等信号"的订阅 job。
+     * 为中间捕获事件建一条"等消息 / 等信号 / 等到点"的 job。
      *
      * <p>{@code elementId} 记的是<b>捕获事件本身</b>而不是网关：事件到达时要能
      * 精确唤醒"停在这一格上的那一条 token"，而不是"某个网关上的某条 token"。
@@ -371,15 +372,28 @@ public class WfEngine {
      *
      * <p>网关 id <b>不存</b>，触发时从流程定义里查出来：捕获事件的入线只有一条，
      * 源头就是网关。存一份反而多出一个可能与定义不一致的副本。
+     *
+     * <p><b>定时器分支用 {@code EVENT_TIMER} 而不是复用 {@code TIMER}，且
+     * {@code attachedToRef} 留空</b>：边界事件的定时器有"宿主"
+     * （{@code attachedToRef} 指向被挂的那个节点），网关分支的定时器没有 ——
+     * 它自己就是那一格。类型要分开则是因为"哪些是竞速型 job"必须是一份能直接
+     * 列举的清单：落选分支的清理（{@code deleteCatchJobsOf}）按类型白名单删，
+     * 两种形态共用一个类型就得多一步"再按节点类型反推是不是竞速"，
+     * 而漏掉一次的症状是流程被静默地多推一遍。
+     * 到期时按 <b>job 类型</b>分派（见 {@code WfRuntimeService#fireTimer}），
+     * 节点类型只留作交叉校验。
      */
     private com.zifang.z.wf.core.model.WfJob eventCatchJob(WfContext context, WfNode node,
                                                             WfExecution token) {
-        if (!node.isSupportedCatchEvent()) {
+        boolean timerBranch = node.isTimerEvent();
+        if (!node.isSupportedGatewayBranch()
+                || (timerBranch && !context.getDefinition().isEventGatewayBranch(node))) {
             // 走到这里说明部署期校验被绕过了（自定义装配、或直接调引擎不经过部署）。
             // 挂一个永远不会被触发的哑订阅，等于让流程停在那里且无人报错 ——
             // 与其那样，不如把流程停成"内部终止 + 写明原因"，让人一眼看出卡在哪。
-            fail(context, "中间捕获事件 " + node.getId() + " 缺少本引擎等得住的事件定义"
-                    + "（当前只支持 messageEventDefinition 与 signalEventDefinition），"
+            fail(context, "中间捕获事件 " + node.getId() + " 不是本引擎等得住的事件网关分支"
+                    + "（事件网关分支支持 messageEventDefinition / signalEventDefinition / "
+                    + "timerEventDefinition，独立的捕获事件只支持前两种），"
                     + "它在图上是一条永远等不到的死路");
             return null;
         }
@@ -387,6 +401,29 @@ public class WfEngine {
         job.setProcessInstanceId(context.getProcessInstanceId());
         job.setExecutionId(token.getId());
         job.setElementId(node.getId());
+        if (timerBranch) {
+            // EVENT_TIMER 而不是 TIMER：竞速与打断共用一个类型时，
+            // 落选分支的清理（按类型白名单删 job）就会漏掉这一种
+            job.setType(com.zifang.z.wf.core.model.WfJobType.EVENT_TIMER);
+            // 算不出触发时刻就直接抛：建一个永远不响的哑定时器比启动失败危险得多 ——
+            // 它的症状是"超时提醒一直没来"，没人查得到根因。
+            // 变量引用取不到值时按 fail-closed 报错，而不是当成 0 或忽略
+            Date base = token.getEnteredTime() != null ? token.getEnteredTime() : new Date();
+            try {
+                job.setDuedate(WfTimerSupport.resolveDueDate(node.getTimerType(),
+                        node.getTimerExpression(), base, context.mergedVariables()));
+            } catch (IllegalArgumentException e) {
+                // 抛而不是 fail()：与定时器边界那条路（WfContext#startTimerJobs）一致 ——
+                // 都是"启动时算不出触发时刻"这类定义/参数问题，直接让这次启动失败。
+                // 标记终止的话调用方拿到的是一个"内部终止"的实例，
+                // 而真正的原因（哪个变量没值）只出现在引擎日志里
+                throw new com.zifang.z.wf.core.service.WfEngineException(
+                        "事件网关定时器分支 " + node.getId() + " 算不出触发时刻: " + e.getMessage(), e);
+            }
+            job.setCreateTime(new java.util.Date());
+            job.setRetries(com.zifang.z.wf.core.model.WfJob.DEFAULT_RETRIES);
+            return job;
+        }
         job.setType(node.isSignalEvent()
                 ? com.zifang.z.wf.core.model.WfJobType.EVENT_SIGNAL
                 : com.zifang.z.wf.core.model.WfJobType.EVENT_MESSAGE);

@@ -249,16 +249,34 @@ public class WfNode implements Serializable {
     }
 
     /**
-     * 本引擎当前能真的等住的捕获事件种类。
+     * 本引擎当前能真的等住的<b>独立</b>捕获事件种类（不是事件网关的分支）。
      *
-     * <p><b>只有消息与信号</b>。定时器捕获事件要等 `duedate` 到点、由扫描器捞起来，
-     * 而扫描器只认 {@code JOB_TYPE=TIMER}；给事件网关分支也挂 TIMER 的话，
-     * 定时器边界事件那条续跑路径会把它当成"宿主节点"，而中间捕获事件没有宿主，
-     * 结果是<b>定时器永远不响且没有任何报错</b>。与其那样，不如在部署期明确拒绝，
-     * 并把缺的那一块说清楚。
+     * <p><b>只有消息与信号</b>。独立的定时器捕获事件（流程里直接写一个
+     * "等 5 分钟再继续"的中间捕获事件）要等 {@code duedate} 到点、由扫描器捞起来，
+     * 而那条续跑路径要分清"边界事件的宿主"与"网关分支"，多一个未支持的形态
+     * 就多一处可能挂错。与其那样，不如在部署期明确拒绝。
+     *
+     * <p>定时器<b>作为事件网关的分支</b>是支持的，那是另一个判定：
+     * {@link #isSupportedGatewayBranch()}。
      */
     public boolean isSupportedCatchEvent() {
         return isMessageEvent() || isSignalEvent();
+    }
+
+    /**
+     * 本引擎能真的等住的事件网关分支种类。
+     *
+     * <p>比 {@link #isSupportedCatchEvent()} 多了定时器：网关分支的定时器到期时
+     * 走的是<b>竞速</b>语义（它赢了，其余分支作废），
+     * 而不是"到点就往下走" —— 后者要判断这条捕获事件是不是孤立的，
+     * 而这个判断在部署期（{@code WfDefinitionValidator}）与引擎侧（{@code WfEngine}）
+     * 都要做一遍，放在节点上就等于把"是不是网关分支"这件事藏进了节点类型里。
+     *
+     * <p>所以这里<b>只回答"事件定义本身认不认识"</b>，
+     * "是不是网关分支"由 {@code WfDefinition#gatewayOf} 回答。
+     */
+    public boolean isSupportedGatewayBranch() {
+        return isMessageEvent() || isSignalEvent() || isTimerEvent();
     }
 
     private static boolean isBlank(String s) {

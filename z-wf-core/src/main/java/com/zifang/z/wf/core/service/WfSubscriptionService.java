@@ -229,6 +229,9 @@ public class WfSubscriptionService {
         }
         switch (type) {
             case TIMER:
+            // 网关的定时器分支与边界定时器在"等什么"上是同一件事（等一个时刻），
+            // 归并成 timer；要区分"打断还是竞速"看 jobType 那一列
+            case EVENT_TIMER:
                 return "timer";
             case MESSAGE:
             case EVENT_MESSAGE:
@@ -247,23 +250,17 @@ public class WfSubscriptionService {
     }
 
     /**
-     * 捕获事件所属的事件网关 —— 与运行期 {@code WfRuntimeService#gatewayOf} 同一套反查。
+     * 捕获事件所属的事件网关。
      *
-     * <p>刻意不抽成公共方法：一个在 core/service 一个在 core/service 的另一处，
-     * 跨类抽工具类的收益抵不上"两边各自一行、逻辑一眼看得见"。
-     * 代价是这两处若有一处改了另一处不会跟着改 —— 所以这里的注释指明了另一处。
+     * <p>原先这里有一份自己的实现，注释写着"与运行期同一套反查，刻意不抽成公共方法"。
+     * 那条理由在加定时器分支时不成立了：判定多了一个调用点（建 job 时要认分支），
+     * 各自抄一份的漂移代价开始超过抽出来的收益。现在统一走
+     * {@link WfDefinition#gatewayOf}，运行期那份只在"入线不唯一"上比这里严格
+     * （它要抛异常，这里返回 null —— 订阅视图只是标注，不该因为图脏就查不出来）。
      */
     private String gatewayOf(WfDefinition definition, WfNode node) {
-        if (node == null || node.getType() != WfNodeType.INTERMEDIATE_CATCH_EVENT) {
-            return null;
-        }
-        List<WfFlow> inFlows = definition.incomingFlows(node.getId());
-        if (inFlows.size() != 1) {
-            return null;
-        }
-        WfNode source = definition.node(inFlows.get(0).getSourceRef());
-        return source != null && source.getType() == WfNodeType.EVENT_BASED_GATEWAY
-                ? source.getId() : null;
+        WfNode gateway = definition.gatewayOf(node);
+        return gateway == null ? null : gateway.getId();
     }
 
     private Long waitedMillis(Date since) {

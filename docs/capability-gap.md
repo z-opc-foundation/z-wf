@@ -146,12 +146,12 @@
 | **嵌入式 `subProcess`** | ❌ | **内联内容永远不执行。** 解析器把内联节点收进扁平表，引擎却直接穿透。现在部署期报 ERROR 挡住，可用 callActivity 代替 |
 | **`multiInstance`**（会签/或签/计数） | 🟡 | **本轮补上**：`loopCardinality` + `completionCondition`，任务类节点并行展开。缺 `collection` 集合迭代与 `isSequential` 串行（部署期报 ERROR 挡住，不做半套） |
 | `boundaryEvent` | 🟡 | **错误边界**：`<errorEventDefinition errorRef>` + `WfRuntimeService#handleBpmnError` + `BpmnError`。**定时器边界**：`<timerEventDefinition>` + Job 执行器。**消息/信号边界**：`<messageEventDefinition messageRef>` / `<signalEventDefinition signalRef>`，token 一进入宿主节点就作为订阅挂在 `ZWF_JOB` 上，`triggerMessage`（点对点）/ `broadcastSignal`（广播）到达时**打断**在办的流程：宿主待办作废、token 走补偿分支。非中断型（`cancelActivity="false"`）**部署期报 ERROR**（需要另一套订阅存活状态，不做半套） |
-| **`intermediateCatchEvent`** | 🟡 | ✅ 已实现（消息 / 信号两种事件定义）：token 停在该节点挂一条 `EVENT_MESSAGE` / `EVENT_SIGNAL` 订阅，**不建人工待办** —— 它等的是消息不是某个人，退化成待办的话事件网关就变成"让 N 个人同时点"。**也支持不经网关的普通用法**（流程里直接写、等消息继续），此时只前进自己不与任何分支互斥。**剩余**：`timerEventDefinition`（见下）与 `conditionalEventDefinition` / `escalationEventDefinition` / `linkEventDefinition` |
+| **`intermediateCatchEvent`** | 🟡 | ✅ 已实现（消息 / 信号 / **定时器**三种事件定义）：token 停在该节点挂一条 `EVENT_MESSAGE` / `EVENT_SIGNAL` / `EVENT_TIMER` 订阅，**不建人工待办** —— 它等的是消息不是某个人，退化成待办的话事件网关就变成"让 N 个人同时点"。**也支持不经网关的普通用法**（流程里直接写、等消息继续），此时只前进自己不与任何分支互斥。**定时器捕获只支持作为事件网关的分支**（**本轮补上**）：孤立的定时器捕获事件仍报 ERROR —— 它要的是另一条"到点就往下走"的续跑路径，本引擎没有，挂上去会得到永不响也不报错的哑表。**剩余**：`conditionalEventDefinition` / `escalationEventDefinition` / `linkEventDefinition` |
 | `intermediateThrowEvent` | ❌ | **部署期报 ERROR**（见 §4），并建议改用等价的 `sendTask` |
-| `eventBasedGateway` | 🟡 | ✅ 已实现：token 分叉到各中间捕获事件，**谁的事件先到就走谁，其余分支连同各自的订阅一并作废**（落选分支在轨迹上留 `eventGatewayLost` 一条）。竞速的兄弟集合从**流程定义**反查（捕获事件唯一入线的源头就是网关），不另存副本。订阅用 `EVENT_MESSAGE`/`EVENT_SIGNAL` 两种新 job 类型，与消息/信号**边界订阅**分开 —— 后者是打断，前者是竞速，混用时触发路径必须去猜而猜错的后果是流程静默走错分支。**剩余**：定时器分支（`timerEventDefinition`）、`conditionalEventDefinition` 分支 |
+| `eventBasedGateway` | 🟡 | ✅ 已实现：token 分叉到各中间捕获事件，**谁的事件先到就走谁，其余分支连同各自的订阅一并作废**（落选分支在轨迹上留 `eventGatewayLost` 一条）。竞速的兄弟集合从**流程定义**反查（捕获事件唯一入线的源头就是网关），不另存副本。订阅用 `EVENT_MESSAGE`/`EVENT_SIGNAL`/**`EVENT_TIMER`** 三种 job 类型，与消息/信号/定时器**边界**订阅分开 —— 后者是打断，前者是竞速，混用时触发路径必须去猜而猜错的后果是流程静默走错分支。**定时器分支本轮补上**：到点即算它赢，其余分支作废。**剩余**：`conditionalEventDefinition` 分支 |
 | `complexGateway` | 🟡 | ✅ 已实现：按变量**取值**分派（`zifang:caseVariable` + 出线 `zifang:caseValue`），`camunda:caseExpression` 同样识别。**剩余**：Camunda 侧的后置条件（`condition` 元素）、配对/非配对语义差异 |
 | `transaction` / `adHocSubProcess` | ❌ | 同上，报错挡住 |
-| **定时器** `timerEventDefinition` | ✅ | `timeDuration`（PT5M / P1DT2H / P1Y）与 `timeDate`（2026-12-31T18:00:00Z）已实现，可写 `${变量}` 由流程实例决定时限。**`timeCycle` 循环定时器刻意不支持**，部署期报 ERROR |
+| **定时器** `timerEventDefinition` | ✅ | `timeDuration`（PT5M / P1DT2H / P1Y）与 `timeDate`（2026-12-31T18:00:00Z）已实现，可写 `${变量}` 由流程实例决定时限。**边界定时器（打断）与事件网关定时器分支（竞速）都已接上执行器**（`TIMER` / `EVENT_TIMER` 两种 job 类型，`WfJobService#executeDueJobs` 逐类型各扫一遍）。**`timeCycle` 循环定时器刻意不支持**，部署期报 ERROR |
 | **异步** `asyncBefore` / `asyncAfter` | 🟡 | ✅ 已实现：`zifang:` 与 `camunda:` 双前缀；`ASYNC_BEFORE`/`ASYNC_AFTER` 两个 job 类型 + `WfJobService#executeAsyncJobs`。**剩余**：异步 job 的优先级（`asyncBefore` 配 exclusive/priority）、`timeCycle` 循环定时器、多实例+异步（部署期已挡） |
 | **外部任务** `externalTask` / `ExternalTaskService` | ✅ | `serviceTask` + `zifang:topic` 标注（`<externalTask>` 不是 BPMN 2.0 元素，Camunda 同样靠标注在 serviceTask 上）。原子"选出+上锁"、租约制、`fail` 解锁+退避、重试耗尽留档。REST 7 端点在 `/api/wf/external-tasks` |
 | `errorRef` / `errorEventDefinition` | ✅ | 见上。**刻意不支持「空 errorRef = 捕获所有错误」**——宽泛捕获会把不相关异常也吸走，让本该崩的流程继续走 |
@@ -286,7 +286,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 历史查询体系（活动 / 任务 / 流程实例 / **变量变更审计** + 历史清理已实现）·
 ~~Repository 完整化~~（定义停用/启用 + 模型回读 + 定义查询 + 物理删除已实现）·
 ~~任务挂起~~（suspend/activate + 七处闸门 + 查询过滤 + REST 已实现）·
-~~运行时增删候选人~~（含 `candidateOrAssigned` 待办或语义 + 可认领列表按人过滤）· ~~复杂网关~~ · ~~事件网关~~（消息/信号分支已实现，定时器分支待补）· ~~实例迁移~~（`move` 已实现，见 §1.2；`moveTaskState` 仍缺）· ~~Filter~~（**本轮补上**，见 §1.5）
+~~运行时增删候选人~~（含 `candidateOrAssigned` 待办或语义 + 可认领列表按人过滤）· ~~复杂网关~~ · ~~事件网关~~（**消息 / 信号 / 定时器三种分支均已实现**，见 §2；仅缺 `conditionalEventDefinition` 分支）· ~~实例迁移~~（`move` 已实现，见 §1.2；`moveTaskState` 仍缺）· ~~Filter~~（**第 9 轮补上**，见 §1.5）· ~~中间捕获事件的定时器分支~~（**本轮补上**，见 §2）
 
 ### P2 —— 管理便利
 
@@ -296,8 +296,8 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 579 个测试兜着
-- 从测试与审计中逼出并修复的**真实缺陷 31 项**，其中 4 项属于"能力看着在、实际不生效"：
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 586 个测试兜着
+- 从测试与审计中逼出并修复的**真实缺陷 33 项**，其中 4 项属于"能力看着在、实际不生效"：
   未支持元素静默退化、`receiveTask` 不等待、未部署定义启动、`onBeforeCreate` 从未触发
 - **本轮（变量实例查询）写出 3 个自己造的缺陷，都在流出前抓住**，但其中两个的形态值得记：
   ① **派生视图的 id 在 setter 之前就拼好了**。`base()` 回头去读视图上的
@@ -609,3 +609,76 @@ SQL 不写 `ORDER BY` 时顺序由存储引擎决定，那里才真的能观察�
 "必须真的改到了"的断言（本轮改成 Python 侧 `assert a in t` 才暴露出来），
 `grep` 只能用来做"文件在不在"这类粗筛，**不能用来确认多行补丁打上了**。
 
+### 本轮反向验证记录（事件网关的定时器分支）
+
+10 条变异，**10 红**（`WfEventGatewayTest`，27 条）。逐条都在**独立 worktree**（`/tmp/z-wf-rv10`）里跑，
+跑完逐文件 `diff` 确认无残留。
+
+| 变异 | 结果 | 被哪条判据抓住 |
+|---|---|---|
+| M1 引擎侧去掉 `isEventGatewayBranch` 闸门 | 🔴 1 红 | `runtimeRefusesStandaloneTimerCatch` |
+| M2 网关定时器分支改用 `TIMER` 而非 `EVENT_TIMER` | 🔴 3 红 | 落选分支清理 / 订阅视图 / 到点触发 |
+| M3 `isEventGatewayJob` 漏掉 `EVENT_TIMER` | 🔴 2 红 | 同上 |
+| M4 `fire` 里把校验挪到删除之后 | 🔴 1 红 | `timerJobPointingAtWrongNodeTypeIsRejected` |
+| M5 类型/节点类型对不上时不抛 | 🔴 1 红 | 同上（且拿到的是另一条报错文案） |
+| M6 `executeDueJobs` 漏扫 `EVENT_TIMER` | 🔴 1 红 | `timerBranchWinsWhenDue` |
+| M7 算不出触发时刻时兜一个时刻而不抛 | 🔴 1 红 | `timerBranchWithUnresolvableVariableFails` |
+| M8 校验器放行孤立的定时器捕获事件 | 🔴 1 红 | `standaloneTimerCatchIsRejected` |
+| M9 `duedate` 算成永不到点的常数 | 🔴 2 红 | `timerBranchWinsWhenDue`（补断言后） |
+| M10 `duedate` 时长算错（5 分钟当 1 小时） | 🔴 2 红 | 同上 |
+
+**本轮自己写出来、并被反向验证抓住的两个缺陷**：
+
+1. **落选分支的定时器 job 不被清理**。第一版让网关定时器分支复用 `TIMER`，
+   而落选分支的清理（`deleteCatchJobsOf`）是**按类型白名单**删的 ——
+   于是消息分支赢的时候，输掉的定时器 job 还挂在库里，到点会去触发一条
+   **已经不在那一格上的 token**，把流程静默地多推一遍，且无人报错。
+   ⇒ 这直接推翻了"复用 `TIMER`、靠节点类型分派"的设计。**宁可多一个枚举值**，
+   也不要让触发路径和清理路径各自去猜"这条是不是竞速"。
+
+2. **`fire` 先删 job 再校验，失败因此记不上**。
+   `WfJobService#fire` 的形状是"先删 job 再推进"（并发投递时后到的那次
+   根本查不到 job，于是同一条分支不会被走两遍）。可交叉校验是**抛异常**的，
+   抛的时候 job 已经不在库里了 —— `recordFailure` 回头 `findJob` 拿到 `null`，
+   "执行失败"就只剩一行日志。**而故障是从 job 派生的**，
+   于是这条失败在故障视图里**彻底看不见**：一条永远等不到提醒的定时器，
+   连报错线索都没有。
+   ⇒ 修法不是把校验挪到删除之后（那会把并发保护拆掉），而是把校验
+   **提到删除之前**：拆出 `WfRuntimeService#checkTimerJobDispatch`，
+   执行器 `fire` 先问"这条 job 到底该按哪条路走"，答不上来就当场失败、
+   job 完好地留在原地被记成失败。`fireTimer` 自己也调一次（纯读，无代价），
+   直接调它的调用方同样拿到这道闸门。
+
+**两条判据缺口，都在写完测试后由变异暴露**：
+
+- **M5 抓出的是"文案不对"而不是"没拦"**：把 `if (!nodeLooksRight) throw` 改成
+  `if (false) throw` 之后，异常确实还是抛了 —— 只是从另一条路径抛的
+  （`WfJobService#resolveBoundary`），消息是"指向的边界事件不存在"而不是"对不上"。
+  判据断言的是**具体文案**，所以照样转红。
+  ⇒ 教训：**判据要断言错误消息本身，不能只断言"抛了"** ——
+  后者对"从哪条路抛的"零区分力，而那正是这类交叉校验最容易被绕开的地方。
+
+- **M9 一开始打不红，暴露的是判据本身的形状**。
+  `timerBranchWinsWhenDue` 里两处 `executeDueJobs` 都拿 `timerJob.getDuedate()`
+  **自己**当基准（早一秒 / 晚一秒）。于是 `duedate` 无论被改成什么 ——
+  常数、远期时刻 —— "到点就触发"都照样成立。
+  **它量的是自洽，不是正确。**
+  ⇒ 补了一条独立基准的断言：`duedate` 必须落在「实例开始时间 + PT5M」的 5 秒容差内
+  （base 是 token 的 `enteredTime`，与实例开始相差毫秒级）。
+  补完之后 M9、M10 立刻双双转红。
+  ⇒ 这与"用 `duedate` 当基准去验 `duedate`"是同一族：
+  **断言的基准不能是被断言对象自己导出的量。**
+
+**一条跨轮仍然成立的纪律**（本轮又验证了一次）：
+引擎侧那道闸门判的是**启动时手里那个 `WfDefinition` 对象**，不是自己去仓储重读。
+而 `InMemoryWorkflowPersistence#findDefinition` 返回的是**副本**（走 codec），
+所以「部署时传进去的那个原对象」是干净的，直接拿来启动**等于没绕过部署期**。
+⇒ 这条用例必须 `doctored.findDefinition(key, version)` **把定义读回来再启动**，
+并用 `assertNotSame` 把"读回来的确实是副本"钉住 ——
+否则判据会在一个根本没被扰动的定义上运行，而它看起来是在测引擎侧闸门。
+
+**本轮唯一一处推翻自己此前决定的地方**：
+`gatewayOf` 的判定此前在三处各抄一份，理由是"逻辑一眼看得见，抽工具类的收益抵不上"。
+本轮它出现在**建 job / 触发 / 部署期校验 / 订阅视图**四处，
+三份副本的漂移代价已经超过抽出来的收益，于是收进 `WfDefinition`。
+判据是**调用点数**，不是"这段逻辑复不复杂"。
