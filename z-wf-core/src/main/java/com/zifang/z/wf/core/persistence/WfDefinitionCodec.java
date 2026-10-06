@@ -134,6 +134,10 @@ public final class WfDefinitionCodec {
         private boolean asyncBefore;
         private boolean asyncAfter;
         private String resultVariable;
+        private String decisionRef;
+        private String decisionRefBinding;
+        private String decisionRefVersion;
+        private String mapDecisionResult;
         private boolean multiInstance;
         private String loopCardinality;
         private String loopCollection;
@@ -434,6 +438,38 @@ public final class WfDefinitionCodec {
             this.resultVariable = resultVariable;
         }
 
+        public String getDecisionRef() {
+            return decisionRef;
+        }
+
+        public void setDecisionRef(String decisionRef) {
+            this.decisionRef = decisionRef;
+        }
+
+        public String getDecisionRefBinding() {
+            return decisionRefBinding;
+        }
+
+        public void setDecisionRefBinding(String decisionRefBinding) {
+            this.decisionRefBinding = decisionRefBinding;
+        }
+
+        public String getDecisionRefVersion() {
+            return decisionRefVersion;
+        }
+
+        public void setDecisionRefVersion(String decisionRefVersion) {
+            this.decisionRefVersion = decisionRefVersion;
+        }
+
+        public String getMapDecisionResult() {
+            return mapDecisionResult;
+        }
+
+        public void setMapDecisionResult(String mapDecisionResult) {
+            this.mapDecisionResult = mapDecisionResult;
+        }
+
         public void setMessageName(String messageName) {
             this.messageName = messageName;
         }
@@ -583,6 +619,10 @@ public final class WfDefinitionCodec {
             gn.setLinkName(node.getLinkName());
             gn.setTopic(node.getTopic());
             gn.setResultVariable(node.getResultVariable());
+            gn.setDecisionRef(node.getDecisionRef());
+            gn.setDecisionRefBinding(node.getDecisionRefBinding());
+            gn.setDecisionRefVersion(node.getDecisionRefVersion());
+            gn.setMapDecisionResult(node.getMapDecisionResult());
             gn.setCaseVariable(node.getCaseVariable());
             gn.setAsyncBefore(node.isAsyncBefore());
             gn.setAsyncAfter(node.isAsyncAfter());
@@ -678,6 +718,10 @@ public final class WfDefinitionCodec {
             node.setLinkName(gn.getLinkName());
             node.setTopic(gn.getTopic());
             node.setResultVariable(gn.getResultVariable());
+            node.setDecisionRef(gn.getDecisionRef());
+            node.setDecisionRefBinding(gn.getDecisionRefBinding());
+            node.setDecisionRefVersion(gn.getDecisionRefVersion());
+            node.setMapDecisionResult(gn.getMapDecisionResult());
             node.setCaseVariable(gn.getCaseVariable());
             node.setAsyncBefore(gn.isAsyncBefore());
             node.setAsyncAfter(gn.isAsyncAfter());

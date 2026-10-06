@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 
 import com.zifang.z.wf.core.definition.WfNodeType;
 import com.zifang.z.wf.core.engine.behavior.WfActivityBehavior;
+import com.zifang.z.wf.core.engine.behavior.WfBusinessRuleTaskBehavior;
 import com.zifang.z.wf.core.engine.behavior.WfCallActivityBehavior;
 import com.zifang.z.wf.core.engine.behavior.WfDefaultBehavior;
 import com.zifang.z.wf.core.engine.behavior.WfEndEventBehavior;
@@ -58,6 +59,7 @@ public class WfBehaviorRegistry {
         register(WfNodeType.SCRIPT_TASK, new WfScriptTaskBehavior());
         register(WfNodeType.SEND_TASK, new WfServiceTaskBehavior());
         register(WfNodeType.RECEIVE_TASK, new WfReceiveTaskBehavior());
+        register(WfNodeType.BUSINESS_RULE_TASK, new WfBusinessRuleTaskBehavior());
         register(WfNodeType.THROW_EVENT, new WfThrowEventBehavior());
         register(WfNodeType.LINK_CATCH, new WfLinkCatchBehavior());
         // LINK_THROW 刻意**不注册**：它的全部语义是「把 token 改道到 catch」，

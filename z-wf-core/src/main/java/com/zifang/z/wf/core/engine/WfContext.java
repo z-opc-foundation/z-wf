@@ -249,6 +249,16 @@ public class WfContext {
     private WfSubProcessLauncher subProcessLauncher;
 
     /**
+     * 决策服务（由 WfEngine 注入；为 null 时业务规则任务报错而不是 NPE）。
+     *
+     * <p>刻意<b>可为空</b>：绝大多数部署里没人用 DMN，
+     * 让 engine 的构造器必须收一个决策服务，会把"没用这条能力"也变成接线负担。
+     * 为空时业务规则任务报一句说清是<b>接线漏了</b>的话，
+     * 比在引擎里 new 一个空壳服务、让所有决策都返回"找不到"要好。
+     */
+    private com.zifang.z.wf.core.service.WfDecisionService decisionService;
+
+    /**
      * 本流程实例的<b>全部</b> token 视图。
      *
      * <p>并行/包容网关的汇合判定需要看"所有兄弟 token 到哪了"，
@@ -311,6 +321,14 @@ public class WfContext {
 
     public void setSubProcessLauncher(WfSubProcessLauncher subProcessLauncher) {
         this.subProcessLauncher = subProcessLauncher;
+    }
+
+    public com.zifang.z.wf.core.service.WfDecisionService getDecisionService() {
+        return decisionService;
+    }
+
+    public void setDecisionService(com.zifang.z.wf.core.service.WfDecisionService decisionService) {
+        this.decisionService = decisionService;
     }
 
     public WfContext(WfDefinition definition, WfProcessInstance processInstance, WfExecution currentExecution) {

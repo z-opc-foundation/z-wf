@@ -125,8 +125,12 @@ public class WfAutoConfiguration {
     public WfEngine wfEngine(WfBehaviorRegistry behaviorRegistry,
                              WfExpressionEvaluator expressionEvaluator,
                              WfIdGenerator idGenerator,
-                             WfDelegateRegistry delegateRegistry) {
-        return new WfEngine(behaviorRegistry, expressionEvaluator, idGenerator, delegateRegistry);
+                             WfDelegateRegistry delegateRegistry,
+                             WfDecisionService decisionService) {
+        // 决策服务用 with… 挂上去而不是多一个构造器参数：引擎有四个构造器，
+        // 让每一处 new 都得为一个「多数部署用不上」的能力传参是强加的接线负担
+        return new WfEngine(behaviorRegistry, expressionEvaluator, idGenerator, delegateRegistry)
+                .withDecisionService(decisionService);
     }
 
     // ==================== 钩子 ====================

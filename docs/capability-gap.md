@@ -125,7 +125,7 @@
 | AuthorizationService | ⛔ 有意排除，见 §5 |
 | FilterService（保存的查询） | ✅ | 早已实现：`WfFilterService` + `WfFilter` + `ZWF_FILTER` 表，REST `GET/POST/PUT/DELETE /api/wf/filters` 与 `GET /api/wf/filters/{id}/results`。见 §1.2。**这一行曾经长期挂着 ❌** —— 功能早就有了而能力表没跟上，读表的人会以为"保存筛选条件"得业务方自己存，于是自己又造了一套 |
 | ExternalTaskService | ⛔ 有意排除，见 §5 |
-| DecisionService（DMN） | ✅ | 第 23 轮实现：`WfDecisionService`（`parseDecision` / `deployDecision` / `findDecisionByKey` / `findDecisionsByKey` / `deleteDecision` / `evaluateDecision`）+ `WfDmnParser` + `WfDmnEvaluator` + `ZWF_DECISION` 表（带版本，与流程定义同一套版本语义）+ REST `POST /api/wf/decisions/deploy`、`GET /api/wf/decisions/{key}`、`GET /api/wf/decisions/{key}/versions[/{version}]`、`POST /api/wf/decisions/{key}/evaluate`、`DELETE /api/wf/decisions/{key}/versions/{version}`。**六种 HitPolicy 全支持**：UNIQUE（命中多条直接报违规）/ ANY（多条输出必须一致）/ FIRST / RULE_ORDER（多结果聚合）/ COLLECT（列表）/ OUTPUT_PRIORITY（按 `outputValues` 的先后排序）。聚合器 SUM / MIN / MAX / COUNT。**单目测试补全**：`inputEntry` 省略左操作数时以该列 `inputExpression` 的值为左操作数（`> 5000` 写作 `(amount) > 5000`）；`outputValues` 列表逐项展开。**只支持决策表，不支持决策图**（`informationRequirement` 部署期报错）与 **FEEL**（`[a..b]` 区间、`date(` / `time(` / `duration(`、`@"..."` 上下文 —— 部署期挡下高置信度的那几类，其余留给运行期 fail-closed） |
+| DecisionService（DMN） | ✅ | 第 24 轮起可被 BPMN 的 `businessRuleTask` 直接调用（见 §2）。第 23 轮实现：`WfDecisionService`（`parseDecision` / `deployDecision` / `findDecisionByKey` / `findDecisionsByKey` / `deleteDecision` / `evaluateDecision`）+ `WfDmnParser` + `WfDmnEvaluator` + `ZWF_DECISION` 表（带版本，与流程定义同一套版本语义）+ REST `POST /api/wf/decisions/deploy`、`GET /api/wf/decisions/{key}`、`GET /api/wf/decisions/{key}/versions[/{version}]`、`POST /api/wf/decisions/{key}/evaluate`、`DELETE /api/wf/decisions/{key}/versions/{version}`。**六种 HitPolicy 全支持**：UNIQUE（命中多条直接报违规）/ ANY（多条输出必须一致）/ FIRST / RULE_ORDER（多结果聚合）/ COLLECT（列表）/ OUTPUT_PRIORITY（按 `outputValues` 的先后排序）。聚合器 SUM / MIN / MAX / COUNT。**单目测试补全**：`inputEntry` 省略左操作数时以该列 `inputExpression` 的值为左操作数（`> 5000` 写作 `(amount) > 5000`）；`outputValues` 列表逐项展开。**只支持决策表，不支持决策图**（`informationRequirement` 部署期报错）与 **FEEL**（`[a..b]` 区间、`date(` / `time(` / `duration(`、`@"..."` 上下文 —— 部署期挡下高置信度的那几类，其余留给运行期 fail-closed） |
 | CaseService（CMMN） | ⛔ 有意排除，见 §5 |
 | Batch | ❌ 未实现 |
 
@@ -133,13 +133,14 @@
 
 ## 2. BPMN 2.0 元素覆盖
 
-`z-wf` 支持 14 种节点类型（`WfNodeType`）。逐个对照 BPMN 2.0：
+`z-wf` 支持 15 种节点类型（`WfNodeType`）。逐个对照 BPMN 2.0：
 
 | BPMN 元素 | z-wf | 备注 |
 |---|---|---|
 | `startEvent` / `endEvent` | ✅ | |
 | `userTask` / `serviceTask` / `scriptTask` / `manualTask` | ✅ | **`scriptTask` 的 `zifang:resultVariable` 第 22 轮修好**：此前 `WfScriptTaskBehavior` 读的是 `node.property("resultVariable")`（`properties` 这个扩展 Map），而 XML / JSON 两个解析器与持久化 codec 写的都是**字段** `resultVariable` —— 两者分家，于是脚本照常求值、流程照常穿透，**只有「结果写到哪」静默失效**，症状是下游读那个变量拿到 null 且没有任何报错。现在读的是字段 |
 | `receiveTask` | ✅ | 等待语义本轮才真正修好（此前建了任务却被丢弃） |
+| **`businessRuleTask`** | ✅ | **第 24 轮原生实现** `WfNodeType.BUSINESS_RULE_TASK` + `WfBusinessRuleTaskBehavior`。此前它不在解析器的元素表里，会走未知元素路径并被校验器当「不支持的元素」挡掉 —— 也就是说**一份用业务规则任务的真实流程在本引擎里部署不了**，而决策表第 23 轮就补上了、接头却一直空着。它与 `serviceTask` 的区别是**不用业务方写代码**，与 `scriptTask` 的区别是**规则与流程分开部署**（决策表有独立版本，改规则不必重部署流程）。`zifang:decisionRef`（或 `camunda:decisionRef`，可写成 `${变量}` 在执行那一刻求值）指定求值哪张决策表，`resultVariable` 指定结论写到哪个变量，**缺任一个都报 ERROR** ——本实现的决策结果**没有别的出口**（不像 Camunda 还有 `decisionResult` 局部变量 + 输出映射），不给写进哪个变量的话这个节点等于什么都没做：流程照常穿透且无报错。`mapDecisionResult` 四种映射（名字与 Camunda 一致，因为它们描述的是结果的**形状**）：`singleEntry`（唯一那个值）/ `singleResult`（唯一那行的 Map）/ `collectEntries`（每行的唯一输出）/ `resultList`（默认，全部行）。**映射不适用时报错而不是取第一条** —— 取第一条会让流程带着一个「看起来正常」的结论继续走，而那个结论随命中顺序变。`decisionRefBinding` 只支持 `latest`（默认）与 `version`；Camunda 的 `deployment` 与 `versionTag` **明确报错**而不是悄悄当成 latest：前者要「BPMN 与 DMN 同属一个部署单元」，而本仓两者分别部署（两个服务、两条 REST 端点），后者要 `ZWF_DECISION` 上有标签列。**部署期不检查决策是否已部署** —— 先后顺序是自由的，运行期找不到时报的是「决策 [xxx] 不存在」 |
 | `sendTask` | ✅ | 与 `serviceTask` 共用行为，即同步跑一个 delegate。**没有 delegate 会让流程失败**——因为它不是 BPMN 那种抛消息 |
 | `task` | ✅ | |
 | `exclusiveGateway` / `parallelGateway` / `inclusiveGateway` | ✅ | |
@@ -321,6 +322,14 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 引擎指标 · ~~流程模型图形回读~~（BPMN DI 解析 + REST 已实现，见 §1.1）· ~~消息关联 `correlate`~~（**第 16 轮补上**，见 §1.2）· ~~`getActivityInstance` 树形活动实例~~（**第 17 轮补上**，见 §1.2）· ~~`getTableCount` / `getTableNames` / `getProperties`~~（**第 19 轮补上**，见 §1.5）· ~~`createExecutionQuery` 令牌条件查询 + `setProcessInstanceName`~~（**第 20 轮补上**，见 §1.2）· ~~链接事件 `linkEventDefinition`~~（**第 22 轮补上**，见 §2）· ~~`DecisionService`（DMN 决策表）~~（**第 23 轮补上**，见 §1）
 
+> 第 24 轮（业务规则任务 `businessRuleTask`）顺带修掉一个**已发布真缺陷**：
+> 解析器读扩展属性只认 zifang 那三条路径（命名空间 / `zifang:` / `zifang_`），
+> 而 **Camunda 导出的模型写的是 `camunda:` 前缀**。
+> 于是 `<scriptTask camunda:resultVariable="x">` 会被读成"没配"——
+> 脚本照常求值、流程照常穿透，**只有「结果写到哪」静默失效**，
+> 症状与第 22 轮修的那个缺陷一模一样，而第 22 轮修的是另一头（字段 vs 属性 Map）。
+> ⇒ 与第 20 轮「两套实现分家」同源：**同一个东西的两种写法，只修了一种**。
+>
 > 第 23 轮（DMN 决策表）**没有新缺陷，但改了三处"文档比代码乐观/悲观"**：
 > ① 记忆里"`createHistoricIncidentQuery` 是缺口"**已经不成立** —— `WfIncidentService`
 >     与 `/incidents/count`、`/process/overview`、`/dashboard` 早就在了。
@@ -373,7 +382,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 842 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 864 个测试兜着
 - 从测试与审计中逼出并修复的**真实缺陷 47 项**（43 项截至第 21 轮 + 第 22 轮的
   `zifang:resultVariable` 读错载体 1 项 + 第 23 轮 DMN 的 3 项），
   其中 6 项属于"能力看着在、实际不生效"：
@@ -1702,3 +1711,59 @@ REST 层的 harness 一开始写成 `-pl z-wf-web,z-wf-admin`，
 结果改 **core** 源码的两条变异（异常继承、bean 注册）全绿 ——
 web/admin 链接的是本地仓库里**已安装**的那份 core jar，那份 class 从来没被重建。
 症状与"判据没区分力"一模一样，但修法完全不同：命令要把 `z-wf-core` 一起列进 reactor。
+
+### 本轮反向验证记录（业务规则任务 `businessRuleTask`，第 24 轮）
+
+补的是「流程里直接求值一张决策表」这个接头（详见 §2 那一行）。
+`27` 条变异全红、`3` 条对照全绿；顺带修掉一个**已发布的真缺陷**（`camunda:resultVariable` 读不到）。
+
+**一、它此前既没实现，也没被记成缺口**。
+`businessRuleTask` 不在 §2 的元素表里，也不在代码里 —— 不是"文档漏写"这么简单：
+它在解析器的元素表里也没有，于是走未知元素路径、被校验器当"不支持的元素"挡掉，
+**一份用业务规则任务的真实流程在本引擎里部署不了**。
+而决策表第 23 轮刚补上、REST 也通了，接头却一直空着 ——
+一个能力做完之后要回头看"**谁会用它、怎么用**"，否则就是半套。
+
+**二、四条语义决定**：
+
+1. **`resultVariable` 必填**（部署期 ERROR）。Camunda 里结果可以不落变量
+   （还能用 `decisionResult` 局部变量 + 输出映射），本实现**没有那条路** ——
+   不给写进哪个变量的话，这个节点等于什么都没做：流程照常穿透，且没有任何报错。
+   与其留一个"看起来在工作、实际什么都没发生"的节点，不如部署期就挡。
+2. **`decisionRef` 只有带 `${}` / `#{}` 前缀的才当表达式**。
+   拿裸串去求值的话，`approvalLevel` 会被当成变量名，而求值器对未定义变量
+   fail-closed 返回 null ⇒ **每张决策都变成"决策 null 不存在"** ——
+   报的还是一句把人带去查决策表的话，而真正的原因是"这个裸串不是表达式"。
+3. **Camunda 的 `deployment` / `versionTag` 绑定明确报错**，不悄悄当成 `latest`。
+   前者要求"BPMN 与 DMN 同属一个部署单元"，而本仓两者分别部署（两个服务、两条 REST 端点）；
+   后者要求 `ZWF_DECISION` 上有标签列，而本仓的决策只有版本号。
+   放行的后果是流程在运行期拿到一个**谁都没指定过的版本**的规则。
+4. **部署期不检查决策是否已部署**。先后顺序是自由的（先部署流程、补规则后再部署决策表
+   是正常节奏），为一个"迟早会部署"的检查把流程挡在门外，比留到运行期报错更糟。
+
+**三、顺带修的真缺陷：`camunda:resultVariable` 读不到**。
+解析器读扩展属性只认 zifang 那三条路径（命名空间 / `zifang:` / `zifang_`），
+而 **Camunda 导出的模型写的是 `camunda:` 前缀**。
+于是 `<scriptTask camunda:resultVariable="x">` 被读成"没配"：
+脚本照常求值、流程照常穿透，**只有「结果写到哪」静默失效**。
+第 22 轮修的是同一个东西的另一头（读字段 vs 读属性 Map）——
+**同一个不变式的两种写法，只修了一种**，而症状一模一样。
+⇒ 与第 20 轮「两套实现分家」同源：真正要问的是"这条不变式**有几处**在独立实现"，
+而不是"我这次看到的那一处"。
+
+**四、五条判据先写错了，错的方式只有一种**。
+它们一开始都断"行为抛了 `WfEngineException`"，
+而**引擎不会把行为里的异常抛给调用方** —— 它统一转成"内部终止 + 写明理由"
+（`WfEngine.fail`）。五条于是全绿地"什么都没测到"。
+改法是断**实例停在哪 + 理由说的是哪件事**，后者才是排障时真正读得到的东西。
+⇒ 与第 22 轮 M05「判据在测一个到不了的状态」同族：
+**先问「这段判据想断的那个东西，在这个引擎里到底以什么形态出现」。**
+
+**五、B09 / B10 又踩了第 23 轮 D04 那个坑 —— 而且是刚修完它的下一个功能**。
+两条变异都是"把专属分支放行"，判据只断报错里有 `deployment` / `versionTag` 三个字；
+放行后报错落到「未知的 decisionRefBinding」兜底上，而**兜底那句话里同样列着这两个词**。
+⇒ 判据改成两侧都断（要专属措辞 + `assertFalse` 不含兜底那句）。
+⇒ 记这条不是因为它新鲜，而是因为它证明**「关键词在另一条分支里也出现」是个高复发缺陷**：
+上一轮刚在解析器上修过，这一轮立刻在校验器上重犯。
+**凡是有"兜底分支 + 专属分支"两条路的校验，判据必须两侧都断**——
+只断关键词时，被挡掉的恰恰是「说清是哪一种不支持」那部分。

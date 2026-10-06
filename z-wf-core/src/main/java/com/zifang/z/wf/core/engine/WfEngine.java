@@ -98,6 +98,26 @@ public class WfEngine {
     }
 
     /**
+     * 接上决策服务（业务规则任务用它求值 DMN）。
+     *
+     * <p>做成 setter 而不是构造参数：引擎有四个构造器、三处 {@code new WfEngine()}，
+     * 加参数会让每一处都得改，而<b>绝大多数部署里没人用 DMN</b> ——
+     * 让它们为了不用的一条能力去构造一个决策服务，是一种强加的接线负担。
+     * {@link WfBehaviorRegistry#register} 是同样的形状：按需覆盖，不进构造器。
+     */
+    public WfEngine withDecisionService(com.zifang.z.wf.core.service.WfDecisionService decisionService) {
+        this.decisionService = decisionService;
+        return this;
+    }
+
+    public com.zifang.z.wf.core.service.WfDecisionService getDecisionService() {
+        return decisionService;
+    }
+
+    /** 业务规则任务用的决策服务；为 null 时该节点报「接线漏了」而不是 NPE。 */
+    private com.zifang.z.wf.core.service.WfDecisionService decisionService;
+
+    /**
      * 构造带协作组件的上下文。
      */
     public WfContext newContext(WfDefinition definition, WfProcessInstance instance,
@@ -105,6 +125,7 @@ public class WfEngine {
         WfContext context = new WfContext(definition, instance, execution);
         context.setExpressionEvaluator(expressionEvaluator);
         context.setDelegateRegistry(delegateRegistry);
+        context.setDecisionService(decisionService);
         return context;
     }
 

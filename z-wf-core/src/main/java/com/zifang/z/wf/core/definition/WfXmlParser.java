@@ -123,6 +123,11 @@ public class WfXmlParser {
             {"linkThrowEvent", "linkThrowEvent"},
             {"linkCatchEvent", "linkCatchEvent"},
             {"subProcess", "subProcess"},
+            // 业务规则任务：求值一张 DMN 决策表（第 24 轮）。
+            // 此前不在表里 ⇒ 走未知元素路径 ⇒ 被校验器当"不支持的元素"挡住，
+            // 于是"用业务规则任务的流程在本引擎部署不了"，
+            // 而决策表本身第 23 轮就补上了，接头却一直空着。
+            {"businessRuleTask", "businessRuleTask"},
             {"transaction", "transaction"},
             {"adHocSubProcess", "adHocSubProcess"},
             {"callActivity", "callActivity"},
@@ -285,7 +290,13 @@ public class WfXmlParser {
                 firstNonBlank(extension(element, "calledElement"),
                         childText(element, "calledElement"))));
         node.setResultExpression(extension(element, "resultExpression"));
-        node.setResultVariable(extension(element, "resultVariable"));
+        node.setResultVariable(stringExtension(element, "resultVariable"));
+
+        // ---- 业务规则任务（第 24 轮）----
+        node.setDecisionRef(stringExtension(element, "decisionRef"));
+        node.setDecisionRefBinding(stringExtension(element, "decisionRefBinding"));
+        node.setDecisionRefVersion(stringExtension(element, "decisionRefVersion"));
+        node.setMapDecisionResult(stringExtension(element, "mapDecisionResult"));
 
         // ---- 多实例（BPMN 的 multiInstanceLoopCharacteristics 是子元素，不是属性）----
         Element loop = childElement(element, "multiInstanceLoopCharacteristics");
@@ -663,6 +674,24 @@ public class WfXmlParser {
      * 有一条是 {@code zifang_xxx} 下划线写法，camunda 没有对应约定，
      * 混进去会让"zifang:xxx"意外命中 camunda 属性。
      */
+    /**
+     * 字符串型扩展属性：先试 zifang 前缀，再试 camunda 前缀。
+     *
+     * <p>与 {@link #extension} 分开是因为 {@code extension} 只认 zifang 那三条路径
+     * （命名空间 / {@code zifang:} / {@code zifang_}），而<b>Camunda 导出的模型里
+     * 同一个属性写的是 {@code camunda: 前缀</b>。两者只差前缀，于是照搬过来的
+     * {@code <scriptTask camunda:resultVariable="x">} 会被读成"没配"——
+     * 脚本照常求值、流程照常穿透，只有"结果写到哪"静默失效，没有任何报错。
+     *
+     * <p>刻意<b>只给确实同名的那几个属性</b>用这个方法。Camunda 的 delegate 写作
+     * {@code camunda:class}（本仓叫 {@code zifang:delegateClass}），名字都不同，
+     * 那是另一件事，硬凑到一起只会让"配没配"更难判断。
+     */
+    private String stringExtension(Element element, String name) {
+        String value = extension(element, name);
+        return value != null ? value : camundaAttribute(element, name);
+    }
+
     private String camundaAttribute(Element element, String name) {
         if (element == null) {
             return null;

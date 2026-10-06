@@ -119,6 +119,10 @@ public class WfDefinitionValidator {
                     add(WfValidationIssue.Severity.ERROR, node.getId(), "callActivity 缺少 calledElementKey");
                 }
             }
+            // ---- 业务规则任务（第 24 轮）----
+            if (node.getType() == WfNodeType.BUSINESS_RULE_TASK) {
+                validateBusinessRuleTask(node);
+            }
             // ---- 嵌入式 subProcess：内联子图的结构合法性 ----
             validateInlinePlacement(definition, node);
             validateSubProcess(definition, node);
@@ -378,6 +382,99 @@ public class WfDefinitionValidator {
                     "complexGateway 没有默认流。判别变量的值不匹配任何 caseValue 时，"
                             + "token 会永久停留在这里，而流程不会报任何错");
         }
+    }
+
+    /**
+     * 业务规则任务：它要求值哪张决策表、结果怎么映射。
+     *
+     * <p><b>不检查决策是否已部署</b> —— 流程与决策是两个服务、两条部署路径，
+     * 先后顺序是自由的（先部署流程、补规则后再部署决策表是正常节奏）。
+     * 为了一个"迟早会部署"的检查把部署挡在门外，比留到运行期报错更糟。
+     * 运行期找不到决策时报的是"决策 [xxx] 不存在"，那一句话已经把话说全了。
+     */
+    private void validateBusinessRuleTask(WfNode node) {
+        String id = node.getId();
+        if (isBlank(node.getDecisionRef())) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "businessRuleTask 缺少 decisionRef。它要求值哪张决策表没有答案 —— "
+                            + "不会退化成 serviceTask，因为业务方没有写任何 delegate，"
+                            + "跑到这个节点必然失败");
+        }
+        if (isBlank(node.getResultVariable())) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "businessRuleTask 缺少 resultVariable。决策结果在本实现里**没有别的出口**"
+                            + "（不像 Camunda 那样还能用 decisionResult 局部变量 + 输出映射），"
+                            + "不给写进哪个变量的话这个节点等于什么都没做："
+                            + "流程照常穿透，没有任何报错");
+        }
+        validateDecisionRefBinding(node);
+        validateDecisionResultMapper(node);
+    }
+
+    /**
+     * 版本绑定：只认 {@code latest} 与 {@code version}。
+     *
+     * <p>Camunda 另外两种写法<b>明确报错</b>而不是悄悄当成 latest：
+     * {@code deployment} 需要"BPMN 与 DMN 同属一个部署单元"这个概念，
+     * 而本仓两者分别部署（两个服务、两条 REST 端点），没有共享的部署单元；
+     * {@code versionTag} 需要 {@code ZWF_DECISION} 上有标签列，而本仓的决策只有版本号。
+     * 把它们当成 latest 会让流程在部署期通过、在运行期拿到一个**没人指定的版本**的规则。
+     */
+    private void validateDecisionRefBinding(WfNode node) {
+        String id = node.getId();
+        String binding = node.getDecisionRefBinding();
+        if (isBlank(binding)) {
+            return;
+        }
+        String normalized = binding.trim();
+        if ("latest".equalsIgnoreCase(normalized)) {
+            return;
+        }
+        if ("version".equalsIgnoreCase(normalized)) {
+            if (isBlank(node.getDecisionRefVersion())) {
+                add(WfValidationIssue.Severity.ERROR, id,
+                        "businessRuleTask 用了 decisionRefBinding=\"version\" 却没有 decisionRefVersion —— "
+                                + "要哪个版本没有答案，引擎只能去猜，"
+                                + "而猜错的后果是同一份流程两次跑出不同结论");
+            }
+            return;
+        }
+        if ("deployment".equalsIgnoreCase(normalized)) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "decisionRefBinding=\"deployment\"（求与流程一起部署的那版决策）本实现不支持："
+                            + "本仓的流程与决策是**分别部署**的，没有共享的部署单元，"
+                            + "「一起部署的那版」这个东西不存在。请改用 latest 或 version");
+            return;
+        }
+        if ("versionTag".equalsIgnoreCase(normalized)) {
+            add(WfValidationIssue.Severity.ERROR, id,
+                    "decisionRefBinding=\"versionTag\"（按版本标签取决策）本实现不支持："
+                            + "ZWF_DECISION 上只有版本号，没有标签列。"
+                            + "请改用 decisionRefBinding=\"version\" + decisionRefVersion");
+            return;
+        }
+        add(WfValidationIssue.Severity.ERROR, id,
+                "未知的 decisionRefBinding [" + binding + "]。"
+                        + "合法值: latest（默认）/ version。deployment 与 versionTag 本实现不支持，"
+                        + "见上面各自的说明");
+    }
+
+    /** 结果映射：名字照 Camunda（它们描述的是结果的形状），但拼错要报出来。 */
+    private void validateDecisionResultMapper(WfNode node) {
+        String mapper = node.getMapDecisionResult();
+        if (isBlank(mapper)) {
+            return;
+        }
+        String normalized = mapper.trim();
+        if ("singleEntry".equalsIgnoreCase(normalized)
+                || "singleResult".equalsIgnoreCase(normalized)
+                || "collectEntries".equalsIgnoreCase(normalized)
+                || "resultList".equalsIgnoreCase(normalized)) {
+            return;
+        }
+        add(WfValidationIssue.Severity.ERROR, node.getId(),
+                "未知的 mapDecisionResult [" + mapper + "]。"
+                        + "合法值: singleEntry / singleResult / collectEntries / resultList（默认）");
     }
 
     /**

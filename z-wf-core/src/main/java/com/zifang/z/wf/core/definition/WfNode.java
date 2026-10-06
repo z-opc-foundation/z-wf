@@ -149,6 +149,44 @@ public class WfNode implements Serializable {
      */
     private String resultVariable;
 
+    // ==================== 业务规则任务 ====================
+
+    /**
+     * 要求值哪张决策表（DMN 的 {@code <decision id>}）。
+     *
+     * <p>可以写成 {@code ${decisionKey}} 表达式，在<b>节点执行那一刻</b>求值 ——
+     * 选哪张表可以是运行时才定下来的事。
+     * 判别式是<b>有没有 {@code ${}} 前缀</b>：裸串一律当字面 key。
+     * 把裸串也拿去求值的话，{@code approvalLevel} 会被当成一个变量名，
+     * 求值器对未定义变量 fail-closed 返回 null，于是所有决策都变成"找不到"。
+     */
+    private String decisionRef;
+
+    /**
+     * 用哪个版本的决策：{@code latest}（默认，求最新）或 {@code version}（配合
+     * {@link #decisionRefVersion} 指死版本）。
+     *
+     * <p>Camunda 还有 {@code deployment}（求与流程一起部署的那版）与
+     * {@code versionTag}（按版本标签取），<b>本实现明确不支持</b>，
+     * 部署期报错而不是悄悄当成 latest：
+     * 前者需要"BPMN 与 DMN 同一个部署单元"这个概念，而本仓两者是分别部署的
+     * （两个服务、两条 REST 端点），没有共享的部署单元可言；
+     * 后者需要 {@code ZWF_DECISION} 上有标签列，而本仓的决策只有版本号。
+     */
+    private String decisionRefBinding;
+
+    /** {@code decisionRefBinding="version"} 时指定用哪一版。 */
+    private String decisionRefVersion;
+
+    /**
+     * 决策结果怎么映射成一个值：{@code singleEntry} / {@code singleResult} /
+     * {@code collectEntries} / {@code resultList}（默认）。
+     *
+     * <p>四个名字与 Camunda 一致，因为它们描述的是**结果的形状**而不是本仓的私有约定：
+     * 表里命中一条且只有一个输出列时该拿什么，取决于下游要的是一个值还是一张表。
+     */
+    private String mapDecisionResult;
+
     /** 扩展属性。 */
     private Map<String, Object> properties = new HashMap<>();
 
@@ -755,6 +793,38 @@ public class WfNode implements Serializable {
 
     public void setResultVariable(String resultVariable) {
         this.resultVariable = resultVariable;
+    }
+
+    public String getDecisionRef() {
+        return decisionRef;
+    }
+
+    public void setDecisionRef(String decisionRef) {
+        this.decisionRef = decisionRef;
+    }
+
+    public String getDecisionRefBinding() {
+        return decisionRefBinding;
+    }
+
+    public void setDecisionRefBinding(String decisionRefBinding) {
+        this.decisionRefBinding = decisionRefBinding;
+    }
+
+    public String getDecisionRefVersion() {
+        return decisionRefVersion;
+    }
+
+    public void setDecisionRefVersion(String decisionRefVersion) {
+        this.decisionRefVersion = decisionRefVersion;
+    }
+
+    public String getMapDecisionResult() {
+        return mapDecisionResult;
+    }
+
+    public void setMapDecisionResult(String mapDecisionResult) {
+        this.mapDecisionResult = mapDecisionResult;
     }
 
     public Map<String, Object> getProperties() {

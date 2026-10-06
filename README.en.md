@@ -60,10 +60,10 @@ extension namespace carries approval semantics that standard BPMN has no slot fo
 ### Node types
 
 `startEvent` · `endEvent` · `userTask` · `serviceTask` · `scriptTask` · `manualTask` ·
-`sendTask` · `receiveTask` · `task` · `exclusiveGateway` · `parallelGateway` ·
-`inclusiveGateway` · `complexGateway` · `eventBasedGateway` ·
-`intermediateCatchEvent` · `intermediateThrowEvent` ·
-`linkThrowEvent` · `linkCatchEvent` ·
+`sendTask` · `receiveTask` · `intermediateThrowEvent` · `task` ·
+`exclusiveGateway` · `parallelGateway` · `inclusiveGateway` · `complexGateway` ·
+`eventBasedGateway` · `intermediateCatchEvent` ·
+`linkThrowEvent` · `linkCatchEvent` · `businessRuleTask` ·
 `subProcess` · `callActivity` · `boundaryEvent`
 
 **Unsupported BPMN elements fail loudly at deploy time.** Elements the engine does not
@@ -96,6 +96,46 @@ also not treated as a process entry point, otherwise every definition that uses 
 writing a `startEvent` would suddenly report "multiple unconditional start nodes". Pairing is
 scoped to **one process definition** rather than matched engine-wide, so deleting another
 deployed process can never silently break this one.
+
+### Business rule task (evaluate a DMN decision table)
+
+`businessRuleTask` evaluates an already deployed decision table. Unlike `serviceTask` it needs
+**no code from the caller**, and unlike `scriptTask` the rules live in their **own deployment** —
+changing a rule does not mean redeploying the process.
+
+```xml
+<businessRuleTask id="brt" name="decide level"
+    zifang:decisionRef="approvalLevel"
+    zifang:resultVariable="level"
+    zifang:mapDecisionResult="singleEntry"/>
+```
+
+`camunda:decisionRef` / `camunda:resultVariable` are read as well, so a model exported from
+Camunda deploys unchanged.
+
+- **`resultVariable` is mandatory** (deployment-time ERROR). This implementation has **no other
+  outlet** for the decision result (Camunda additionally offers a `decisionResult` local variable
+  plus output mapping). Without it the node does nothing at all: the flow still runs through it
+  and nothing is ever reported.
+- **Four `mapDecisionResult` mappers**, named as in Camunda because they describe the **shape** of
+  the result: `singleEntry` (the single value) / `singleResult` (the one row as a map) /
+  `collectEntries` (the single output of each row) / `resultList` (default, every row).
+  A mapper that does not fit the result **raises an error instead of taking the first row** —
+  taking the first would let the flow continue on a value that looks fine but depends on match
+  order, so the same case could evaluate differently twice.
+- **`decisionRef` may be an expression** (`${...}`), evaluated when the node executes.
+  A bare string is always a literal key — evaluating it would read it as a variable name, and
+  undefined variables are fail-closed here, so every decision would turn into "decision null
+  does not exist".
+- **`decisionRefBinding` supports `latest` (default) and `version`** (with `decisionRefVersion`).
+  Camunda's `deployment` and `versionTag` are **rejected explicitly**: processes and decisions are
+  deployed separately here (two services, two REST endpoints), so there is no shared deployment
+  unit, and `ZWF_DECISION` carries version numbers only, no tags.
+- **Deployment does not check whether the decision is deployed** — the two are independent
+  deployment paths and either order is fine.
+
+Deploy and evaluate decisions through `POST /api/wf/decisions/deploy` and
+`POST /api/wf/decisions/{key}/evaluate`.
 
 ### Multi-instance (countersign / any-one / 2-of-3)
 

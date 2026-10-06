@@ -1720,6 +1720,65 @@ class WfWebApiTest {
         assertEquals(HttpStatus.BAD_REQUEST, afterDelete.getStatusCode(), afterDelete.getBody());
     }
 
+    // ==================== 业务规则任务端到端 ====================
+
+    /**
+     * 业务规则任务走真实 HTTP，且必须真的跑出变量。
+     *
+     * <p>它盯的是<b>接线</b>：业务规则任务要求值决策，而决策服务要由
+     * {@code WfAutoConfiguration} 挂到引擎上。漏挂的话节点要么 NPE、
+     * 要么落到"穿透但什么都不做"的兜底行为 —— <b>流程照样跑完</b>。
+     * 单元测试（手工 new 引擎 + 手工注入）永远看不到这一段，
+     * 所以这里必须从 HTTP 走一遍完整链路。
+     */
+    @Test
+    @DisplayName("业务规则任务：部署 BPMN + DMN → 发起 → 变量里真的有决策结论")
+    void businessRuleTaskOverHttp() throws Exception {
+        String key = "brtFlow-" + System.nanoTime();
+        String decisionKey = "brtDecision-" + System.nanoTime();
+        String dmn = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"https://www.omg.org/spec/DMN/20191111/MODEL/\" id=\"d\">\n"
+                + "  <decision id=\"" + decisionKey + "\" name=\"层级\">\n"
+                + "    <decisionTable id=\"t\" hitPolicy=\"FIRST\">\n"
+                + "      <input id=\"i\"><inputExpression id=\"ie\"><text>amount</text>"
+                + "</inputExpression></input>\n"
+                + "      <output id=\"o\" name=\"level\"/>\n"
+                + "      <rule><inputEntry><text>&gt; 50000</text></inputEntry>"
+                + "<outputEntry><text>\"ceo\"</text></outputEntry></rule>\n"
+                + "      <rule><inputEntry><text>-</text></inputEntry>"
+                + "<outputEntry><text>\"staff\"</text></outputEntry></rule>\n"
+                + "    </decisionTable>\n"
+                + "  </decision>\n"
+                + "</definitions>\n";
+        postOk("/api/wf/decisions/deploy", body("dmnXml", dmn));
+
+        String bpmn = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"" + key + "\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"s\"/>\n"
+                + "    <businessRuleTask id=\"brt\" zifang:decisionRef=\"" + decisionKey + "\""
+                + " zifang:resultVariable=\"level\" zifang:mapDecisionResult=\"singleEntry\"/>\n"
+                + "    <endEvent id=\"e\"/>\n"
+                + "    <sequenceFlow id=\"f1\" sourceRef=\"s\" targetRef=\"brt\"/>\n"
+                + "    <sequenceFlow id=\"f2\" sourceRef=\"brt\" targetRef=\"e\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        postOk("/api/wf/definitions/deploy", body("xml", bpmn, "key", key));
+
+        String processId = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", key, "businessKey", "BRT-" + System.nanoTime(),
+                        "userId", "brt-alice", "deptId", "d1",
+                        "variables", body("amount", 60000))).get("data");
+        assertNotNull(processId, "流程应当被启动");
+
+        Map<String, Object> variables = asMap(getOk("/api/wf/process/variables?processInstanceId="
+                + processId).get("data"));
+        assertEquals("ceo", variables.get("level"),
+                "决策结论必须真的落到 resultVariable 上 —— "
+                        + "没落的话流程照样跑完，而下游读这个变量拿到的是 null");
+    }
+
     // ==================== 历史与 Job 端点 ====================
 
     @Test

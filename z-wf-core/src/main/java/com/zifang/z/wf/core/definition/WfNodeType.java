@@ -129,6 +129,21 @@ public enum WfNodeType {
      */
     LINK_CATCH("linkCatchEvent"),
 
+    /**
+     * 业务规则任务：同步求值一张 DMN 决策表，把结论写进流程变量。
+     *
+     * <p>它与 {@link #SERVICE_TASK} 的区别是<b>不需要业务方写任何代码</b>：
+     * {@code serviceTask} 要实现 delegate，业务规则任务只要指一张决策表的 key。
+     * 与 {@link #SCRIPT_TASK} 的区别是<b>规则与流程分开部署</b>：
+     * 决策表有独立的版本与生命周期（见 {@code WfDecisionService}），
+     * 改规则不必重新部署流程。
+     *
+     * <p>此前它不在解析器的元素表里，会走"未知元素"路径 ——
+     * 而未知元素会被 {@code WfDefinitionValidator} 当作"不支持的元素"报 ERROR 挡住，
+     * 于是<b>一份用业务规则任务的真实流程在本引擎里部署不了</b>。
+     */
+    BUSINESS_RULE_TASK("businessRuleTask"),
+
     /** 子流程：内嵌一个流程定义（或内联子图）。 */
     SUB_PROCESS("subProcess"),
 

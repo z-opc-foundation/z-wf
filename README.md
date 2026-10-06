@@ -196,8 +196,10 @@ WorkflowConfiguration back = ZUtilWfBridge.toWorkflowConfiguration(definition);
 ### 3.2 节点类型
 
 `START_EVENT` / `END_EVENT` / `USER_TASK` / `SERVICE_TASK` / `SCRIPT_TASK` / `MANUAL_TASK` /
-`SEND_TASK` / `RECEIVE_TASK` / `EXCLUSIVE_GATEWAY` / `PARALLEL_GATEWAY` / `INCLUSIVE_GATEWAY` /
-`SUB_PROCESS` / `CALL_ACTIVITY` / `TASK` / `BOUNDARY_EVENT`。
+`SEND_TASK` / `RECEIVE_TASK` / `THROW_EVENT` / `EXCLUSIVE_GATEWAY` / `PARALLEL_GATEWAY` /
+`INCLUSIVE_GATEWAY` / `COMPLEX_GATEWAY` / `EVENT_BASED_GATEWAY` / `INTERMEDIATE_CATCH_EVENT` /
+`LINK_THROW` / `LINK_CATCH` / `BUSINESS_RULE_TASK` / `SUB_PROCESS` / `CALL_ACTIVITY` /
+`TASK` / `BOUNDARY_EVENT`（共 22 种）。
 
 类型名大小写不敏感（`userTask` / `user-task` / `USER_TASK` 归一到同一个）。
 
@@ -207,7 +209,40 @@ WorkflowConfiguration back = ZUtilWfBridge.toWorkflowConfiguration(definition);
 `eventBasedGateway` 退化成人工任务，等于把"多路事件竞速"换成了"等人来点"，
 而流程照跑、轨迹照记 completed、作者与实际行为之间零提示。
 
-### 3.3 多实例（会签 / 或签）
+### 3.3 业务规则任务（求值 DMN 决策表）
+
+`businessRuleTask` 直接求值一张已部署的决策表，与 `serviceTask` 的区别是**不用业务方写代码**，
+与 `scriptTask` 的区别是**规则与流程分开部署**（改规则不必重新部署流程）：
+
+```xml
+<businessRuleTask id="brt" name="算审批层级"
+    zifang:decisionRef="approvalLevel"
+    zifang:resultVariable="level"
+    zifang:mapDecisionResult="singleEntry"/>
+```
+
+`camunda:decisionRef` / `camunda:resultVariable` 两种写法一样认，
+Camunda 导出的模型可直接部署。
+
+- **`resultVariable` 必填**。本实现的决策结果没有别的出口（不像 Camunda 还有
+  `decisionResult` 局部变量 + 输出映射），不给写进哪个变量的话这个节点等于什么都没做：
+  流程照常穿透，且没有任何报错。
+- **`mapDecisionResult` 四种**，名字与 Camunda 一致，因为它们描述的是结果的**形状**：
+  `singleEntry`（唯一那个值）/ `singleResult`（唯一那行的 Map）/
+  `collectEntries`（每行的唯一输出）/ `resultList`（默认，全部行）。
+  **映射与结果形状对不上时报错，不取第一条** —— 取第一条会让流程带着一个
+  「看起来正常」的结论继续走，而那个结论随命中顺序变。
+- **`decisionRef` 可以写成 `${变量}`**，在节点执行那一刻求值；
+  裸串一律当字面 key（拿裸串去求值会被当成变量名，而未定义变量是 fail-closed 的）。
+- **`decisionRefBinding` 只支持 `latest`（默认）与 `version`**（配合 `decisionRefVersion`）。
+  Camunda 的 `deployment` / `versionTag` **明确报错**：本仓的流程与决策分别部署，
+  没有共享的部署单元，`ZWF_DECISION` 上也没有标签列。
+- **部署期不检查决策是否已部署** —— 流程与决策是两条独立的部署路径，先后顺序是自由的。
+
+决策表的部署与求值见 `POST /api/wf/decisions/deploy` 与
+`POST /api/wf/decisions/{key}/evaluate`。
+
+### 3.4 多实例（会签 / 或签）
 
 审批系统的默认需求。任务类节点可挂 `multiInstanceLoopCharacteristics`：
 
@@ -243,7 +278,7 @@ WorkflowConfiguration back = ZUtilWfBridge.toWorkflowConfiguration(definition);
 已知限制：不支持 `collection` 集合迭代与 `isSequential` 串行，配置了会在部署期
 报 ERROR —— 宁可部署失败，也不给一个半套实现。
 
-### 3.4 错误边界事件
+### 3.5 错误边界事件
 
 ```xml
 <userTask id="approve" zifang:assignee="boss"/>
