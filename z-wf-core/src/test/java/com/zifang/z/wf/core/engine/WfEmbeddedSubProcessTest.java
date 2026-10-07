@@ -296,6 +296,47 @@ class WfEmbeddedSubProcessTest {
             .replace("id=\"embeddedProcess\"", "id=\"boundaryOnInlineTaskProcess\"");
 
     /**
+     * 同一个「内联活动挂超时边界」，但 boundaryEvent 写在 <b>{@code <subProcess>} 层级下</b>
+     * 而不是宿主活动内部 —— BPMN 两种写法都合法，Camunda Modeler 导出的是这一种。
+     *
+     * <p>与 {@link #BOUNDARY_ON_INLINE_TASK_BPMN} 唯一的差别就是那个 boundaryEvent 在 XML
+     * 里缩在哪一层，{@code attachedToRef} 都是 {@code iTask}。
+     * 两条夹具必须一起用：只看其中一条，校验器按哪种位置判都"有测试覆盖"，
+     * 而另一种位置会静默判错。
+     */
+    private static final String BOUNDARY_AT_SUB_LEVEL_BPMN = EMBEDDED_BPMN
+            .replace("      <startEvent id=\"iStart\"/>\n",
+                    "      <startEvent id=\"iStart\"/>\n"
+                            + "      <boundaryEvent id=\"beI\" attachedToRef=\"iTask\">\n"
+                            + "        <timerEventDefinition><timeDuration>PT30M</timeDuration>"
+                            + "</timerEventDefinition>\n"
+                            + "      </boundaryEvent>\n")
+            .replace("      <sequenceFlow id=\"if3\" sourceRef=\"iSvc\" targetRef=\"iEnd\"/>\n",
+                    "      <sequenceFlow id=\"if3\" sourceRef=\"iSvc\" targetRef=\"iEnd\"/>\n"
+                            + "      <sequenceFlow id=\"if4\" sourceRef=\"beI\" targetRef=\"iEnd\"/>\n")
+            .replace("id=\"embeddedProcess\"", "id=\"boundaryAtSubLevelProcess\"");
+
+    /**
+     * 内联子图里的死胡同：{@code iDead} 有入线、没有出线。
+     *
+     * <p>它是 userTask 不是 endEvent，所以<b>不是</b>子流程的出口。
+     * 判据是「报死胡同，且不要报成结束点不唯一」——
+     * 后者是本仓库曾经给出的答案，而它会把作者引向一个不存在的第二个结束节点。
+     */
+    private static final String DEAD_END_IN_INLINE_BPMN = EMBEDDED_BPMN
+            .replace("      <serviceTask id=\"iSvc\" name=\"内联写变量\""
+                    + " zifang:delegateExpression=\"stamp\"/>\n",
+                    "      <serviceTask id=\"iSvc\" name=\"内联写变量\""
+                            + " zifang:delegateExpression=\"stamp\"/>\n"
+                            + "      <userTask id=\"iDead\" name=\"死胡同\""
+                            + " zifang:assignee=\"dave\"/>\n")
+            .replace("      <sequenceFlow id=\"if3\" sourceRef=\"iSvc\" targetRef=\"iEnd\"/>\n",
+                    "      <sequenceFlow id=\"if3\" sourceRef=\"iSvc\" targetRef=\"iEnd\"/>\n"
+                            + "      <sequenceFlow id=\"if5\" sourceRef=\"iSvc\" targetRef=\"iDead\"/>\n")
+            .replace("id=\"embeddedProcess\"", "id=\"deadEndInInlineProcess\"");
+
+
+    /**
      * 定义里<b>不写</b> startEvent，入口靠「无入线节点」退化判定。
      *
      * <p>两种退化形态要分开验：显式 startEvent 那条路和退化那条路都排除了内联节点，
@@ -658,6 +699,80 @@ class WfEmbeddedSubProcessTest {
         assertEquals("", definition.inlineScopeOf("beMain"));
     }
 
+    // ==================== 边界事件的宿主判定：看 attachedToRef，不看它在 XML 里缩在哪 ====================
+
+    @Test
+    @DisplayName("boundaryEvent 写在 subProcess 层级下、attachedToRef 指内层活动 ⇒ 合法")
+    void boundaryEventDeclaredAtSubLevelIsNotRejected() {
+        // 这条与上面 boundaryEventOnInlineActivityIsNotInline 配对。
+        // 判据只看 attachedToRef（挂在谁身上），两种 XML 位置得到的答案必须一致 ——
+        // 旧实现按 nestedIn 判，而 nestedIn 记的是「在 XML 里写在谁里面」，
+        // 于是这一种写法被报成「嵌入式 subProcess 上不能挂边界事件」，
+        // 而把同一个 boundaryEvent 挪到宿主活动内部就能过：图没变、语义没变、结论相反。
+        WfDefinition definition = new WfXmlParser().parse(BOUNDARY_AT_SUB_LEVEL_BPMN);
+        assertEquals("sp", definition.node("beI").nestedIn(),
+                "前置条件：这个 boundaryEvent 确实写在 subProcess 内部 —— "
+                        + "本条判据的前提就是「nestedIn 与 attachedToRef 不是同一个值」，"
+                        + "两者相等的话它与既有那条判据是同一个用例，"
+                        + "什么也证明不了");
+        assertEquals("iTask", definition.node("beI").getAttachedToRef(),
+                "前置条件：它挂的是内层的 iTask，不是容器 sp");
+
+        for (WfValidationIssue issue : new WfDefinitionValidator().validate(definition)) {
+            assertFalse(issue.getSeverity() == WfValidationIssue.Severity.ERROR
+                            && joinAll(issue).contains("不能挂边界事件"),
+                    "子流程内的活动挂超时边界是正常写法，不该被判成挂在容器上。"
+                            + "报错文本: " + joinAll(issue));
+        }
+        assertEquals("boundaryAtSubLevelProcess", deploy(BOUNDARY_AT_SUB_LEVEL_BPMN),
+                "部署期不该报错");
+    }
+
+    @Test
+    @DisplayName("内联子图里的死胡同要报「没有出线」，不是「结束点不唯一」")
+    void deadEndInsideInlineIsNotCountedAsAnExit() {
+        // 旧实现把「容器内没有出线的任何节点」都当成内联结束节点，
+        // 于是 iDead（userTask，有入线无出线）与 iEnd 一起凑成 2 个「结束点」，
+        // 报出来的是「子流程的结束点必须唯一」。作者照着这句话去找第二个
+        // endEvent，找遍全图也找不到一个 —— 而真正的问题（iDead 无出线）
+        // 一个字都没提。
+        WfDefinition definition = new WfXmlParser().parse(DEAD_END_IN_INLINE_BPMN);
+
+        assertTrue(hasError(definition, "有入线却没有出线"),
+                "死胡同要按它自己的问题报错。实际报错: " + messagesOf(definition));
+        assertFalse(hasError(definition, "内联结束节点"),
+                "iDead 不是结束节点，把它算进去会让一条只有一个 endEvent 的子流程"
+                        + "被报成有两个结束点，而作者找不到第二个。实际报错: "
+                        + messagesOf(definition));
+    }
+
+    @Test
+    @DisplayName("回归：只有 endEvent 无出线的正常内联子流程不被死胡同检查误伤")
+    void normalInlineSubProcessIsNotFlaggedAsDeadEnd() {
+        WfDefinition definition = new WfXmlParser().parse(EMBEDDED_BPMN);
+        for (WfValidationIssue issue : new WfDefinitionValidator().validate(definition)) {
+            assertFalse(issue.getSeverity() == WfValidationIssue.Severity.ERROR
+                            && joinAll(issue).contains("没有出线"),
+                    "endEvent 本来就没有出线，它不是死胡同。实际报错: " + joinAll(issue));
+        }
+    }
+
+    @Test
+    @DisplayName("inlineEndNode 只认 endEvent：死胡同不算出口（与校验器同一把尺子）")
+    void inlineEndNodeIgnoresDeadEnds() {
+        // 这条钉的是**两处定义一致**，不是某个运行期行为：
+        // WfDefinition#inlineEndNode 与 WfDefinitionValidator 的出口判定，
+        // 若一个按「无出线」、另一个按「endEvent」，同一个图会被判出两种结论。
+        // 该方法当前没有生产调用点，所以这里不假装它在挡什么 ——
+        // 它一旦被接进执行路径，口径不对就会直接变成"子流程提前跳出去了"。
+        WfDefinition definition = new WfXmlParser().parse(DEAD_END_IN_INLINE_BPMN);
+        assertNotNull(definition.inlineEndNode("sp"),
+                "子流程里确实有一个 endEvent，出口应当唯一识别得出来");
+        assertEquals("iEnd", definition.inlineEndNode("sp").getId(),
+                "把 iDead（死胡同）也算成出口的话，唯一性判定会失败而返回 null —— "
+                        + "作者画的是「一个」结束点，被告知的是「没有或多个」");
+    }
+
     // ==================== 退化入口 ====================
 
     @Test
@@ -787,6 +902,20 @@ class WfEmbeddedSubProcessTest {
     private static String joinAll(WfValidationIssue issue) {
         return (issue.getMessage() == null ? "" : issue.getMessage())
                 + " " + (issue.getNodeId() == null ? "" : issue.getNodeId());
+    }
+
+    /** 一次校验的全部报错文本 —— 断言失败时要能让人当场看见"实际报了什么"。 */
+    private static String messagesOf(WfDefinition definition) {
+        StringBuilder sb = new StringBuilder("[");
+        for (WfValidationIssue issue : new WfDefinitionValidator().validate(definition)) {
+            if (issue.getSeverity() == WfValidationIssue.Severity.ERROR) {
+                if (sb.length() > 1) {
+                    sb.append(" | ");
+                }
+                sb.append(joinAll(issue));
+            }
+        }
+        return sb.append("]").toString();
     }
 
     private static String idsOf(List<WfNode> nodes) {

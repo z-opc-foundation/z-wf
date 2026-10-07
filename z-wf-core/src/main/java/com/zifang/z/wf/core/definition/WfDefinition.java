@@ -574,16 +574,22 @@ public class WfDefinition implements Serializable {
     }
 
     /**
-     * 嵌入式子流程的<b>内联结束节点</b> —— 该容器内无出线的那个节点。
+     * 嵌入式子流程的<b>内联结束节点</b> —— 该容器内那个 {@code endEvent}。
      *
-     * <p>与 {@link #inlineStartNode} 同样按"唯一"判定：容器内出现两个无出线节点时
+     * <p>与 {@link #inlineStartNode} 同样按"唯一"判定：容器内出现两个 endEvent 时
      * 返回 {@code null}，交由校验器报错，绝不静默挑一个（挑中的后果是
      * token 在第一个"结束"处就跳出子流程，后半段永远跑不到）。
+     *
+     * <p><b>按类型收，不按「无出线」收</b>（第 37 轮修正）：一条有入线无出线的
+     * userTask 同样是"无出线"，但它是<b>死胡同</b>而不是出口。把它当出口的话，
+     * 引擎会认为子流程在这里正常结束，而作者画的后续路径一次都没跑 ——
+     * 与 {@link WfDefinitionValidator} 的死胡同检查是同一件事的两面，
+     * 两处对"出口"的定义必须一致。
      */
     public WfNode inlineEndNode(String containerId) {
         WfNode found = null;
         for (WfNode node : inlineChildrenOf(containerId)) {
-            if (!outgoingFlows(node.getId()).isEmpty()) {
+            if (node.getType() != WfNodeType.END_EVENT) {
                 continue;
             }
             if (found != null) {

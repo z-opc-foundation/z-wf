@@ -167,6 +167,47 @@ class WfTerminateEndEventTest {
             + "  </process>\n"
             + "</definitions>\n";
 
+    /**
+     * 子流程级的终止，被收掉那条支路上挂一个 3 天超时。
+     *
+     * <p>这条是<b>专门为「进程级那套兜底盖不住的地方</b>准备的：
+     * 进程级终止会让实例完成，而 {@code resolveCompletion} 收尾时本来就有
+     * {@code deleteJobsByProcessInstance} 兜底 —— 那里再撤一遍 job 是冗余的。
+     * 子流程级终止**实例不会完成**，那条兜底不经过，
+     * 撤 job 就只有 {@code applyTerminateScope} 这一条路 ——
+     * 不断这条的话，症状是「子流程里那条支路的定时器还在，
+     * 之后每到点就被扫到一次，而它要投递的 token 早被终止了」。
+     */
+    private static final String SUBPROCESS_TERMINATE_WITH_TIMER_BPMN =
+            "<definitions xmlns=\"" + NS + "\" xmlns:zifang=\"https://zifang.com/bpmn\""
+            + " targetNamespace=\"x\">\n"
+            + "  <process id=\"subTerminateTimer\" isExecutable=\"true\">\n"
+            + "    <startEvent id=\"s1\"/>\n"
+            + "    <subProcess id=\"sp\" name=\"内联子流程\">\n"
+            + "      <startEvent id=\"iStart\"/>\n"
+            + "      <parallelGateway id=\"iFork\"/>\n"
+            + "      <userTask id=\"iWin\" name=\"内层甲\" zifang:assignee=\"alice\"/>\n"
+            + "      <userTask id=\"iSlow\" name=\"内层乙\" zifang:assignee=\"bob\"/>\n"
+            + "      <boundaryEvent id=\"bTimer\" attachedToRef=\"iWin\">\n"
+            + "        <timerEventDefinition><timeDuration>P3D</timeDuration></timerEventDefinition>\n"
+            + "      </boundaryEvent>\n"
+            + "      <userTask id=\"iLate\" name=\"超时补救\" zifang:assignee=\"dave\"/>\n"
+            + "      <endEvent id=\"iEnd\"/>\n"
+            + "      <terminateEndEvent id=\"iTerm\"/>\n"
+            + "      <sequenceFlow id=\"if1\" sourceRef=\"iStart\" targetRef=\"iFork\"/>\n"
+            + "      <sequenceFlow id=\"if2\" sourceRef=\"iFork\" targetRef=\"iWin\"/>\n"
+            + "      <sequenceFlow id=\"if3\" sourceRef=\"iFork\" targetRef=\"iSlow\"/>\n"
+            + "      <sequenceFlow id=\"if4\" sourceRef=\"iWin\" targetRef=\"iEnd\"/>\n"
+            + "      <sequenceFlow id=\"if5\" sourceRef=\"iSlow\" targetRef=\"iTerm\"/>\n"
+            + "      <sequenceFlow id=\"if6\" sourceRef=\"bTimer\" targetRef=\"iLate\"/>\n"
+            + "      <sequenceFlow id=\"if7\" sourceRef=\"iLate\" targetRef=\"iEnd\"/>\n"
+            + "    </subProcess>\n"
+            + "    <endEvent id=\"e1\"/>\n"
+            + "    <sequenceFlow id=\"f1\" sourceRef=\"s1\" targetRef=\"sp\"/>\n"
+            + "    <sequenceFlow id=\"f2\" sourceRef=\"sp\" targetRef=\"e1\"/>\n"
+            + "  </process>\n"
+            + "</definitions>\n";
+
     private InMemoryWorkflowPersistence repo;
     private WfRepositoryService repository;
     private WfRuntimeService runtime;
@@ -352,6 +393,22 @@ class WfTerminateEndEventTest {
                 "终止必须把被收掉那条支路上的 job 一并撤掉 —— "
                         + "留着的话它到期时会被投递到一条已经 ENDED 的 token 上，"
                         + "而流程早就结束了，没人看得懂那是什么错");
+    }
+
+    @Test
+    @DisplayName("子流程级的终止也要撤 job（实例不完成，没有那道兜底）")
+    void subprocessTerminateClearsJobsOfTheKilledBranch() {
+        WfDefinition definition = deploy(SUBPROCESS_TERMINATE_WITH_TIMER_BPMN);
+        String pid = start(definition);
+        assertEquals(1, countJobs(pid), "内层甲应当挂着一个超时定时器");
+
+        complete(taskOf(pid, "iSlow"));
+
+        assertEquals(0, countJobs(pid),
+                "子流程级的终止必须自己撤 job —— 进程级那道 deleteJobsByProcessInstance 兜底"
+                        + "只在实例完成时才经过，而子流程级终止后实例仍然活着，"
+                        + "撤不掉的话那个定时器会一直留到到期，然后被投递到一条"
+                        + "早就被终止的 token 上");
     }
 
     private int countJobs(String pid) {

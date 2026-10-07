@@ -1555,19 +1555,46 @@ public class WfDefinitionValidator {
         // 终止结束事件（第 36 轮）不参与这个计数，但参与"有没有出口"的判定：
         // 一个只有 terminateEndEvent、没有普通结束节点的子流程是合法的
         // （进入即被终止，永远走不到正常出口），而两个都没有才是环。
-        List<String> exits = inlineExitIds(definition, children);
+        List<String> exits = inlineExitIds(children);
         List<String> terminates = inlineTerminateExitIds(children);
         if (exits.size() > 1) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
                     "嵌入式 subProcess " + node.getId() + " 有 " + exits.size()
-                            + " 个内联结束节点（容器内没有出线的节点）: " + exits
+                            + " 个内联结束节点（容器内的 endEvent）: " + exits
                             + "。子流程的结束点必须唯一，否则 token 会在第一个结束处跳出，"
                             + "后面的内联内容永远跑不到");
         } else if (exits.isEmpty() && terminates.isEmpty()) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
                     "嵌入式 subProcess " + node.getId() + " 没有任何内联结束节点"
-                            + "（容器内每个节点都有出线，既没有 endEvent 也没有 terminateEndEvent）。"
+                            + "（容器内没有 endEvent，也没有 terminateEndEvent）。"
                             + "这意味着子流程内部成环，token 会在里面一直转下去");
+        }
+
+        // ---- 内联子图里的死胡同 ----
+        // 「有入线、无出线、且不是结束事件」的节点。token 抵达它会走 leave 而无路可走，
+        // WfEngine 只 warn 一句「节点 X 没有出线，token 结束」就把它结束掉 ——
+        // 症状是"单子被正常办掉了，之后什么也没发生"，全程没有任何报错。
+        //
+        // 这些节点<b>不算出口</b>，出口是 endEvent 的特权。把它们混进 inlineExitIds
+        // 的话，一条真正只有一个结束点的子流程会被报成"有 2 个内联结束节点" ——
+        // 而作者照着提示去找第二个结束节点，根本找不到一个。
+        List<String> deadEnds = new ArrayList<>();
+        for (WfNode child : children) {
+            WfNodeType type = child.getType();
+            if (type == WfNodeType.END_EVENT || type == WfNodeType.TERMINATE_END_EVENT) {
+                continue;
+            }
+            if (!definition.incomingFlows(child.getId()).isEmpty()
+                    && definition.outgoingFlows(child.getId()).isEmpty()) {
+                deadEnds.add(child.getId());
+            }
+        }
+        if (!deadEnds.isEmpty()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "嵌入式 subProcess " + node.getId() + " 里有节点有入线却没有出线: " + deadEnds
+                            + "。这是死胡同，不是结束节点：结束节点只能是 endEvent / "
+                            + "terminateEndEvent。token 办结到这个节点后会直接结束，"
+                            + "子流程随后被当成正常完成，而作者画的那条后续路径一次都没跑");
         }
 
         // ---- 不支持嵌套 ----
@@ -1594,11 +1621,20 @@ public class WfDefinitionValidator {
         // 容器节点上。而 WfRuntimeService#fireEventBoundary 有一道硬闸门：
         // token 必须仍停在宿主节点上才触发。放宽它要重新定义"打断"的对象，
         // 语义风险远大于本轮的收益，所以部署期直接挡掉。
+        //
+        // 判据是 <b>attachedToRef（它挂在谁身上）</b>，不是 nestedIn（它在 XML 里写在谁里面）。
+        // 这两者对同一个 boundaryEvent 可以是<b>不同的答案</b>，而那种写法不止一种：
+        // BPMN 允许 boundaryEvent 写在宿主活动内部（nestedIn == 宿主），
+        // 也允许写在 subProcess 层级下、用 attachedToRef 指回内层的某个活动
+        // （nestedIn == 该 subProcess）—— 后者是 Camunda Modeler 导出的常见形状。
+        // 按 nestedIn 判的话，子流程里的活动挂超时边界这种完全正常的写法会被判非法，
+        // 而同一张图只要把 boundaryEvent 挪到容器外面就又能过了：
+        // 图没变、语义没变，结论却相反，作者无从判断该怎么改。
         List<String> boundaries = new ArrayList<>();
         for (WfNode candidate : definition.getNodes()) {
             if (candidate != null
-                    && node.getId().equals(candidate.nestedIn())
-                    && candidate.getType() == WfNodeType.BOUNDARY_EVENT) {
+                    && candidate.getType() == WfNodeType.BOUNDARY_EVENT
+                    && node.getId().equals(candidate.getAttachedToRef())) {
                 boundaries.add(candidate.getId());
             }
         }
@@ -1635,7 +1671,14 @@ public class WfDefinitionValidator {
     }
 
     /**
-     * 容器内"无出线"的<b>普通</b>节点 id —— 内联结束节点候选。
+     * 容器内的 {@code endEvent} —— 子流程的正常出口。
+     *
+     * <p><b>按类型收，不按「无出线」收。</b>（第 37 轮修正）
+     * 早先的判据是"容器内没有出线的普通节点"，而<b>没有出线的节点不一定是结束节点</b>：
+     * 一条有入线无出线的 userTask 同样是"无出线"，它却不是出口 ——
+     * 混进来会让一条真正只有一个 endEvent 的子流程被报成"有 2 个结束点"，
+     * 而作者照着提示去找第二个 endEvent，根本找不到。
+     * 那类节点由 {@code validateSubProcess} 的死胡同检查单独报出，报的是它自己的问题。
      *
      * <p><b>刻意排除 {@code terminateEndEvent}（第 36 轮）。</b>
      * 终止结束事件同样没有出线，若把它算进来，「一条分支正常结束、另一条分支终止」
@@ -1647,13 +1690,10 @@ public class WfDefinitionValidator {
      * <p>终止结束事件由 {@link #inlineTerminateExitIds} 单独统计，
      * 两处合起来才是"容器里的所有出口"。
      */
-    private static List<String> inlineExitIds(WfDefinition definition, List<WfNode> children) {
+    private static List<String> inlineExitIds(List<WfNode> children) {
         List<String> ids = new ArrayList<>();
         for (WfNode node : children) {
-            if (node.getType() == WfNodeType.TERMINATE_END_EVENT) {
-                continue;
-            }
-            if (definition.outgoingFlows(node.getId()).isEmpty()) {
+            if (node.getType() == WfNodeType.END_EVENT) {
                 ids.add(node.getId());
             }
         }
