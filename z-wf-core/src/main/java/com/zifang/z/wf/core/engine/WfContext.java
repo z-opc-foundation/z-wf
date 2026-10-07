@@ -67,6 +67,45 @@ public class WfContext {
     private final java.util.List<String> jobsToClearByExecution =
             new java.util.ArrayList<>();
 
+    /**
+     * 本次推进请求<b>终止整个作用域</b>（{@code terminateEndEvent}），值为该作用域的
+     * 内联容器 id；<b>空串表示进程级</b>（即终止整个实例）。
+     *
+     * <p>用 {@code null} 表示"没有终止请求"而不是空串 ——
+     * "没有请求"与"请求终止整个实例"是两件事，空串是后者，是最常被用到的那个，
+     * 两者混在一个槽位里会让"忘了初始化"表现为"终止整个实例"。
+     *
+     * <p><b>为什么只登记不自己动手</b>：{@code WfEngine} 手里<b>没有持久化</b>，
+     * 而终止要做的三件事（结束其余 token、作废待办、撤 job）全都得落库。
+     * 与 {@link #pendingEvents} / {@link #jobsToClearByExecution} 同一套形状：
+     * 引擎登记意图，运行期服务在 {@code finishTransaction} 里统一执行。
+     */
+    private String terminateScope;
+
+    /**
+     * 登记一次作用域终止。
+     *
+     * @param scope 内联容器 id；<b>空串</b>表示进程级（终止整个实例）
+     */
+    public void requestTerminate(String scope) {
+        this.terminateScope = scope == null ? "" : scope;
+    }
+
+    /** 本次推进是否请求了作用域终止。 */
+    public boolean isTerminateRequested() {
+        return terminateScope != null;
+    }
+
+    /**
+     * 本次推进请求终止的作用域：内联容器 id，空串表示进程级。
+     *
+     * <p><b>未请求时返回 {@code null}</b>，不要与空串混为一谈 ——
+     * 调用方必须先判 {@link #isTerminateRequested()}。
+     */
+    public String getTerminateScope() {
+        return terminateScope;
+    }
+
     public java.util.List<WfJob> getCreatedJobs() {
         return createdJobs;
     }
@@ -98,7 +137,6 @@ public class WfContext {
             pendingEvents.add(event);
         }
     }
-
     public List<WfPendingEvent> getPendingEvents() {
         return pendingEvents;
     }

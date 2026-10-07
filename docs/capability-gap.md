@@ -152,7 +152,7 @@
 | `intermediateThrowEvent` | ✅ | **第 18 轮原生实现** `WfNodeType.THROW_EVENT` + `WfThrowEventBehavior`。此前它是「不支持的元素」、部署期报 ERROR（见 §4）—— 也就是说**一份真实的 Camunda 流程里只要出现 throwEvent，本引擎就部署不了**。语义：**token 抵达即把事件投出去，自己继续往下走**（穿透、不建待办、不等待）。与 `serviceTask`/`sendTask` 的共同点是穿透，区别是它由引擎自己投递、不需要业务方实现 delegate。`signalRef` 走广播、`messageRef` 走点对点。**投递必须发生在落库之后** —— behavior 处在单实例事务内部，当场投出去的话，被唤醒的那条读到的是尚未落库的旧状态，内层推进完又被外层回写覆盖，现象是「事件到了但流程没动」且无异常（典型丢更新）。为此把十来条推进路径的收口统一到 `finishTransaction`：判完成 → 投递 → 必要时刷新调用方持有的实例快照。**「没人订阅」不是错误**（抛事件是发布式动作，有没有人听不改变它该继续往下走），但会写一条投递记录（唤醒 N 个）——留痕是「不静默」的兑现方式；**多条候选仍然报错**（点对点必须知道被谁接了）。**支持自唤醒**（流程给自己发信号唤醒自己的另一条分支），靠的是投递后刷新返回的实例快照。部署期三条硬规矩：必须给事件引用、不能同时给两个、**不能挂边界事件**（抛事件是穿透的，边界只会得到一个永不触发的哑订阅） |
 | `eventBasedGateway` | 🟡 | ✅ 已实现：token 分叉到各中间捕获事件，**谁的事件先到就走谁，其余分支连同各自的订阅一并作废**（落选分支在轨迹上留 `eventGatewayLost` 一条）。竞速的兄弟集合从**流程定义**反查（捕获事件唯一入线的源头就是网关），不另存副本。订阅用 `EVENT_MESSAGE`/`EVENT_SIGNAL`/**`EVENT_TIMER`** 三种 job 类型，与消息/信号/定时器**边界**订阅分开 —— 后者是打断，前者是竞速，混用时触发路径必须去猜而猜错的后果是流程静默走错分支。**定时器分支已实现**：到点即算它赢，其余分支作废。**条件化分支（第 21 轮补上）**：某一格可以带条件，条件为假时这一格不算它赢、继续等 —— 与「这一格没订阅」是两件不同的事，引擎必须分得出来 |
 | `complexGateway` | ✅ | **第 25 轮补上条件分派**。两种判定方式，**由网关自己有没有判别变量决定**，混用部署期报错：**取值分派**（配了 `zifang:caseVariable`，出线带 `zifang:caseValue`，`camunda:caseExpression` 同样识别）走第一条匹配的线、**只走一条**；**条件分派**（不配判别变量，出线带 BPMN 的 `<conditionExpression>`）按 **BPMN 2.0 对复杂网关的定义**，**条件成立的线全部激活**，一条都不成立才走默认流。此前出线上的 `<conditionExpression>` **被完全忽略** —— 一条只带条件的线永远选不中、流程静默落到默认线，而校验器还会在「它与 caseValue 同时配」时报错，让人以为这个属性是有意义的（这是本轮修掉的真缺陷）。**多条激活不会让汇合死锁**：汇合判定数的是"确实已激活的兄弟 token"而非图上入线总数，没被选中的线根本不产生 token。求值沿用 fail-closed（引用未定义变量判不成立）。**第 27 轮补上汇合侧**：本实现做成可配 —— **`zifang:complexJoin="joining"`（默认，等齐再合并）或 `"competing"`（穿透，各条 token 各自往下）**。**不能拿 Camunda 当依据**：Camunda 7 与 8 **执行期都不支持复杂网关**（官方论坛 2025-04 员工明确答复「neither 7 nor 8」，且其 BPMN 2.0 参考的网关章节只有 XOR / Parallel / Inclusive / Event-based 四页，**没有复杂网关页**），建模器只认那个符号、不执行它。所以"从 Camunda 导出的模型"里复杂网关的汇合行为**没有来源**，只能由本实现给一个确定答案。**第 30 轮补上带阈值的汇合**：`zifang:activationCondition="2"` 表示 2/3 到齐就放行（WCP-30 Structured Partial Join），详见本轮小节。**默认 joining 是刻意的**：改默认值等于让已上线的模型悄悄换语义，而同一个文件在升级前后走出不同的图、没有任何提示。非法取值部署期 ERROR 而不是退到默认值（退而求其次的方向选了 joining，但那是给绕过校验兜底的）。在排他/并行网关上写这个属性同样报 ERROR —— 那三个网关的汇合语义是恒定的，写这句话等于写一句与引擎行为相反的话。**剩余**：多实例 collection 下标求值（跨 z-util 仓）；阈值汇合与循环同场（见本轮小节的已知边界） |
-| `terminateEndEvent` | ❌ | **第 36 轮待做（已定方案，见文末）**。它不在解析器的元素表里 ⇒ 走未知元素路径 ⇒ 部署期报「不支持」—— 是**可见拒绝**不是静默丢弃，但真实的 Camunda 导出模型里只要有一个它就部署不了。Camunda 原文：「ends the complete scope it is raised in and all contained inner scopes … on process instance level terminates the complete instance, on subprocess level the current scope and all contained process instances will be terminated」。它**自洽、不依赖别的前置**，是最小的一块 |
+| `terminateEndEvent` | ✅ | **第 36 轮原生实现** `WfNodeType.TERMINATE_END_EVENT`。此前**不在解析器的元素表里** ⇒ 走未知元素路径 ⇒ 部署期报「不支持」—— 是**可见拒绝**不是静默丢弃，但真实的 Camunda 导出模型里只要有一个它就部署不了，而它**没有任何可替代写法**（「并行分支里一方成了、另一方就别做了」只能这么画）。语义照 Camunda 7：结束**它所在的整个作用域**及其内部所有嵌套作用域 —— 进程级终止整个实例，子流程级终止该子流程且**子流程照常完成、父流程沿出线继续**。刻意做成**独立类型而不是 END_EVENT 上的标志**：做成标志的话，任何一处 `type == END_EVENT` 都会把它当普通结束事件，症状是「图上画了终止，图上什么都没发生」。终止做三件事且**必须三件都做**：结束作用域内其余 token、作废其待办、撤其 job；**必须排在「判完成」之前**，否则流程停在一个已被终止却仍是 ACTIVE 的实例上（无待办、无 job、永远不再推进）。实例状态是 **COMPLETED** 而不是 INTERNALLY_TERMINATED —— 后者是失败/外部终止的语义。部署期两条 ERROR：有出线（终止不可撤销，出线永远走不到）、挂 asyncAfter（它不走 leave）。`inlineExitIds` **刻意排除**它 —— 「普通 endEvent + terminateEndEvent 并存」正是它最典型的用法，算成两个「结束点」会被误报成「结束点必须唯一」 |
 | `transaction` | ❌ | **第 37/38 轮（依赖补偿，不能单独做）**。Camunda **支持**它（`api-references/bpmn20`：三种结果 —— 成功 / 到达 cancel end event 触发补偿 / 未被本作用域捕获的 error 造成 hazard 且**不补偿**）。本仓部署期报错挡住的**理由不成立**：此前文档写的是「折成按顺序跑一遍会算错」，那说的是实现方式，不是这个元素本身。**真正的硬依赖是 `compensation` 尚不存在** —— cancel 路径按 Camunda 语义就是「所有执行被终止并删除，仅留一条执行放到 cancel 边界事件上，由它触发补偿」。没有补偿就实现 transaction = 半套：cancel 路径要么不补偿（等于把「订酒店成功、扣款失败」当成成功）、要么报错 |
 | `adHocSubProcess` | ❌ | 部署期报错挡住。**与 `transaction` 不是一回事**（此前两者被写成同一条「同上」）：ad-hoc 子流程在 Camunda 里也没有独立执行语义，Camunda 把它当普通 subProcess 处理；本仓的拒绝是**照抄 BPMN 元素名**的结果，与能力缺口无关。建模工具很少在导出里带它，遇到时改写成 `subProcess` 即可 |
 | **定时器** `timerEventDefinition` | ✅ | 三种都实现了：`timeDuration`（PT5M / P1DT2H / P1Y）、`timeDate`（2026-12-31T18:00:00Z）、**`timeCycle`（第 13 轮补上）**，都可写 `${变量}` 由流程实例决定时限。**边界定时器（打断）与事件网关定时器分支（竞速）都已接上执行器**（`TIMER` / `EVENT_TIMER` 两种 job 类型，`WfJobService#executeDueJobs` 逐类型各扫一遍）。**`timeCycle` 的限制**：只支持用在**非中断型边界事件**上（`R3/PT1H` / `R/PT10M` / `P1D/T1H` / 带显式起始时刻的写法都支持），因为只有非中断型才有"下一周期可以提醒"的宿主；无界写法 `R/PT10M` 有 100 次的硬上限兜底 |
@@ -2535,3 +2535,61 @@ Camunda 把 `adHocSubProcess` 当普通 subProcess 处理（本仓的拒绝是�
 与能力缺口无关），而 `transaction` 是有三种明确结果的真正可执行元素、且卡在补偿上。
 已拆成三行（`terminateEndEvent` / `transaction` / `adHocSubProcess`）。
 （与第 32 轮同型：**能力表的一行同时承担了两件不同的事，读者读到的结论必然有一半是错的**。）
+
+### 终止结束事件 `terminateEndEvent`（第 36 轮）
+
+**一、为什么先做它而不是 `transaction`。**
+上一节已经把依赖次序查清：`transaction` 硬依赖尚不存在的 `compensation`，
+而 `terminateEndEvent` 自洽、不依赖任何前置。
+
+**二、语义出处。** Camunda 7 `manual/develop/reference/bpmn20/events/terminate-event/`：
+「A terminate event ends the complete scope it is raised in and all contained inner scopes …
+A terminate event on process instance level terminates the complete instance.
+On subprocess level the current scope and all contained processes instances will be terminated.」
+
+**三、落点。** `WfNodeType.TERMINATE_END_EVENT`（独立类型）+ 解析器元素表 +
+`WfContext#requestTerminate`（只登记不自己动手，引擎**没有持久化**）+
+`WfRuntimeService#finishTransaction` 里的 `applyTerminateScope`。
+与 `pendingEvents` / `jobsToClearByExecution` 同一套形状：引擎登记意图，运行期服务统一执行。
+
+**四、四处「不静默」/「不能省」**
+
+1. **作废待办**。只结束 token 不作废待办 ⇒ 它永远挂在办理人列表里，
+   没人能办结它（token 没了），也没人知道它为什么在那儿。
+2. **撤 job**。不撤 ⇒ 到期时事件被投递到一条已经 ENDED 的 token 上，
+   症状是「流程终止三天后开始持续报错，报的是找不到那条分支」。
+3. **排在 `resolveCompletion` 之前**。那道判定读存储层的真实状态；
+   排在它之后，进程级终止结束时实例上还有别的 token ⇒ 判定「没完成」⇒
+   流程停在一个**已被终止**的实例上：ACTIVE、无待办、无 job、永久停死。
+   （M4 这条变异专断它。）
+4. **子流程级不带走父流程**。Camunda 的语义是「子流程完成，父流程沿出线继续」；
+   把当前这条 token 一起结束掉的话，症状是「子流程画了终止，
+   后面主图的节点一个都没跑」，而实例状态看起来完全正常。
+
+**五、判据**：`WfTerminateEndEventTest` 9 条（进程级终止 / 子流程级不带走父流程 /
+待办作废 / job 撤销 / 留痕 / 正常结束与终止并存合法 / 只有终止出口合法 /
+两条部署期 ERROR）+ admin 端到端 `terminateEndEventOverHttp`。
+
+**六、反向验证：8 条变异全红 + 1 条对照全绿，另有 5 条未能独立观测（如实记下）**
+
+全红（`/tmp/verify_r36.py`）：M4 终止清理排在判完成之后 / M7 终止不留痕 /
+M8 引擎不登记终止作用域 / M9 `inlineExitIds` 不排除终止事件 /
+M10 只有终止出口被报成环 / M11 去掉「不能有出线」/ M12 去掉「不能挂 asyncAfter」 /
+M13 解析器不认识该元素。
+
+**未能独立观测的 5 条：M1 去掉「结束 token」、M2 把 token 过滤退回「只收 ACTIVE」、
+M3 不排除当前 token、M5 去掉「作废待办」、M6 去掉「撤 job」。**
+连跑三次均不改变任何断言结果 ⇒ 这条终止链路上存在**多处等效路径**，
+去掉其中任意一处都不改变可观测终态。已确认这不是"变异没写进去"
+（harness 增加了**写入后自检**：内容必须与原文不同，否则单列「变异没写进去」而不是算作「没红」）。
+**不写成"验证通过"**：本轮的反向验证只能证明上列 8 条变异敏感，
+不能证明这 5 处代码是必需的 —— 它们可能是冗余的，也可能是判据的观测点选错了。
+下一轮若要收敛，需要针对这 5 处单独设计能区分的判据
+（而不是把现有断言换个写法再跑一遍）。
+
+**七、这一轮本身抓到的真缺陷**（不是变异抓的，是判据抓的）
+token 过滤最初写成 `state != ACTIVE` ⇒ 停在人工任务上的 token 状态是 **WAITING** 不是 ACTIVE，
+于是**所有带待办的 token 被整体跳过** ⇒ 终止只作废了待办、token 还在 ⇒ 实例永远停在 ACTIVE。
+与 `resolveCompletion` 用的 `isEnded()` **必须是同一把尺子**。
+M2 就是这条的回归，但如上所述 M2 未能独立观测（因为还有别的等效路径兜着）——
+**这条修复本身是被「实例状态是 COMPLETED」那条断言抓住的，不是被 M2 抓住的**。

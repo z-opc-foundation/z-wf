@@ -155,6 +155,10 @@ public class WfDefinitionValidator {
             }
             // ---- 多实例（会签 / 或签）----
             validateMultiInstance(node);
+            // ---- 终止结束事件（第 36 轮）----
+            if (node.getType() == WfNodeType.TERMINATE_END_EVENT) {
+                validateTerminateEndEvent(definition, node);
+            }
             // ---- 退化出来的节点：语义已被换掉，必须挡住部署 ----
             // 这里报 ERROR 而不是 WARN：WARN 只进日志，部署照过，
             // 于是作者拿到的运行行为（人工任务）与他写的流程（自动分支）永久不一致。
@@ -1373,6 +1377,15 @@ public class WfDefinitionValidator {
                             + "结束节点没有【离开之后】可言，请改用 asyncBefore"
                             + "（它能在进入结束节点前排一次队）");
         }
+        // 同样的道理：终止结束事件也不走 leave，asyncAfter 一样挂不出来。
+        // 刻意与上面那条分开写而不是把条件并成 `isEndEvent()` ——
+        // 并成一条之后，改动 endEvent 的那句话会静默影响到终止结束事件，
+        // 而报错文案里一个字都没提它。
+        if (node.isAsyncAfter() && node.getType() == WfNodeType.TERMINATE_END_EVENT) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "terminateEndEvent 不走 leave，asyncAfter 在它上面永远不会被触发。"
+                            + "它结束的是整个作用域，没有【离开之后】可言，请改用 asyncBefore");
+        }
     }
 
     /**
@@ -1538,18 +1551,23 @@ public class WfDefinitionValidator {
         // ---- 至多一个内联结束节点 ----
         // 有两个时 token 会在第一个"结束"处跳出子流程，后半段永远跑不到；
         // 一个都没有说明容器内是个环（每个节点都有出线），token 会在里面打转。
+        //
+        // 终止结束事件（第 36 轮）不参与这个计数，但参与"有没有出口"的判定：
+        // 一个只有 terminateEndEvent、没有普通结束节点的子流程是合法的
+        // （进入即被终止，永远走不到正常出口），而两个都没有才是环。
         List<String> exits = inlineExitIds(definition, children);
+        List<String> terminates = inlineTerminateExitIds(children);
         if (exits.size() > 1) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
                     "嵌入式 subProcess " + node.getId() + " 有 " + exits.size()
                             + " 个内联结束节点（容器内没有出线的节点）: " + exits
                             + "。子流程的结束点必须唯一，否则 token 会在第一个结束处跳出，"
                             + "后面的内联内容永远跑不到");
-        } else if (exits.isEmpty()) {
+        } else if (exits.isEmpty() && terminates.isEmpty()) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
                     "嵌入式 subProcess " + node.getId() + " 没有任何内联结束节点"
-                            + "（容器内每个节点都有出线）。这意味着子流程内部成环，"
-                            + "token 会在里面一直转下去");
+                            + "（容器内每个节点都有出线，既没有 endEvent 也没有 terminateEndEvent）。"
+                            + "这意味着子流程内部成环，token 会在里面一直转下去");
         }
 
         // ---- 不支持嵌套 ----
@@ -1616,15 +1634,68 @@ public class WfDefinitionValidator {
         return ids;
     }
 
-    /** 容器内"无出线"的节点 id —— 内联结束节点候选。 */
+    /**
+     * 容器内"无出线"的<b>普通</b>节点 id —— 内联结束节点候选。
+     *
+     * <p><b>刻意排除 {@code terminateEndEvent}（第 36 轮）。</b>
+     * 终止结束事件同样没有出线，若把它算进来，「一条分支正常结束、另一条分支终止」
+     * 就会凑出 2 个"结束点"而被报成「子流程的结束点必须唯一」——
+     * 而那恰恰是 Camunda 推荐的写法（两条并行分支，谁先到谁说了算：
+     * 到了的那条正常结束，终止事件把另一条上的待办收掉，子流程照常完成）。
+     * 把这个最典型的用法判成非法，作者会以为自己画错了。
+     *
+     * <p>终止结束事件由 {@link #inlineTerminateExitIds} 单独统计，
+     * 两处合起来才是"容器里的所有出口"。
+     */
     private static List<String> inlineExitIds(WfDefinition definition, List<WfNode> children) {
         List<String> ids = new ArrayList<>();
         for (WfNode node : children) {
+            if (node.getType() == WfNodeType.TERMINATE_END_EVENT) {
+                continue;
+            }
             if (definition.outgoingFlows(node.getId()).isEmpty()) {
                 ids.add(node.getId());
             }
         }
         return ids;
+    }
+
+    /** 容器内的 {@code terminateEndEvent}（第 36 轮）。 */
+    private static List<String> inlineTerminateExitIds(List<WfNode> children) {
+        List<String> ids = new ArrayList<>();
+        for (WfNode node : children) {
+            if (node.getType() == WfNodeType.TERMINATE_END_EVENT) {
+                ids.add(node.getId());
+            }
+        }
+        return ids;
+    }
+
+    /**
+     * 终止结束事件校验（第 36 轮）。
+     *
+     * <p>只报一条 ERROR：<b>它不许有出线</b>。
+     *
+     * <p>放行的症状是「图上画了终止，出线一个都没走到」——
+     * 而终止不可撤销，另一条分支上的待办已经被收掉了，
+     * 结果就是流程既没被终止也没往下走，卡在半路且没有任何报错。
+     */
+    private void validateTerminateEndEvent(WfDefinition definition, WfNode node) {
+        List<WfFlow> outs = definition.outgoingFlows(node.getId());
+        if (!outs.isEmpty()) {
+            StringBuilder flowIds = new StringBuilder("[");
+            for (int i = 0; i < outs.size(); i++) {
+                flowIds.append(i > 0 ? ", " : "").append(outs.get(i).getId());
+            }
+            flowIds.append("]");
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "terminateEndEvent 不能有出线，却接了 " + outs.size() + " 条: "
+                            + flowIds + "。它结束的是整个作用域，"
+                            + "到达之后本作用域内的 token 全部作废，"
+                            + "出线永远不会被走到 —— 而终止不可撤销，"
+                            + "另一条分支上的待办那时已经被收掉了，"
+                            + "流程会卡在半路且不报错");
+        }
     }
 
     /**

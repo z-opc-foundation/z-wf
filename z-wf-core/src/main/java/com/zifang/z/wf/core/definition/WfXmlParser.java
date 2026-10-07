@@ -112,6 +112,14 @@ public class WfXmlParser {
     private static final String[][] NODE_ELEMENTS = {
             {"startEvent", "startEvent"},
             {"endEvent", "endEvent"},
+            // 终止结束事件（第 36 轮）。此前**不在表里** ⇒ 走未知元素路径 ⇒
+            // 被校验器当「不支持的元素」挡住 ⇒ 一份含它的 Camunda 导出模型部署不了，
+            // 而它是 Camunda 7 明确支持、且没有任何可替代写法的元素
+            // （"并行分支里一方成了、另一方就别做了"只能这么画）。
+            // 它进的是**真实类型表**而不是"归一到任务再报错"：
+            // 这一类元素有独立语义，退化会让人以为精度下降，
+            // 实际是"自动终止"换成了"等人来点"。
+            {"terminateEndEvent", "terminateEndEvent"},
             {"userTask", "userTask"},
             {"serviceTask", "serviceTask"},
             {"scriptTask", "scriptTask"},

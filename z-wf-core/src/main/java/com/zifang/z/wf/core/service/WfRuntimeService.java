@@ -2922,6 +2922,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      * 「这条路径上抛的事件从来没送出去」，而流程看上去完全正常。
      */
     private void finishTransaction(WfContext context) {
+        applyTerminateScope(context);
         resolveCompletion(context);
         boolean hadEvent = !context.getPendingEvents().isEmpty();
         drainPendingEvents(context);
@@ -2931,6 +2932,134 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                 refreshInstanceInPlace(self);
             }
         }
+    }
+
+    /**
+     * 执行本次推进登记的<b>作用域终止</b>（{@code terminateEndEvent}，第 36 轮）。
+     *
+     * <p><b>必须排在 {@link #resolveCompletion} 之前。</b>
+     * 那道判定读的是存储层的真实状态（「全部 token 已结束且没有未完成任务 ⇒ 完成」），
+     * 而终止恰恰是去把「其余 token」结束掉、把待办作废掉 ——
+     * 排在它之后的话，进程级的终止结束时实例上还有别的 token，
+     * 判定结果是"没完成"，于是流程停在一个**已经被终止**的实例上：
+     * 状态是 ACTIVE，待办没了，没有任何 job 也不会再推进，永久停死。
+     *
+     * <p><b>不做半套</b>：只结束 token 不作废待办的话，待办会永远挂在办理人列表里
+     * （token 没了，没人能再办结它）；只作废待办不结束 token 的话，
+     * 汇合判定会去等一条已经不存在的分支。两者都必须是"没有任何活动的东西"。
+     */
+    private void applyTerminateScope(WfContext context) {
+        if (!context.isTerminateRequested()) {
+            return;
+        }
+        String scope = context.getTerminateScope();
+        WfDefinition definition = context.getDefinition();
+        WfProcessInstance instance = context.getProcessInstance();
+        if (instance == null || instance.getId() == null) {
+            return;
+        }
+        String processInstanceId = instance.getId();
+        String scopeLabel = scope.isEmpty() ? "整个流程实例" : "内联子流程 " + scope;
+
+        int endedTokens = 0;
+        int cancelledTasks = 0;
+        int removedJobs = 0;
+
+        // ---- 1. 结束该作用域内的 token ----
+        for (WfExecution execution
+                : persistence.findExecutionsByProcessInstance(processInstanceId)) {
+            // **用 isEnded() 而不是「状态是不是 ACTIVE」**：
+            // 停在人工任务上的 token 状态是 WAITING 而不是 ACTIVE，
+            // 按 ACTIVE 过滤会把**所有带待办的 token**整体跳过去 ——
+            // 而那正是终止要收掉的主体。症状是「待办没了、token 还在」，
+            // 于是 resolveCompletion 看到还有活 token，实例永远停在 ACTIVE。
+            // resolveCompletion 用的也是 isEnded()，两处必须是同一把尺子。
+            if (execution == null || execution.isEnded()) {
+                continue;
+            }
+            // 当前这条 token 由引擎安置好了（进程级已置 ENDED，子流程级要沿出线走），
+            // 不能在这里一起结束掉 —— 子流程级那一条一结束，父流程就断了
+            WfExecution current = context.getCurrentExecution();
+            String currentId = current == null ? null : current.getId();
+            if (currentId != null && currentId.equals(execution.getId())) {
+                continue;
+            }
+            if (!inScope(definition, execution, scope)) {
+                continue;
+            }
+            execution.setState(WfExecution.State.ENDED);
+            persistence.saveExecution(execution);
+            endedTokens++;
+        }
+
+        // ---- 2. 作废该作用域内的待办 ----
+        WfTaskQuery taskQuery = new WfTaskQuery().setProcessInstanceId(processInstanceId)
+                .setOpenOnly(true).setPageNum(1).setPageSize(Integer.MAX_VALUE);
+        // 先收齐再作废：作废之后就查不到了（openOnly 只看未完成），
+        // 分两个循环的话第二个永远空转 —— 与 cancelOpenTasks 同一个坑
+        List<WfTask> doomed = new ArrayList<>();
+        for (WfTask task : persistence.queryTasks(taskQuery)) {
+            if (task.getDefinitionId() != null && inScope(definition, task.getDefinitionId(), scope)) {
+                doomed.add(task);
+            }
+        }
+        for (WfTask task : doomed) {
+            task.setStatus(WfTask.Status.CANCELLED);
+            task.setEndTime(new Date());
+            task.nextRevision();
+            persistence.saveTask(task);
+            // 人是被终止打断的，不是办结的：发 fireDeleted 而不是 fireAfterComplete，
+            // 否则办理人收到的是"这单办完了"
+            hookDispatcher.fireDeleted(task.getId(), task.getAssignee(),
+                    processInstanceId, "terminated");
+            cancelledTasks++;
+        }
+
+        // ---- 3. 撤掉该作用域内的 job ----
+        // 不撤的后果比前两项隐蔽：被撤掉的分支上若还挂着定时器/消息订阅，
+        // 事件照样会被投递到一条**已经结束**的 token 上 ——
+        // 症状是「流程早就终止了，之后每收一个定时器就报一次找不到 token」
+        WfJobQuery jobQuery = new WfJobQuery().setProcessInstanceId(processInstanceId)
+                .setPageNum(1).setPageSize(Integer.MAX_VALUE);
+        List<WfJob> jobs = persistence.queryJobs(jobQuery);
+        for (WfJob job : jobs) {
+            if (job.getElementId() != null && inScope(definition, job.getElementId(), scope)) {
+                persistence.deleteJob(job.getId());
+                removedJobs++;
+            }
+        }
+
+        // ---- 4. 留痕 ----
+        // 「谁在什么时候把哪一片一起收掉了」是排障时第一个要问的问题，
+        // 而终止在业务上通常**看不出是谁触发的**（一条分支自己走完了而已）
+        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                processInstanceId, context.getAuthenticatedUserId(), "terminate",
+                "terminateEndEvent 终止了" + scopeLabel
+                        + "：结束 token " + endedTokens + " 条、作废待办 " + cancelledTasks
+                        + " 条、撤销 job " + removedJobs + " 条"));
+        log.info("流程 {} 的 {} 被 terminateEndEvent 终止: token={} 待办={} job={}",
+                processInstanceId, scopeLabel, endedTokens, cancelledTasks, removedJobs);
+    }
+
+    /**
+     * 某条 token（或某个节点）是否落在指定作用域里。
+     *
+     * <p><b>归属认不出来时判「不在」而不是「在」</b>：
+     * {@link WfDefinition#inlineScopeOf} 对定义里找不到的节点返回 {@code null}，
+     * 那种 token 的归属是未知的。把它算进"在作用域内"会让终止顺手结束掉
+     * 本来不该结束的分支 —— 而终止不可撤销，误杀比漏杀贵得多。
+     */
+    private boolean inScope(WfDefinition definition, WfExecution execution, String scope) {
+        return execution.getActivityId() != null
+                && inScope(definition, execution.getActivityId(), scope);
+    }
+
+    private boolean inScope(WfDefinition definition, String activityId, String scope) {
+        if (definition == null || activityId == null) {
+            return false;
+        }
+        String actual = definition.inlineScopeOf(activityId);
+        return actual != null && actual.equals(scope);
     }
 
     /**

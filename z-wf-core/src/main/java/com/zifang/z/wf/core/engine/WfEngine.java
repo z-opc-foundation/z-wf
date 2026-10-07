@@ -297,12 +297,16 @@ public class WfEngine {
         }
 
         // ---- 结束事件 ----
-        if (node.getType() == WfNodeType.END_EVENT) {
+        if (node.getType() == WfNodeType.END_EVENT
+                || node.getType() == WfNodeType.TERMINATE_END_EVENT) {
             // 内联在 subProcess 里的 endEvent 不是"流程结束"，而是"子流程到此为止"：
             // token 要回到那个 subProcess 节点上，由它沿自己的出线继续走主图。
             // 少这一道分派，内联子流程的 token 就会在子流程内部直接结束，
             // 现象是"subProcess 之后的节点一个都没跑，而实例状态是 COMPLETED"。
             if (definition.isInline(node)) {
+                if (node.getType() == WfNodeType.TERMINATE_END_EVENT) {
+                    terminateScope(context, node);
+                }
                 leaveSubProcess(context, node, token, depth);
                 return;
             }
@@ -316,6 +320,12 @@ public class WfEngine {
             // Camunda 的 endEvent 历史同样是 USER_ID 为空。
             end.setAssignee(null);
             token.setState(WfExecution.State.ENDED);
+            // 进程级的终止结束事件：登记要终止的**是整个实例**。
+            // 登记的是空串而不是"主图"这个概念 —— 容器 id 天然是空串时
+            // 表示主图，混用两个值会让运行期分不清"没登记"与"登记了主图"。
+            if (node.getType() == WfNodeType.TERMINATE_END_EVENT) {
+                terminateScope(context, node);
+            }
             return;
         }
 
@@ -1058,6 +1068,30 @@ public class WfEngine {
         // 容器的历史、起过的 job、asyncAfter、出线选择全部由 leave 统一处理，
         // 这里不重复做其中任何一件 —— 重复记一条历史的症状是轨迹上"审批了两次"。
         leave(context, depth + 1);
+    }
+
+    /**
+     * 登记一次<b>作用域终止</b>（{@code terminateEndEvent}）。
+     *
+     * <p>引擎这里只做两件事：登记要终止哪个作用域、把自己这条 token 安置好。
+     * 真正的「结束其余 token / 作废待办 / 撤 job」在
+     * {@code WfRuntimeService#finishTransaction} 里做 ——
+     * 引擎<b>没有持久化</b>，那三件事全都得落库。
+     *
+     * <p><b>这条 token 自己不并进「要结束的那一批」</b>：
+     * 进程级时它就地结束（上面那处已置 ENDED）；子流程级时它要沿子流程的出线
+     * 继续走主图 —— Camunda 的语义是「子流程完成，父流程沿出线继续」，
+     * 不是「父流程也一起结束」。把它一起结束的话，
+     * 子流程里的 terminateEndEvent 会把整个实例带走，
+     * 症状是「子流程画了终止，结果后面的节点一个都没跑」。
+     *
+     * @param node 抵达的 {@code terminateEndEvent}
+     */
+    private void terminateScope(WfContext context, WfNode node) {
+        // nestedIn() 对主图节点是空串，天然就是「进程级」这个值。
+        // 不另造一个"PROCESS_SCOPE"常量 —— 那个常量一旦与空串不等价，
+        // 运行期就会把两种表示混着用，而两边都"看起来对"。
+        context.requestTerminate(node.nestedIn());
     }
 
     /** 节点 id 列表（诊断信息用）。 */

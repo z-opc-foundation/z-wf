@@ -29,6 +29,31 @@ public enum WfNodeType {
     /** 结束事件。token 抵达即结束；可携带 {@code resultExpression} 决定流程结果。 */
     END_EVENT("endEvent"),
 
+    /**
+     * 终止结束事件 {@code terminateEndEvent}（第 36 轮）。
+     *
+     * <p><b>与 {@link #END_EVENT} 的差别不在「结束」，而在「结束谁」。</b>
+     * 普通结束事件结束的是<b>这一条 token</b>；终止结束事件结束的是
+     * <b>它所在作用域里的全部 token</b>及其内部所有嵌套作用域。
+     *
+     * <p>Camunda 7 原文（{@code manual/develop/reference/bpmn20/events/terminate-event/}）：
+     * 「A terminate event ends the complete scope it is raised in and all contained
+     * inner scopes … A terminate event on process instance level terminates the
+     * complete instance. On subprocess level the current scope and all contained
+     * processes instances will be terminated.」
+     *
+     * <p><b>它是最常见的「并行分支里一方成了，另一方就别做了」的写法</b>：
+     * 两条并行分支各有一个结束事件，其中一条是 terminate 到达时，
+     * 另一条分支上的待办会立即消失、子流程照常完成并沿出线继续 ——
+     * 而这两件事用普通 endEvent + 人工作废是做不到的。
+     *
+     * <p>刻意做成<b>独立类型而不是 END_EVENT 上的一个标志</b>：
+     * 本类型在各处都按「与 END_EVENT 无关」处理，若改成标志位，
+     * 任何一处 {@code type == END_EVENT} 的判断都会把它当成普通结束事件，
+     * 症状是「图上画了终止，图上什么都没发生」。
+     */
+    TERMINATE_END_EVENT("terminateEndEvent"),
+
     /** 用户任务：创建 {@link com.zifang.z.wf.core.model.WfTask} 并挂起等待人工处理。 */
     USER_TASK("userTask"),
 
@@ -211,9 +236,14 @@ public enum WfNodeType {
 
     /**
      * 是否为流程边界（抵达即改变流程实例状态）。
+     *
+     * <p>含 {@link #TERMINATE_END_EVENT}：它同样在抵达时改变实例状态，
+     * 而且改得更彻底（结束整个作用域）。虽然本方法目前<b>主代码里没有调用点</b>
+     * （只有定义），仍然按语义补齐 —— 留着它只对 {@link #END_EVENT} 为真的话，
+     * 将来第一个用它做分支的人会漏掉终止结束事件。
      */
     public boolean isBoundary() {
-        return this == START_EVENT || this == END_EVENT;
+        return this == START_EVENT || this == END_EVENT || this == TERMINATE_END_EVENT;
     }
 
     /**
@@ -303,7 +333,8 @@ public enum WfNodeType {
      */
     public static java.util.List<String> names() {
         return Collections.unmodifiableList(Arrays.asList(
-                START_EVENT.bpmnName, END_EVENT.bpmnName, USER_TASK.bpmnName,
+                START_EVENT.bpmnName, END_EVENT.bpmnName, TERMINATE_END_EVENT.bpmnName,
+                USER_TASK.bpmnName,
                 SERVICE_TASK.bpmnName, SCRIPT_TASK.bpmnName, MANUAL_TASK.bpmnName,
                 SEND_TASK.bpmnName, RECEIVE_TASK.bpmnName, EXCLUSIVE_GATEWAY.bpmnName,
                 PARALLEL_GATEWAY.bpmnName, INCLUSIVE_GATEWAY.bpmnName,

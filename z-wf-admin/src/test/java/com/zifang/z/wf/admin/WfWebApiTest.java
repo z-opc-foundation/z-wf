@@ -2788,8 +2788,64 @@ class WfWebApiTest {
         assertEquals("ACTIVE", instanceStatus(pidB), "B 单必须仍在 ACTIVE");
     }
 
-    private List<Map<String, Object>> openTasksOf(String processInstanceId) throws Exception {
-        return asList(asMap(getOk("/api/wf/process/overview?processInstanceId=" + processInstanceId)
+    /**
+     * 终止结束事件走真实 HTTP（第 36 轮）。
+     *
+     * <p>它盯的是<b>接线</b>：终止的清理逻辑挂在 {@code WfRuntimeService#finishTransaction} 上，
+     * 而这条收口有十来条推进路径都会经过。漏掉任何一条的症状是
+     * 「核心单测全绿、但从 HTTP 走进来时另一条分支的待办还挂着」。
+     *
+     * <p>它还钉住一件在 core 判据里看不见的事：<b>跨 HTTP 之后实例状态是 COMPLETED</b>，
+     * 不是 ACTIVE 停在半路。
+     */
+    @Test
+    @DisplayName("terminateEndEvent：部署 → 启动 → 办结一条 → 另一条分支被终止收掉")
+    void terminateEndEventOverHttp() throws Exception {
+        String key = "term-" + System.nanoTime();
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"" + key + "\" name=\"终止\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"ts1\"/>\n"
+                + "    <parallelGateway id=\"tpga\"/>\n"
+                + "    <userTask id=\"twin\" name=\"甲\" zifang:assignee=\"term-alice\"/>\n"
+                + "    <userTask id=\"tslow\" name=\"乙\" zifang:assignee=\"term-bob\"/>\n"
+                + "    <endEvent id=\"teWin\"/>\n"
+                + "    <terminateEndEvent id=\"teTerm\"/>\n"
+                + "    <sequenceFlow id=\"tf1\" sourceRef=\"ts1\" targetRef=\"tpga\"/>\n"
+                + "    <sequenceFlow id=\"tf2\" sourceRef=\"tpga\" targetRef=\"twin\"/>\n"
+                + "    <sequenceFlow id=\"tf3\" sourceRef=\"tpga\" targetRef=\"tslow\"/>\n"
+                + "    <sequenceFlow id=\"tf4\" sourceRef=\"twin\" targetRef=\"teWin\"/>\n"
+                + "    <sequenceFlow id=\"tf5\" sourceRef=\"tslow\" targetRef=\"teTerm\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        // 部署期就该放行：此前这个元素不在解析表里，部署期会直接报「不支持」
+        postOk("/api/wf/definitions/deploy", body("key", key, "xml", xml));
+
+        String pid = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", key, "businessKey", "TERM-BUS-1", "userId", "term-alice"))
+                .get("data");
+        assertEquals(2, openTasksOf(pid).size(), "两条并行分支各有一个待办");
+
+        String slowTaskId = null;
+        for (Map<String, Object> task : openTasksOf(pid)) {
+            if ("tslow".equals(task.get("definitionId"))) {
+                slowTaskId = (String) task.get("id");
+            }
+        }
+        assertNotNull(slowTaskId, "找不到乙那条分支的待办: " + openTasksOf(pid));
+
+        postOk("/api/approval-center/tasks/complete",
+                body("taskId", slowTaskId, "userId", "term-bob", "comment", "我先办完了"));
+
+        assertTrue(openTasksOf(pid).isEmpty(),
+                "乙走到终止结束事件时，甲的待办必须一起作废。实际还开着: " + openTasksOf(pid));
+        assertEquals("COMPLETED", instanceStatus(pid),
+                "终止是作用域的正常完成 —— 停在 ACTIVE 就是一个被终止却还活着的实例，"
+                        + "没有待办也没有 job，永远不会再推进");
+    }
+
+    private List<Map<String, Object>> openTasksOf(String processInstanceId) throws Exception {        return asList(asMap(getOk("/api/wf/process/overview?processInstanceId=" + processInstanceId)
                 .get("data")).get("openTasks"));
     }
 
