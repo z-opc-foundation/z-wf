@@ -124,7 +124,7 @@
 | FormService | ⛔ 有意排除，见 §5 |
 | AuthorizationService | ⛔ 有意排除，见 §5 |
 | FilterService（保存的查询） | ✅ | 早已实现：`WfFilterService` + `WfFilter` + `ZWF_FILTER` 表，REST `GET/POST/PUT/DELETE /api/wf/filters` 与 `GET /api/wf/filters/{id}/results`。见 §1.2。**这一行曾经长期挂着 ❌** —— 功能早就有了而能力表没跟上，读表的人会以为"保存筛选条件"得业务方自己存，于是自己又造了一套 |
-| ExternalTaskService | ⛔ 有意排除，见 §5 |
+| ExternalTaskService | ✅ | 已实现（**第 8 轮起**：早先列为有意排除 —— 理由是「`serviceTask` + delegate 已覆盖同样场景，不需要额外的拉取协议」—— 后因需要接外部系统主动领活而补上，**这一条已从 §5 移除**）。`WfExternalTaskService`（fetchAndLock / complete / fail / release / list）+ `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制。REST 7 端点在 `/api/wf/external-tasks`。**剩余**：Camunda 侧的 `handleBpmnError` / `handleEscalation` 交回流程、`setVariableLocal`、外部任务优先级与批量操作 |
 | DecisionService（DMN） | ✅ | 第 24 轮起可被 BPMN 的 `businessRuleTask` 直接调用（见 §2）。第 23 轮实现：`WfDecisionService`（`parseDecision` / `deployDecision` / `findDecisionByKey` / `findDecisionsByKey` / `deleteDecision` / `evaluateDecision`）+ `WfDmnParser` + `WfDmnEvaluator` + `ZWF_DECISION` 表（带版本，与流程定义同一套版本语义）+ REST `POST /api/wf/decisions/deploy`、`GET /api/wf/decisions/{key}`、`GET /api/wf/decisions/{key}/versions[/{version}]`、`POST /api/wf/decisions/{key}/evaluate`、`DELETE /api/wf/decisions/{key}/versions/{version}`。**六种 HitPolicy 全支持**：UNIQUE（命中多条直接报违规）/ ANY（多条输出必须一致）/ FIRST / RULE_ORDER（多结果聚合）/ COLLECT（列表）/ OUTPUT_PRIORITY（按 `outputValues` 的先后排序）。聚合器 SUM / MIN / MAX / COUNT。**单目测试补全**：`inputEntry` 省略左操作数时以该列 `inputExpression` 的值为左操作数（`> 5000` 写作 `(amount) > 5000`）；`outputValues` 列表逐项展开。**只支持决策表，不支持决策图**（`informationRequirement` 部署期报错）与 **FEEL**（`[a..b]` 区间、`date(` / `time(` / `duration(`、`@"..."` 上下文 —— 部署期挡下高置信度的那几类，其余留给运行期 fail-closed） |
 | CaseService（CMMN） | ⛔ 有意排除，见 §5 |
 | Batch | ❌ 未实现 |
@@ -290,11 +290,16 @@ intermediateCatchEvent -> TASK   adHocSubProcess -> TASK
 | **IdentityService** | 用户与组织架构由 z-ctc 统一管。引擎里存 `userId` 字符串，不建用户表。理由：身份数据是全组织共享的，流程引擎不该是它的第二个来源 |
 | **FormService** | 表单是独立系统的事。引擎只透传 `formKey`，由前端/表单服务解释。理由同上 |
 | **AuthorizationService** | 鉴权在 z-ctc 统一拦截。`force-complete` / `jump` 这类高危操作**不做办理人校验**是刻意的——它们是管理端操作，权限判断属于调用方职责 |
-| **ExternalTaskService** | z-wf 已有 `serviceTask` + delegate 覆盖同样的场景，且不需要额外的拉取协议。Camunda 的 worker 模型适合"外部系统主动来领活"，审批系统不是这个形态 |
 | **CaseService（CMMN）** | 审批是确定性的流程编排，不是探索式案例管理。引入 CMMN 会让定义层复杂度翻倍而用不上 |
 
-这五条的共同点：**它们在组织里已经有更合适的归属**。
+这四条的共同点：**它们在组织里已经有更合适的归属**。
 z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
+
+> `ExternalTaskService` 曾是第五条，**第 32 轮移出**：当时写的排除理由是
+> 「`serviceTask` + delegate 已覆盖同样场景」——这个判断在第 8 轮就不成立了，
+> 引擎实际有 `WfExternalTaskService` + `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列 + 7 个 REST 端点。
+> 排除清单一旦与实现脱节，读者会**直接跳过**一个我们其实做了的功能，
+> 而多报能力最坏只是被用户当场发现 —— 所以这张表要按"少报更伤"来审。
 
 ---
 
@@ -399,7 +404,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 946 个测试兜着
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 949 个测试兜着
 - 从测试与审计中逼出并修复的**真实缺陷 54 项**（43 项截至第 21 轮 + 第 22 轮的
   `zifang:resultVariable` 读错载体 1 项 + 第 23 轮 DMN 的 3 项
   + 第 24 轮的 `camunda:resultVariable` 前缀读不到 1 项

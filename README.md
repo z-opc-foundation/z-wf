@@ -566,7 +566,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 
 ## 9. 测试
 
-946 个测试，全绿（core 859 / web 16 / admin 71）。
+949 个测试，全绿（core 862 / web 16 / admin 71）。
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
