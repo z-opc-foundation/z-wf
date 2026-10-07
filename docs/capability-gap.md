@@ -152,13 +152,15 @@
 | `intermediateThrowEvent` | ✅ | **第 18 轮原生实现** `WfNodeType.THROW_EVENT` + `WfThrowEventBehavior`。此前它是「不支持的元素」、部署期报 ERROR（见 §4）—— 也就是说**一份真实的 Camunda 流程里只要出现 throwEvent，本引擎就部署不了**。语义：**token 抵达即把事件投出去，自己继续往下走**（穿透、不建待办、不等待）。与 `serviceTask`/`sendTask` 的共同点是穿透，区别是它由引擎自己投递、不需要业务方实现 delegate。`signalRef` 走广播、`messageRef` 走点对点。**投递必须发生在落库之后** —— behavior 处在单实例事务内部，当场投出去的话，被唤醒的那条读到的是尚未落库的旧状态，内层推进完又被外层回写覆盖，现象是「事件到了但流程没动」且无异常（典型丢更新）。为此把十来条推进路径的收口统一到 `finishTransaction`：判完成 → 投递 → 必要时刷新调用方持有的实例快照。**「没人订阅」不是错误**（抛事件是发布式动作，有没有人听不改变它该继续往下走），但会写一条投递记录（唤醒 N 个）——留痕是「不静默」的兑现方式；**多条候选仍然报错**（点对点必须知道被谁接了）。**支持自唤醒**（流程给自己发信号唤醒自己的另一条分支），靠的是投递后刷新返回的实例快照。部署期三条硬规矩：必须给事件引用、不能同时给两个、**不能挂边界事件**（抛事件是穿透的，边界只会得到一个永不触发的哑订阅） |
 | `eventBasedGateway` | 🟡 | ✅ 已实现：token 分叉到各中间捕获事件，**谁的事件先到就走谁，其余分支连同各自的订阅一并作废**（落选分支在轨迹上留 `eventGatewayLost` 一条）。竞速的兄弟集合从**流程定义**反查（捕获事件唯一入线的源头就是网关），不另存副本。订阅用 `EVENT_MESSAGE`/`EVENT_SIGNAL`/**`EVENT_TIMER`** 三种 job 类型，与消息/信号/定时器**边界**订阅分开 —— 后者是打断，前者是竞速，混用时触发路径必须去猜而猜错的后果是流程静默走错分支。**定时器分支已实现**：到点即算它赢，其余分支作废。**条件化分支（第 21 轮补上）**：某一格可以带条件，条件为假时这一格不算它赢、继续等 —— 与「这一格没订阅」是两件不同的事，引擎必须分得出来 |
 | `complexGateway` | ✅ | **第 25 轮补上条件分派**。两种判定方式，**由网关自己有没有判别变量决定**，混用部署期报错：**取值分派**（配了 `zifang:caseVariable`，出线带 `zifang:caseValue`，`camunda:caseExpression` 同样识别）走第一条匹配的线、**只走一条**；**条件分派**（不配判别变量，出线带 BPMN 的 `<conditionExpression>`）按 **BPMN 2.0 对复杂网关的定义**，**条件成立的线全部激活**，一条都不成立才走默认流。此前出线上的 `<conditionExpression>` **被完全忽略** —— 一条只带条件的线永远选不中、流程静默落到默认线，而校验器还会在「它与 caseValue 同时配」时报错，让人以为这个属性是有意义的（这是本轮修掉的真缺陷）。**多条激活不会让汇合死锁**：汇合判定数的是"确实已激活的兄弟 token"而非图上入线总数，没被选中的线根本不产生 token。求值沿用 fail-closed（引用未定义变量判不成立）。**第 27 轮补上汇合侧**：本实现做成可配 —— **`zifang:complexJoin="joining"`（默认，等齐再合并）或 `"competing"`（穿透，各条 token 各自往下）**。**不能拿 Camunda 当依据**：Camunda 7 与 8 **执行期都不支持复杂网关**（官方论坛 2025-04 员工明确答复「neither 7 nor 8」，且其 BPMN 2.0 参考的网关章节只有 XOR / Parallel / Inclusive / Event-based 四页，**没有复杂网关页**），建模器只认那个符号、不执行它。所以"从 Camunda 导出的模型"里复杂网关的汇合行为**没有来源**，只能由本实现给一个确定答案。**第 30 轮补上带阈值的汇合**：`zifang:activationCondition="2"` 表示 2/3 到齐就放行（WCP-30 Structured Partial Join），详见本轮小节。**默认 joining 是刻意的**：改默认值等于让已上线的模型悄悄换语义，而同一个文件在升级前后走出不同的图、没有任何提示。非法取值部署期 ERROR 而不是退到默认值（退而求其次的方向选了 joining，但那是给绕过校验兜底的）。在排他/并行网关上写这个属性同样报 ERROR —— 那三个网关的汇合语义是恒定的，写这句话等于写一句与引擎行为相反的话。**剩余**：多实例 collection 下标求值（跨 z-util 仓）；阈值汇合与循环同场（见本轮小节的已知边界） |
-| `transaction` / `adHocSubProcess` | ❌ | 同上，报错挡住 |
+| `terminateEndEvent` | ❌ | **第 36 轮待做（已定方案，见文末）**。它不在解析器的元素表里 ⇒ 走未知元素路径 ⇒ 部署期报「不支持」—— 是**可见拒绝**不是静默丢弃，但真实的 Camunda 导出模型里只要有一个它就部署不了。Camunda 原文：「ends the complete scope it is raised in and all contained inner scopes … on process instance level terminates the complete instance, on subprocess level the current scope and all contained process instances will be terminated」。它**自洽、不依赖别的前置**，是最小的一块 |
+| `transaction` | ❌ | **第 37/38 轮（依赖补偿，不能单独做）**。Camunda **支持**它（`api-references/bpmn20`：三种结果 —— 成功 / 到达 cancel end event 触发补偿 / 未被本作用域捕获的 error 造成 hazard 且**不补偿**）。本仓部署期报错挡住的**理由不成立**：此前文档写的是「折成按顺序跑一遍会算错」，那说的是实现方式，不是这个元素本身。**真正的硬依赖是 `compensation` 尚不存在** —— cancel 路径按 Camunda 语义就是「所有执行被终止并删除，仅留一条执行放到 cancel 边界事件上，由它触发补偿」。没有补偿就实现 transaction = 半套：cancel 路径要么不补偿（等于把「订酒店成功、扣款失败」当成成功）、要么报错 |
+| `adHocSubProcess` | ❌ | 部署期报错挡住。**与 `transaction` 不是一回事**（此前两者被写成同一条「同上」）：ad-hoc 子流程在 Camunda 里也没有独立执行语义，Camunda 把它当普通 subProcess 处理；本仓的拒绝是**照抄 BPMN 元素名**的结果，与能力缺口无关。建模工具很少在导出里带它，遇到时改写成 `subProcess` 即可 |
 | **定时器** `timerEventDefinition` | ✅ | 三种都实现了：`timeDuration`（PT5M / P1DT2H / P1Y）、`timeDate`（2026-12-31T18:00:00Z）、**`timeCycle`（第 13 轮补上）**，都可写 `${变量}` 由流程实例决定时限。**边界定时器（打断）与事件网关定时器分支（竞速）都已接上执行器**（`TIMER` / `EVENT_TIMER` 两种 job 类型，`WfJobService#executeDueJobs` 逐类型各扫一遍）。**`timeCycle` 的限制**：只支持用在**非中断型边界事件**上（`R3/PT1H` / `R/PT10M` / `P1D/T1H` / 带显式起始时刻的写法都支持），因为只有非中断型才有"下一周期可以提醒"的宿主；无界写法 `R/PT10M` 有 100 次的硬上限兜底 |
 | **异步** `asyncBefore` / `asyncAfter` | 🟡 | ✅ 已实现：`zifang:` 与 `camunda:` 双前缀；`ASYNC_BEFORE`/`ASYNC_AFTER` 两个 job 类型 + `WfJobService#executeAsyncJobs`。**第 28 轮补上优先级**：`WfJob.priority` 从宿主节点拷入，`WfJobQuery#setOrderByPriority` 开启后按 **priority desc, duedate asc, job_id asc** 排序，内存与 JDBC **必须给出同一个顺序**（不一致的症状是「开发期内存全绿、换 JDBC 之后偶发乱序」，日志里没有任何异常）。**排序是开关控制的而不是默认行为** —— 定时器要的是"最早到点的先做"，默认就按优先级排会让靠后的定时器饿死。前置与后置分两次查（`WfJobQuery` 的 type 是单值），拼起来之后**要按同一把尺子重排一遍**，否则变成「前半段有序、后半段有序、合起来乱序」。**存量库要补 `PRIORITY` 列**：`CREATE TABLE IF NOT EXISTS` 对已存在的表不加列，而补出来的列在存量行上是 NULL、`rs.getInt` 读成 0（默认优先级是 50）——不补列的症状是「升级前排队的 job 全变成最低优先级」，没有任何报错。**第 34 轮补上 `exclusive`（此前压根没被解析）**：`camunda:exclusive` / `zifang:exclusive` 双前缀，默认 **`true`**（Camunda 原文 "Exclusive Jobs are the default configuration"）。落到 `WfJob` 上并由 `WfJobService` 用**实例级锁**保证「不与同实例的其它 exclusive job 并发」，拿不到锁就跳过本轮（不排队 —— 等锁会把一次扫描拖成串行）。**本实现的保证比 Camunda 更硬**：Camunda 自称 heuristic（"the job executor can only enforce sequential execution of the jobs that are available during lookup time"），本实现是同 JVM 内的硬保证；**跨 JVM 无效**。写入非异步节点报 WARN（对齐 Camunda 的 "only evaluated if camunda:asyncBefore or camunda:asyncAfter is set to true"）。**剩余**：多实例+异步（部署期已挡）、**跨 JVM 的互斥**（需要给 job 表加"正在被谁执行"并做崩溃清理，Camunda 用 `LOCK_OWNER`/`LOCK_TIME` + 周期续期做这件事）。~~`timeCycle` 循环定时器~~ —— 已于第 13 轮实现，见上一行 |
 | **外部任务** `externalTask` / `ExternalTaskService` | ✅ | `serviceTask` + `zifang:topic` 标注（`<externalTask>` 不是 BPMN 2.0 元素，Camunda 同样靠标注在 serviceTask 上）。原子"选出+上锁"、租约制、`fail` 解锁+退避、重试耗尽留档。REST 7 端点在 `/api/wf/external-tasks` |
 | `errorRef` / `errorEventDefinition` | ✅ | 见上。**刻意不支持「空 errorRef = 捕获所有错误」**——宽泛捕获会把不相关异常也吸走，让本该崩的流程继续走 |
 | **`escalationCode`** / `escalationEventDefinition` | ✅ | **第 26 轮原生实现**：抛升级事件 + 升级边界事件（中断型与非中断型都走通了）。匹配键是 `escalationRef` 本身，**不解析 `<escalation>` 元素**（那一层目前没有任何语义需要它）。**单独一个 `WfJobType.ESCALATION` 而不是并进 SIGNAL** —— 投递方式一样（广播），但可被投的人不同，猜错的后果是「把一条升级当成普通信号处理」：分支醒了、待办还挂着，而作者以为已经升级过。**升级实际做的事是打断宿主**（待办作废、token 搬到边界上），**"换给谁办"取决于边界的出线节点上写了谁**，引擎不替作者决定（Camunda 那层 `escalationConfig` 本实现没有，不假装有）。`WfRuntimeService#escalate(code, user, comment)` 是与 `broadcastSignal` 并列的公共入口，**零订阅返回空列表而不是报错**，但要写评论留痕。**互斥三条**：与消息/信号/定时器同时配一律部署期 ERROR —— 其中**与定时器互斥是最要紧的一条**：`isTimerBoundary()` 只看 `timerType` 有没有被设，而运行期升级走的是订阅型分支（`duedate` 留空），两边对同一个节点给出两套判定，于是「超时 3 天自动升级」会变成一个**既不报错、也不到期的哑定时器**。**不支持 Camunda 的 `escalationTimer`（到期自动升级）**，要它得在同一个 job 上同时表达"按名字触发"与"到期触发"，触发方就必须去猜「这条是不是已经到期了」（与 `EVENT_TIMER` 那条同源）。**升级捕获事件（中间捕获）明确报 ERROR**：捕获时 token 已经停在那个节点上，而 BPMN 要求的是"在原地再长出一条 token 沿出线走下去"，原 token 留在原地；现有三种捕获全是"把停着的 token 搬走"，硬套会得到「原 token 被搬走且没有第二条」的**看起来能跑的错语义** |
-| `compensation` / `compensationEventDefinition` | ❌ | 与 escalation 相邻但机制不同（补偿要处理"已完成节点"，需要一段回滚逻辑的定位），留到单独一轮 |
+| `compensation` / `compensationEventDefinition` | ❌ | **第 37 轮（是 `transaction` 的硬前置）**。与 escalation 相邻但机制不同：escalation 打断的是**正在跑**的东西，补偿回滚的是**已经做完**的东西。Camunda（`api-references/bpmn20` 已核对）：补偿由 `compensateEventDefinition` 抛起（中间抛出事件 / 补偿结束事件，可带 `activityRef` 指向具体活动），handler 由**挂在活动上的补偿边界事件**经 `<association>` 指向 `isForCompensation="true"` 的活动；**按活动完成顺序的逆序**执行；抛补偿事件**要等补偿全部完成才继续往下走**；对**尚未完成**的子流程**不传播**进去。`<association>` 本仓目前**完全没解析**（0 次），所以这不是「加一个事件定义」的量级 |
 | **`linkEvent`**（`linkThrowEvent` / `linkCatchEvent`） | ✅ | **第 22 轮原生实现** `WfNodeType.LINK_THROW` / `LINK_CATCH` + `WfLinkCatchBehavior`。此前两者都不在解析器的元素表里，会退化成人工任务并在部署期报「不支持」。它补的是别的东西都替代不了的事：**跳过一整段图** —— `move` 是运行期外部 API（调用方得自己知道位置），排他网关是**分支**（在若干出线里选一条），两者都不等于"从图上某处直接落到另一处"。配对键是元素自己的 `@name`（`WfNode#linkName`，**不复用显示名 `name`**：两者恰好都来自 `@name`，但一个是给人看的、一个是给引擎配对的，共用一个槽位的话将来补个显示名就会把配对关系改掉）。**改道后 token 沿 catch 自己的出线走，throw 自己的出线不会被走过** —— 特判点放在 `leave` 的「取出线」**之前**（放之后会让「跳过一整段」变成「跑完整段再跳一遍」，而图上看不出异常）。**这一条与 escalation 恰好相反**（Camunda 的 escalation 文档明写 "if the throwing event has any outgoing sequence flows, they will be taken"），所以两处**不能互相参照着写**；throw 上画了线不报错，但报 WARN 说清那是摆设。**作用域限定在同一流程定义内**，不照抄 Camunda 的引擎级全局匹配 —— 全局匹配下"跳去哪里"取决于部署里还有哪些别的流程，删掉那个流程这条就断了，而图上没有任何东西能提示。**catch 是穿透的**：不建待办也不建任何事件订阅（它等的是"图上另一个节点"，而跳转在引擎内部同步完成）。**不用 `INTERMEDIATE_CATCH_EVENT` 实现** —— 那个会建 `EVENT_*` 订阅等外部事件，得到的是一个永远等不到、也不报错的哑订阅。部署期八条：缺 name / 同名 catch 多个 / throw 找不到落点（三个 ERROR），catch 有人跳过来（入线）、无出线（两个 ERROR），catch 没人跳、throw 有出线（两个 WARN），加上 link 事件不许挂边界事件（ERROR，两个方向都是穿透的）。其中 **catch 有入线报 ERROR 而不是 WARN**：token 只由 link 改道进入，那条连线永远不会被走过，它上游的整段流程静默失效 —— 这比"出线是摆设"严重得多，后者至少不隐藏一整段流程。`LINK_THROW` 刻意**不注册**行为（它的语义全在 `leave` 的改道里，进入阶段本就不该有动作），`LINK_CATCH` 显式注册而非落兜底 —— 两者运行结果相同，但排障时含义不同 |
 | `dataObject` / `dataStore` / 数据关联 | ❌ | |
 
@@ -2486,3 +2488,50 @@ M8 href 非 `#` 形式不报错 / M9 去掉运行期环防线 / M10 解析器不
    按「覆盖不了的行为判据宁可不写并记下缺口」处理，不留靠运气的测试。
 4. `requiredInput`（输入数据节点）与 `knowledgeSource`（知识源）**解析但不参与求值**
    （与 Camunda 一致：引擎不执行它们），照 **WARN** 说出来而不是静默忽略。
+
+### 第 36 轮的立项调查：三个 end event 与 transaction 的依赖次序
+
+上一轮结束时列的下一项是「transaction 事务边界 / Batch 服务」。动手前先做核对，
+结果**推翻了原来的排序** —— 与第 23 轮立项时「先核对 §1 与 §5 才知道 DMN 是真缺失」同一手法。
+
+**一、`transaction` 不是这一轮该做的那一个。**
+
+Camunda 7 **支持** transaction subprocess，三种结果明确：成功 / 到达 cancel end event
+触发补偿 / 未被本作用域捕获的 error 造成 hazard（**不补偿**）。
+而它的 cancel 路径按 Camunda 语义就是「所有执行被终止并删除，仅留一条执行放到
+cancel 边界事件上，由它触发补偿」⇒ **没有 compensation 就实现 transaction 必然是半套**：
+cancel 路径要么悄悄不补偿（等于把「订酒店成功、扣款失败」当成成功），
+要么在运行期报一个作者无从修起的错。
+⇒ 之前文档里给 `transaction` 写的拒绝理由（「折成按顺序跑一遍会算错」）
+说的是**实现方式**，不是这个元素本身 —— 理由不成立，已改。
+
+**二、真正最小的一块是 `terminateEndEvent`，它自洽。**
+
+Camunda 7 原文（`manual/develop/reference/bpmn20/events/terminate-event/`）：
+「A terminate event ends the complete scope it is raised in and all contained inner scopes …
+A terminate event on process instance level terminates the complete instance.
+On subprocess level the current scope and all contained processes instances will be terminated.」
+它不依赖任何尚不存在的前置，是本仓目前能**独立做完**的一块。
+
+**三、`terminateEndEvent` / `errorEndEvent` / `cancelEndEvent` 三个在解析器里都是 0 次。**
+
+都不在 `WfXmlParser#NODE_ELEMENTS` 里 ⇒ 走未知元素路径 ⇒ 被打上
+`PROPERTY_UNSUPPORTED_BPMN_ELEMENT` ⇒ 部署期报 ERROR。
+**这是可见拒绝、不是静默丢弃**（这一点必须先确认，否则整件事的严重性判断就反了）：
+真实的 Camunda 导出模型里只要含其中一个，本引擎就部署不了。
+
+**四、修正后的依赖次序**（每一项都建立在确认加载过的官方页面上）
+
+| 次序 | 做什么 | 为什么能放在这个位置 |
+| --- | --- | --- |
+| 第 36 轮 | `terminateEndEvent` | 自洽，不依赖前置 |
+| 第 37 轮 | `compensation` | 需要新增运行期状态（哪些活动已完成、按什么次序）+ `<association>` 解析（目前 0 次） |
+| 第 38 轮 | `cancelEndEvent` + `transaction` | 二者都硬依赖第 37 轮 |
+| 第 39 轮 | Camunda `Batch` | 独立；但属于**运维能力**，不阻断模型部署，优先级低于上面三块 |
+
+**五、顺带修正的一处能力表不准确**：此前 `transaction` / `adHocSubProcess`
+被写成同一条「同上，报错挡住」。两者根本不是一回事 ——
+Camunda 把 `adHocSubProcess` 当普通 subProcess 处理（本仓的拒绝是照抄元素名的结果，
+与能力缺口无关），而 `transaction` 是有三种明确结果的真正可执行元素、且卡在补偿上。
+已拆成三行（`terminateEndEvent` / `transaction` / `adHocSubProcess`）。
+（与第 32 轮同型：**能力表的一行同时承担了两件不同的事，读者读到的结论必然有一半是错的**。）
