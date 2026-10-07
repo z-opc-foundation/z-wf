@@ -20,10 +20,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.zifang.util.json.JsonUtil;
+import com.zifang.util.json.define.TypeReference;
 import com.zifang.util.json.model.JsonArray;
 import com.zifang.util.json.model.JsonObject;
 import com.zifang.z.wf.core.definition.WfDefinition;
-import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
 import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
 import com.zifang.z.wf.core.definition.WfFlow;
 import com.zifang.z.wf.core.definition.WfNode;
@@ -280,6 +280,10 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 + "DECISION_NAME VARCHAR(256),"
                 + "HIT_POLICY VARCHAR(16),"
                 + "TABLE_JSON TEXT,"
+                // 决策图（第 35 轮）：本决策依赖的上游决策 key，JSON 数组。
+                // 与 TABLE_JSON 分开存，因为它**不属于表** —— 表是节点的求值体，
+                // 依赖边是节点之间的关系，两者生命周期不同（换表不改依赖）
+                + "REQUIRED_DECISIONS TEXT,"
                 + "DMN_XML TEXT,"
                 + "DEPLOY_TIME TIMESTAMP,"
                 + "PRIMARY KEY (DECISION_KEY, DECISION_VERSION))");
@@ -367,29 +371,35 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         } finally {
             closeQuietly(statement);
         }
-        addJobColumnIfMissing(connection, "LOCKED_BY VARCHAR(128)");
-        addJobColumnIfMissing(connection, "LOCK_AT TIMESTAMP");
+        addColumnIfMissing(connection, "ZWF_JOB", "LOCKED_BY VARCHAR(128)");
+        addColumnIfMissing(connection, "ZWF_JOB", "LOCK_AT TIMESTAMP");
         // 拆列不是新增信息：老库里订阅名就存在 EXCEPTION_MSG 里。
         // 补列时顺手搬过来，否则升级之后老的订阅型 job 全部匹配不上事件 ——
         // 症状是"部署升级后所有等消息的流程都不再被触发"，且没有任何报错
-        addJobColumnIfMissing(connection, "SUBSCRIPTION_NAME VARCHAR(128)");
+        addColumnIfMissing(connection, "ZWF_JOB", "SUBSCRIPTION_NAME VARCHAR(128)");
         backfillSubscriptionName(connection);
         // 循环定时器已响过几次。缺这一列的后果比订阅名还隐蔽：
         // 老库里全是 NULL，而读出来是 0 —— 对非循环 job 恰好是对的值，
         // 对循环 job 则是「从头响过 0 次」，于是 R3/PT1H 会一直以为还能再响两次。
         // 所以必须补列，而不是靠 NULL 兜。
-        addJobColumnIfMissing(connection, "CYCLE_INDEX INT");
+        addColumnIfMissing(connection, "ZWF_JOB", "CYCLE_INDEX INT");
 
         // 优先级（第 28 轮）。**必须补列，不能靠读 NULL 兜**：
         // 存量行补出来是 NULL，`rs.getInt` 会读成 0，而默认优先级是 50 ——
         // 于是升级前排队的 job 全部变成"最低优先级"，且没有任何报错，
         // 表现是"加急的单子插到队尾去了"。
-        addJobColumnIfMissing(connection, "PRIORITY INT DEFAULT 50");
+        addColumnIfMissing(connection, "ZWF_JOB", "PRIORITY INT DEFAULT 50");
         // 同上：默认值必须是 1（互斥）而不是 0。
         // 存量行在补列后这一列是 1，等于"按 Camunda 默认语义继续跑"，
         // 而不是被当成"全部不互斥"——后者会让升级那一刻起所有异步 job 同时放开并发，
         // 且没有任何报错，只有偶发的乐观锁冲突
-        addJobColumnIfMissing(connection, "EXCLUSIVE SMALLINT DEFAULT 1");
+        addColumnIfMissing(connection, "ZWF_JOB", "EXCLUSIVE SMALLINT DEFAULT 1");
+
+        // 决策图（第 35 轮）。存量行这一列是 NULL，读回来就是"没有依赖" ——
+        // 那**恰好是对的值**：决策图是这一轮才支持的，升级前的决策确实不依赖谁。
+        // 但补列仍然必须写：CREATE TABLE IF NOT EXISTS 对已存在的表不加任何列，
+        // 漏了这一句的话，升级后的第一次决策部署就会因"列不存在"整条失败。
+        addColumnIfMissing(connection, "ZWF_DECISION", "REQUIRED_DECISIONS TEXT");
     }
 
     /**
@@ -429,12 +439,12 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         }
     }
 
-    private void addJobColumnIfMissing(Connection connection, String column) {
+    private void addColumnIfMissing(Connection connection, String table, String column) {
         Statement statement = null;
         try {
             statement = connection.createStatement();
-            statement.execute("ALTER TABLE ZWF_JOB ADD COLUMN " + column);
-            log.info("已为既有 ZWF_JOB 补建 {} 列", column);
+            statement.execute("ALTER TABLE " + table + " ADD COLUMN " + column);
+            log.info("已为既有 {} 补建 {} 列", table, column);
         } catch (SQLException e) {
             log.debug("{} 列已存在或无需补建: {}", column, e.getMessage());
         } finally {
@@ -878,7 +888,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
 
     private static final String DECISION_SELECT_ALL =
             "SELECT DECISION_KEY, DECISION_VERSION, DECISION_NAME, HIT_POLICY, "
-                    + "TABLE_JSON, DMN_XML, DEPLOY_TIME FROM ZWF_DECISION ";
+                    + "TABLE_JSON, REQUIRED_DECISIONS, DMN_XML, DEPLOY_TIME FROM ZWF_DECISION ";
 
     @Override
     public void saveDecision(WfDmnDecision decision) {
@@ -887,7 +897,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         }
         String sql = "INSERT INTO ZWF_DECISION "
                 + "(DECISION_KEY, DECISION_VERSION, DECISION_NAME, HIT_POLICY, "
-                + " TABLE_JSON, DMN_XML, DEPLOY_TIME) VALUES (?,?,?,?,?,?,?)";
+                + " TABLE_JSON, REQUIRED_DECISIONS, DMN_XML, DEPLOY_TIME) VALUES (?,?,?,?,?,?,?,?)";
         Connection connection = null;
         try {
             connection = dataSource.getConnection();
@@ -903,8 +913,13 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                         : String.valueOf(decision.getTable().getHitPolicy()));
                 ps.setString(5, decision.getTable() == null ? null
                         : JsonUtil.toJson(decision.getTable()));
-                ps.setString(6, decision.getDmnXml());
-                ps.setTimestamp(7, timestamp(decision.getDeployTime()));
+                // 依赖边空列表写成 "[]" 而不是 NULL：
+                // 空列表 = "这条决策确实不依赖谁"，是绝大多数行该有的值；
+                // 写成 NULL 会让读回的那一步必须判 null，而判错一处
+                // 就是把一条有依赖的决策当成没有 —— 决策图静默退化成单表。
+                ps.setString(6, JsonUtil.toJson(decision.getRequiredDecisions()));
+                ps.setString(7, decision.getDmnXml());
+                ps.setTimestamp(8, timestamp(decision.getDeployTime()));
                 ps.executeUpdate();
             } finally {
                 ps.close();
@@ -989,6 +1004,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         decision.setVersion(rs.getInt("DECISION_VERSION"));
         decision.setDmnXml(rs.getString("DMN_XML"));
         decision.setDeployTime(date(rs.getTimestamp("DEPLOY_TIME")));
+        decision.setRequiredDecisions(readRequiredDecisions(rs, decision));
         String json = rs.getString("TABLE_JSON");
         if (json != null && !json.trim().isEmpty()) {
             try {
@@ -1001,6 +1017,42 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             }
         }
         return decision;
+    }
+
+    /**
+     * 读回决策图的依赖边。
+     *
+     * <p><b>三种输入，三种处理</b>：
+     * <ul>
+     *   <li><b>NULL / 空白</b> ⇒ 空列表。升级前的存量行都是这样，
+     *       而决策图是第 35 轮才有的，那之前部署的决策确实不依赖谁 ——
+     *       所以 NULL 恰好解释得通，不必报错。</li>
+     *   <li><b>解不开</b> ⇒ <b>抛异常</b>。这一列坏掉时若当成"没有依赖"，
+     *       决策图会<b>静默退化成单表</b>：求值照跑、结果照出，只是上游那一跳
+     *       凭空消失，得到的值是错的且没有任何报错 ——
+     *       与 {@code TABLE_JSON} 同一个道理：数据坏了要报成数据坏了。</li>
+     *   <li><b>解出 null</b>（列里写着 "null"）⇒ 空列表，
+     *       与 NULL 同义，走同一条路。</li>
+     * </ul>
+     */
+    private List<String> readRequiredDecisions(ResultSet rs, WfDmnDecision decision)
+            throws SQLException {
+        String json = rs.getString("REQUIRED_DECISIONS");
+        if (json == null || json.trim().isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<String> required;
+        try {
+            required = JsonUtil.fromJson(json, new TypeReference<List<String>>() {
+            });
+        } catch (RuntimeException e) {
+            throw new WfPersistenceException("决策 " + decision.getKey()
+                    + " 的 REQUIRED_DECISIONS 解不开: " + json + " —— " + e.getMessage()
+                    + "。这一列坏了，不是这条决策没有依赖：当成空列表的话，"
+                    + "决策图会静默退化成单表，上游那一跳凭空消失，"
+                    + "而结果是错的且不报错", e);
+        }
+        return required == null ? new ArrayList<String>() : required;
     }
 
     @Override

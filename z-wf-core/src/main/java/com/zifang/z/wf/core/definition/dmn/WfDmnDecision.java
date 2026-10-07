@@ -39,6 +39,27 @@ public class WfDmnDecision implements Serializable {
     /** 解析出的决策表。一个 decision 在本实现里恰好一张表。 */
     private WfDmnTable table;
 
+    /**
+     * 本决策依赖的上游决策 key（{@code informationRequirement} 里的
+     * {@code requiredDecision}），按文件里声明的次序。
+     *
+     * <p><b>存的是"依赖"，不是"顺序"</b>：求值时按依赖关系<b>递归</b>展开，
+     * 所以声明顺序与依赖顺序不一致也能算对。
+     * 这正是第 23 轮拒绝决策图时写下的那条顾虑 ——
+     * 折成「按声明顺序跑一遍」会在依赖顺序与声明顺序不一致的图上算出错误结果，
+     * 而那种错误不会报错。递归展开让声明顺序彻底不再影响结果。
+     *
+     * <p>字段初始化成空 List 而不是留 null：解析出来的"没有依赖"与
+     * "这个字段还没被赋值"必须是同一个形状，否则每个读它的地方都要判一次 null，
+     * 而漏判的那一处会变成 NPE 抛给调用方。
+     *
+     * <p><b>空列表与 null 语义不同</b>：库里存量行没有这一项，读回来就是空列表，
+     * 那是"这条决策确实不依赖谁"，与"这条决策的依赖没存下来"不是一回事 ——
+     * 后者会被误当成前者，于是决策图在重启后静默退化成单表。
+     * 持久化那一侧因此必须真的把这一列写进去（见 {@code JdbcWorkflowPersistence}）。
+     */
+    private List<String> requiredDecisions = new ArrayList<>();
+
     /** 部署时间。 */
     private Date deployTime;
 
@@ -100,6 +121,27 @@ public class WfDmnDecision implements Serializable {
         this.table = table;
     }
 
+    /**
+     * 上游决策 key；没有依赖时返回<b>空列表</b>（不返回 null，见字段注释）。
+     *
+     * <p>getter 返回的是内部列表本身，与本类其他集合字段一致：
+     * 调用方拿到后 {@code add} 是允许的（解析期就在往里加）。
+     * 持久化那一侧负责拷贝（{@code InMemoryWorkflowPersistence#copy}）。
+     */
+    public List<String> getRequiredDecisions() {
+        return requiredDecisions;
+    }
+
+    public void setRequiredDecisions(List<String> requiredDecisions) {
+        this.requiredDecisions = requiredDecisions == null
+                ? new ArrayList<String>() : requiredDecisions;
+    }
+
+    /** 本决策是否依赖 {@code decisionKey}。求值与环检测两处都要用同一个口径。 */
+    public boolean requires(String decisionKey) {
+        return requiredDecisions.contains(decisionKey);
+    }
+
     public Date getDeployTime() {
         return deployTime;
     }
@@ -112,7 +154,8 @@ public class WfDmnDecision implements Serializable {
     public String toString() {
         return "WfDmnDecision{key=" + key + ", version=" + version
                 + ", hitPolicy=" + (table == null ? "?" : table.getHitPolicy())
-                + ", rules=" + (table == null ? 0 : table.getRules().size()) + "}";
+                + ", rules=" + (table == null ? 0 : table.getRules().size())
+                + ", required=" + requiredDecisions + "}";
     }
 
     // ==================== 决策表 ====================

@@ -19,7 +19,6 @@ import org.slf4j.LoggerFactory;
 
 import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
-import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
@@ -1435,6 +1434,11 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         target.setDmnXml(source.getDmnXml());
         target.setDeployTime(source.getDeployTime());
         target.setTable(copy(source.getTable()));
+        // 依赖边必须拷。漏这一行的话，内存实现部署一张决策图之后
+        // 读回来的是"没有依赖"的同一条决策 —— 求值时于是不跑上游，
+        // 结果是**静默地按单表算**，而且只在内存实现上出现，
+        // 与 JDBC 实现行为不一致，正是最难查的那种分歧。
+        target.setRequiredDecisions(new ArrayList<>(source.getRequiredDecisions()));
         return target;
     }
 

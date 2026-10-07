@@ -125,7 +125,7 @@
 | AuthorizationService | ⛔ 有意排除，见 §5 |
 | FilterService（保存的查询） | ✅ | 早已实现：`WfFilterService` + `WfFilter` + `ZWF_FILTER` 表，REST `GET/POST/PUT/DELETE /api/wf/filters` 与 `GET /api/wf/filters/{id}/results`。见 §1.2。**这一行曾经长期挂着 ❌** —— 功能早就有了而能力表没跟上，读表的人会以为"保存筛选条件"得业务方自己存，于是自己又造了一套 |
 | ExternalTaskService | ✅ | 已实现（**第 8 轮起**：早先列为有意排除 —— 理由是「`serviceTask` + delegate 已覆盖同样场景，不需要额外的拉取协议」—— 后因需要接外部系统主动领活而补上，**这一条已从 §5 移除**）。`WfExternalTaskService`（fetchAndLock / complete / fail / release / list）+ `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制。REST 7 端点在 `/api/wf/external-tasks`。**剩余**：Camunda 侧的 `handleBpmnError` / `handleEscalation` 交回流程、`setVariableLocal`、外部任务优先级与批量操作 |
-| DecisionService（DMN） | ✅ | 第 24 轮起可被 BPMN 的 `businessRuleTask` 直接调用（见 §2）。第 23 轮实现：`WfDecisionService`（`parseDecision` / `deployDecision` / `findDecisionByKey` / `findDecisionsByKey` / `deleteDecision` / `evaluateDecision`）+ `WfDmnParser` + `WfDmnEvaluator` + `ZWF_DECISION` 表（带版本，与流程定义同一套版本语义）+ REST `POST /api/wf/decisions/deploy`、`GET /api/wf/decisions/{key}`、`GET /api/wf/decisions/{key}/versions[/{version}]`、`POST /api/wf/decisions/{key}/evaluate`、`DELETE /api/wf/decisions/{key}/versions/{version}`。**六种 HitPolicy 全支持**：UNIQUE（命中多条直接报违规）/ ANY（多条输出必须一致）/ FIRST / RULE_ORDER（多结果聚合）/ COLLECT（列表）/ OUTPUT_PRIORITY（按 `outputValues` 的先后排序）。聚合器 SUM / MIN / MAX / COUNT。**单目测试补全**：`inputEntry` 省略左操作数时以该列 `inputExpression` 的值为左操作数（`> 5000` 写作 `(amount) > 5000`）；`outputValues` 列表逐项展开。**只支持决策表，不支持决策图**（`informationRequirement` 部署期报错）与 **FEEL**（`[a..b]` 区间、`date(` / `time(` / `duration(`、`@"..."` 上下文 —— 部署期挡下高置信度的那几类，其余留给运行期 fail-closed） |
+| DecisionService（DMN） | ✅ | 第 24 轮起可被 BPMN 的 `businessRuleTask` 直接调用（见 §2）。第 23 轮实现：`WfDecisionService`（`parseDecision` / `deployDecision` / `findDecisionByKey` / `findDecisionsByKey` / `deleteDecision` / `evaluateDecision`）+ `WfDmnParser` + `WfDmnEvaluator` + `ZWF_DECISION` 表（带版本，与流程定义同一套版本语义）+ REST `POST /api/wf/decisions/deploy`、`GET /api/wf/decisions/{key}`、`GET /api/wf/decisions/{key}/versions[/{version}]`、`POST /api/wf/decisions/{key}/evaluate`、`DELETE /api/wf/decisions/{key}/versions/{version}`。**六种 HitPolicy 全支持**：UNIQUE（命中多条直接报违规）/ ANY（多条输出必须一致）/ FIRST / RULE_ORDER（多结果聚合）/ COLLECT（列表）/ OUTPUT_PRIORITY（按 `outputValues` 的先后排序）。聚合器 SUM / MIN / MAX / COUNT。**单目测试补全**：`inputEntry` 省略左操作数时以该列 `inputExpression` 的值为左操作数（`> 5000` 写作 `(amount) > 5000`）；`outputValues` 列表逐项展开。**决策图已支持（第 35 轮）**：`informationRequirement/requiredDecision` 组成的有向图，求值时**按依赖关系递归展开**（不是按声明顺序跑一遍 —— 那会在依赖顺序与声明顺序不一致时算出错误结果且不报错），上游的 `<output name>` 作为其输出值进入下游的求值上下文；成环在**部署期**报错（跨文件成环也挡：环检测查的是「本文件 + 库里已部署」凑出的闭合图），挡住时一条决策都不落库。仍不支持 **DMN 文字表达式（literal expression）**（不带 `decisionTable` 的决策节点部署期报错）与 **FEEL**（`[a..b]` 区间、`date(` / `time(` / `duration(`、`@"..."` 上下文 —— 部署期挡下高置信度的那几类，其余留给运行期 fail-closed） |
 | CaseService（CMMN） | ⛔ 有意排除，见 §5 |
 | Batch | ❌ 未实现 |
 
@@ -1697,6 +1697,9 @@ codec 的往返断言只在内存实现上跑过，而内存实现是**深拷贝
 DMN 是**真缺失**，不是设计决策。
 
 **二、只做决策表，不做决策图**。
+> **（已被第 35 轮推翻，见文末「第 35 轮」一节。决策图现已支持；
+> 这段保留是为了记录当时的判断及其理由 —— 那条理由本身仍然成立，
+> 本轮改的是"折"的实现方式：递归展开而不是按声明顺序跑一遍。）**
 决策图（`informationRequirement`）要求按**拓扑顺序**求值多个决策、每跳输入是上一跳输出。
 折成"按声明顺序跑一遍"，在依赖顺序与声明顺序不一致的图上会**算出错误结果且不报错** ——
 所以部署期直接报错，而不是降级。
@@ -2403,3 +2406,83 @@ Maven 的增量编译于是认为"源码没变"，**沿用变异时编译出的 
 它不在本轮四项范围内（多实例、exclusive、DMN 决策图、事务边界/Batch），
 已记入 §2 `multiInstance` 行的"剩余"。
 （同项目内已详录于本文第 33 轮记录。）
+
+### DMN 决策图：`informationRequirement`（第 35 轮）
+
+**一、这一轮把第 23 轮那条「部署期拒绝」翻过来了。**
+
+第 23 轮拒绝决策图的理由原文是：
+
+> 决策图（`informationRequirement`）要求按**拓扑顺序**求值多个决策、每跳输入是上一跳输出。
+> 折成"按声明顺序跑一遍"，在依赖顺序与声明顺序不一致的图上会**算出错误结果且不报错** ——
+> 所以部署期直接报错，而不是降级。
+
+那条理由本身是对的 —— 它说错的只是"折"的实现方式。
+第 35 轮改成**按依赖关系递归展开**：递归天然给出拓扑序，于是声明顺序彻底不再影响结果。
+⇒ 第 23 轮的判断与本轮的判断可以同时为真，前提是**不许把依赖折成声明顺序**。
+判据钉的就是这一句（`declarationOrderDoesNotMatter`：文件里先写最下游，结果不变）。
+
+**二、取证与其限制（如实记下）**
+
+- Camunda 7 的 **DMN 1.3 参考首页**明确写着它"partially supports DMN 1.3,
+  including Decision Tables, Decision Literal Expressions, **Decision Requirements Graphs** and FEEL"
+  ⇒ 本仓此前不做决策图是**真缺口**（补 Camunda 的缺口，不是超出它）。
+- 旁证：`camunda-engine-dmn` 侧存在 `buildDecisionTree()` / `getRequiredDmnDecisions()` /
+  `setRequiredDecision()` / **`ensureNoLoopInDecisions()`**；`requiredDecision` 位于
+  `informationRequirement` 内、`href` 以 `#` 开头接 decision id。
+- **限制**：`docs.camunda.org/manual/7.18/reference/dmn/drg/` 与 `.../reference/dmn/`
+  两次抓取都返回 **0 字节**，`7.24/reference/dmn/dmn2/drg/` 重定向到手册首页
+  ⇒ **DRG 子页正文没有取到**。上面的依据是「索引页的引述 + 引擎方法名」两条，
+  都不是子页正文。写在这里是为了让下一轮别误以为已核过该页。
+
+**三、实现落在五处，缺一处就是静默退化**
+
+| 层 | 改动 | 漏了会怎样 |
+| --- | --- | --- |
+| 模型 `WfDmnDecision` | 新增 `requiredDecisions` | —— |
+| 解析 `WfDmnParser` | 读 `informationRequirement/requiredDecision href="#id"` | 依赖边恒为空，图退化成单表 |
+| 部署 `WfDecisionService` | 成环报 ERROR，**在落库之前**，查的是闭合图 | 成环的图进库；或环被挡下却留下半套依赖 |
+| 求值 `WfDecisionService` | 递归展开 + 上游输出并入上下文 + 三处不静默 | 上游那一跳凭空消失，结果是错的且无报错 |
+| 持久化（内存 + JDBC） | 内存深拷贝这一项；JDBC 新增 `REQUIRED_DECISIONS` 列 | **重启后退化成单表** —— 最安静的一种 |
+
+最后一列是本轮最要紧的一处：`TABLE_JSON` 只存表，而依赖边是**决策级**属性。
+不单独落一列的话，部署正常、求值正常，只有重启后上游那一跳消失。
+
+**四、三处「不静默」**（放行的症状都是一张**空结果的表**）
+
+1. 上游 0 行 ⇒ 报错（否则下游读不到输入，也 0 行，整条链静默返回空）
+2. 上游多行 ⇒ 报错（多结果灌给下游没有语义，不替作者挑一行）
+3. 同名变量取值冲突 ⇒ 报错（调用方传的与上游算的，两个来源没有答案）
+
+第 3 条里数值按 `double` 比：`5.0` 与 `5` 是同一个数，用 `equals` 判会报出一个作者没写过的错。
+
+**五、被判据抓到的两个真缺陷**
+
+1. **跨文件环漏检**。环检测原本从「本批决策的 key」出发，
+   而本批的 key 已在表里、于是被跳过，**它的依赖从没被走到** ——
+   「q 在本文件里、p 在库里」这种跨文件环因此一路畅通。
+   起点改成**本批决策的依赖**才对（M2）。
+2. **一条判据因错误的原因通过**。「数值同值不算冲突」那条用例里，
+   上游字面量写的是 `5`，实测求值结果是 **Integer**，
+   而调用方传的也是 Integer —— `equals` 照样判相等，于是那条用例
+   **从没走到数值比较那一支**，M7 变异（换成 `equals`）打不动它。
+   把字面量改成 `5.0`（Double）才真正跨类型，并补一句前置条件断言
+   把「两侧类型真的不同」写进用例（对齐「判据要能证明自己有效」）。
+
+**六、反向验证**：core 10 条变异全红 + 1 条对照全绿（`/tmp/verify_r35.py`）。
+M1 不展开依赖 / M2 环检测不做闭包 / M3 环检测挪到落库之后 / M4 JDBC 不写依赖边 /
+M5 内存深拷贝漏依赖边 / M6 上游 0 行不报错 / M7 数值比较退回 `equals` /
+M8 href 非 `#` 形式不报错 / M9 去掉运行期环防线 / M10 解析器不读 `informationRequirement`。
+另：admin 端到端 `decisionGraphOverHttp`（部署 → 回读能看到 `requiredDecisions` → 求值按依赖展开 → 成环部署报 400）。
+
+**七、如实记下的限制与缺口**
+
+1. **不支持 DMN 文字表达式（literal expression）**：不带 `decisionTable` 的决策节点
+   部署期报错，并在报错里点名它**依赖了谁** ——
+   "依赖一个算不出东西的决策"是决策图里最难查的那种错。
+2. **上游多结果不放行**。要往下游灌，得把上游改成单结果策略，或这一步不走决策图。
+3. **菱形依赖的去重没有行为判据**。`resolved` 缓存让公共上游只算一次，
+   但决策表是纯函数，算两次结果一样 —— 写不出能区分"算一次"与"算两次"的断言。
+   按「覆盖不了的行为判据宁可不写并记下缺口」处理，不留靠运气的测试。
+4. `requiredInput`（输入数据节点）与 `knowledgeSource`（知识源）**解析但不参与求值**
+   （与 Camunda 一致：引擎不执行它们），照 **WARN** 说出来而不是静默忽略。

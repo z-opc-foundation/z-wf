@@ -4,11 +4,15 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
@@ -26,14 +30,26 @@ import com.zifang.z.wf.core.definition.WfDefinitionException;
  * 报错只会说找不到元素，不会说你的命名空间版本不对。
  * 元素的<b>局部名</b>才是稳定的那个，所以自递归比 {@code getElementsByTagNameNS} 稳。
  *
- * <p>只读<b>决策表</b>（{@code <decisionTable>}）。决策图（{@code <decision>} 里引
- * {@code requiredDecision} 组成的有向无环图）本实现不支持，部署期报 ERROR ——
- * 理由见 {@code WfDecisionService}：那需要一套 FEEL 求值，而 FEEL 与本仓的 EL
- * 不是同一门语言，半套图执行只会给出看似能跑、实际算错的结果。
+ * <p>同时读<b>决策表</b>（{@code <decisionTable>}）与<b>决策图的依赖边</b>
+ * （{@code <informationRequirement>} 里指向另一个 {@code <decision>} 的
+ * {@code <requiredDecision>}）。依赖边只被解析成 key 列表，
+ * 真正按依赖关系递归求值在 {@code WfDecisionService}。
+ *
+ * <p><b>但一个 decision 仍必须恰好有一张表。</b>DMN 允许决策节点承载
+ * 文字表达式（literal expression）而没有表，本实现不支持 ——
+ * 那样一个节点求值期拿不到任何东西，只能悄悄返回空结果，
+ * 而"这一跳什么都没算出来"正是决策图里最难查的那种错。
+ *
+ * <p><b>被解析但求值时不参与的</b>：{@code <requiredInput>}（外部输入数据）与
+ * {@code <knowledgeSource>}（知识源）。它们在本实现里不参与求值 ——
+ * 与 Camunda 一致（引擎不执行输入数据节点与知识源）——
+ * 但<b>照 WARN 说出来</b>，否则作者会以为那条依赖真的参与了计算。
  *
  * @author zifang
  */
 public class WfDmnParser {
+
+    private static final Logger log = LoggerFactory.getLogger(WfDmnParser.class);
 
     /**
      * 解析 DMN XML，返回其中<b>全部</b>决策。
@@ -71,8 +87,10 @@ public class WfDmnParser {
         }
         if (decisions.isEmpty()) {
             throw new WfDefinitionException("DMN XML 中没有 <decision> 元素。"
-                    + "本实现只支持决策表（<decision><decisionTable>），"
-                    + "决策图（由 requiredDecision 组成的有向图）尚未实现");
+                    + "一个决策节点必须写成 <decision id=\"...\">…</decision>，"
+                    + "且必须带一张 <decisionTable>。"
+                    + "（<inputData> / <knowledgeSource> 只是被引用的数据与知识节点，"
+                    + "不是决策节点；一份只画了需求图、没有内嵌决策的文件里就只有它们。）");
         }
         return decisions;
     }
@@ -87,23 +105,20 @@ public class WfDmnParser {
         WfDmnDecision decision = new WfDmnDecision(key,
                 firstNonBlank(attr(element, "name"), key));
         decision.setDmnXml(sourceXml);
+        parseInformationRequirements(element, decision);
 
-        // <decision> 可能带 <variable> 声明与 <informationRequirement>，
-        // 两者都不是本实现要的（前者是类型声明，后者构成决策图）。
-        // 有 informationRequirement 时明确报错，见类注释。
         List<Element> tableElements = byLocalName(element, "decisionTable");
         if (tableElements.isEmpty()) {
-            if (!byLocalName(element, "informationRequirement").isEmpty()) {
-                throw new WfDefinitionException("决策 " + key
-                        + " 用的是**决策图**（带 informationRequirement），本实现不支持。"
-                        + "决策图要求按有向关系依次求值多个决策，"
-                        + "每一跳的输入都可能是上一跳的输出 —— "
-                        + "那是一条与决策表完全不同的执行路径，"
-                        + "把它折成「按顺序跑一遍」会让拓扑顺序与依赖顺序不一致的图算出错误结果，"
-                        + "而这类错误不会报错。请改成单张决策表。");
-            }
+            // 决策**节点**必须落到表上才求得出值。带 informationRequirement
+            // 又不带表的节点在 DMN 里是"文字表达式"（literal expression），
+            // 本实现不支持那种求值方式 —— 而这里放行的症状是
+            // 「这一跳什么都没算出来，下游拿到空结果」，不会报错。
             throw new WfDefinitionException("决策 " + key + " 没有 <decisionTable>。"
-                    + "本实现只支持决策表；决策图（informationRequirement）尚未实现");
+                    + "每个决策节点都必须带一张决策表（本实现不支持 DMN 的"
+                    + "文字表达式 literal expression）"
+                    + (decision.getRequiredDecisions().isEmpty() ? ""
+                            : "。注意它还依赖了 " + decision.getRequiredDecisions()
+                            + " —— 依赖一个算不出东西的决策，下游拿到的也是空结果"));
         }
         if (tableElements.size() > 1) {
             throw new WfDefinitionException("决策 " + key + " 有 " + tableElements.size()
@@ -113,6 +128,79 @@ public class WfDmnParser {
         }
         decision.setTable(parseTable(tableElements.get(0), key));
         return decision;
+    }
+
+    /**
+     * 解析 {@code <informationRequirement>}，把指向别的决策的那些边收进来。
+     *
+     * <p><b>只认 {@code <requiredDecision href="#id"/>} 一种边</b>。
+     * {@code href} 去掉开头的 {@code #} 就是 key —— key 取自 {@code <decision id>}，
+     * 所以 {@code #} 不能省：DMN 里 href 还可能是 URN，
+     * 而本实现按 id 索引，遇到非 {@code #} 形式要**当场说清**，
+     * 不能等到求值期报"依赖的决策不存在"（那句话会被理解成"没部署"，
+     * 而实际是"这个引用形式我读不出来"）。
+     *
+     * <p>重复的依赖边<b>保留不去重</b>：多写一次不影响结果（求值期按 key 收敛），
+     * 而默默去重会让"模型里有两条一样的边"这件事在回读时看不见。
+     */
+    private void parseInformationRequirements(Element element, WfDmnDecision decision) {
+        Set<String> ignored = new LinkedHashSet<>();
+        for (Element requirement : byLocalName(element, "informationRequirement")) {
+            for (Element requiredDecision : byLocalName(requirement, "requiredDecision")) {
+                decision.getRequiredDecisions().add(decisionKeyOf(decision, requiredDecision));
+            }
+            // requiredInput（外部输入数据）与 authorityRequirement（权威来源）
+            // 在本实现里没有执行语义 —— 与 Camunda 一致。
+            // 不报错（那些节点是合法的 DMN），但必须说出来，
+            // 否则作者以为那一跳参与了计算。
+            for (Element requiredInput : byLocalName(requirement, "requiredInput")) {
+                ignored.add("requiredInput -> " + hrefOf(requiredInput));
+            }
+            for (Element authority : byLocalName(requirement, "authorityRequirement")) {
+                ignored.add("authorityRequirement -> " + hrefOf(authority));
+            }
+        }
+        // knowledgeSource 可以在 <decision> 下，也可以在 <informationRequirement> 下，
+        // 所以这里从整个 decision 元素起递归找（byLocalName 找的是后代）——
+        // 若在上面的循环里也找一遍，同一个节点会被记两次。
+        for (Element knowledge : byLocalName(element, "knowledgeSource")) {
+            ignored.add("knowledgeSource -> " + hrefOf(knowledge));
+        }
+        if (!ignored.isEmpty()) {
+            log.warn("决策 [{}] 的这些信息需求在本实现里不参与求值（与 Camunda 一致，"
+                    + "引擎不执行输入数据节点与知识源）: {}。"
+                    + "如果指望它们参与计算，请改成 <requiredDecision href=\"#另一个决策的id\"/>",
+                    decision.getKey(), ignored);
+        }
+    }
+
+    private String decisionKeyOf(WfDmnDecision decision, Element requiredDecision) {
+        String href = attr(requiredDecision, "href");
+        if (href == null) {
+            throw new WfDefinitionException("决策 " + decision.getKey()
+                    + " 的 <informationRequirement> 里有一条 <requiredDecision> 没有 href。"
+                    + "没有 href 就指不出依赖谁，求值期只能靠猜"
+                    + "（而猜错的表现是「这一跳没算，下游拿到空结果」）");
+        }
+        if (!href.startsWith("#")) {
+            throw new WfDefinitionException("决策 " + decision.getKey()
+                    + " 的 <requiredDecision href=\"" + href + "\"> 不是 #id 形式。"
+                    + "本实现按 <decision id> 索引决策，只能读 \"#决策id\"；"
+                    + "DMN 还允许 URN 形式的引用，那种引用本实现读不出来 —— "
+                    + "要报错在这里报，而不是等到求值期变成「依赖的决策不存在」，"
+                    + "那句话会被读成「你没部署它」");
+        }
+        String key = href.substring(1).trim();
+        if (key.isEmpty()) {
+            throw new WfDefinitionException("决策 " + decision.getKey()
+                    + " 的 <requiredDecision href=\"#\"> 后面没有决策 id");
+        }
+        return key;
+    }
+
+    private String hrefOf(Element element) {
+        String href = attr(element, "href");
+        return href == null ? "(无 href)" : href;
     }
 
     private WfDmnDecision.WfDmnTable parseTable(Element table, String decisionKey) {

@@ -1731,6 +1731,80 @@ class WfWebApiTest {
         assertEquals(HttpStatus.BAD_REQUEST, afterDelete.getStatusCode(), afterDelete.getBody());
     }
 
+    /**
+     * 决策图（第 35 轮）走真实 HTTP：部署两跳依赖 → 求值 → 回读能看到依赖边。
+     *
+     * <p>它盯的是三件单元测试断不到的事：
+     * <ol>
+     *   <li><b>依赖边过了 HTTP 往返还活着</b>。若 {@code WfDecisionService} 走的是
+     *       另一套装配、或 controller 的 view 漏了这个字段，回读时就看不到图 ——
+     *       而排障时"这张决策依赖谁"是最先要看的东西。</li>
+     *   <li><b>求值真的按依赖展开</b>：第二跳的输入是第一跳的输出，
+     *       中间隔着一次 HTTP，链断在哪一环都看得出来。</li>
+     *   <li><b>成环在部署端点上就报 400</b>，而不是部署成功、等到求值才栈溢出。</li>
+     * </ol>
+     */
+    @Test
+    @DisplayName("DMN 决策图：跨 HTTP 部署依赖图 → 求值按依赖展开 → 回读能看到依赖边")
+    void decisionGraphOverHttp() throws Exception {
+        long stamp = System.nanoTime();
+        String upstream = "risk" + stamp;
+        String downstream = "level" + stamp;
+        // 下游**写在前面**：跨 HTTP 往返之后声明次序仍然不该影响结果
+        String dmn = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"https://www.omg.org/spec/DMN/20191111/MODEL/\" id=\"d\">\n"
+                + "  <decision id=\"" + downstream + "\" name=\"层级\">\n"
+                + "    <informationRequirement><requiredDecision href=\"#" + upstream
+                + "\"/></informationRequirement>\n"
+                + "    <decisionTable id=\"td\" hitPolicy=\"FIRST\">\n"
+                + "      <input id=\"i\"><inputExpression id=\"ie\"><text>risk</text>"
+                + "</inputExpression></input>\n"
+                + "      <output id=\"o\" name=\"level\"/>\n"
+                + "      <rule><inputEntry><text>== \"high\"</text></inputEntry>"
+                + "<outputEntry><text>\"ceo\"</text></outputEntry></rule>\n"
+                + "      <rule><inputEntry><text>-</text></inputEntry>"
+                + "<outputEntry><text>\"staff\"</text></outputEntry></rule>\n"
+                + "    </decisionTable>\n"
+                + "  </decision>\n"
+                + "  <decision id=\"" + upstream + "\" name=\"风险\">\n"
+                + "    <decisionTable id=\"tu\" hitPolicy=\"FIRST\">\n"
+                + "      <input id=\"i\"><inputExpression id=\"ie\"><text>amount</text>"
+                + "</inputExpression></input>\n"
+                + "      <output id=\"o\" name=\"risk\"/>\n"
+                + "      <rule><inputEntry><text>&gt; 10000</text></inputEntry>"
+                + "<outputEntry><text>\"high\"</text></outputEntry></rule>\n"
+                + "      <rule><inputEntry><text>-</text></inputEntry>"
+                + "<outputEntry><text>\"low\"</text></outputEntry></rule>\n"
+                + "    </decisionTable>\n"
+                + "  </decision>\n"
+                + "</definitions>\n";
+
+        List<Map<String, Object>> deployed = asList(asMap(postOk("/api/wf/decisions/deploy",
+                body("dmnXml", dmn)).get("data")).get("deployed"));
+        assertEquals(2, deployed.size(), "一个决策图文件部署出两个决策");
+
+        // 回读必须能看到依赖边 —— 排障时最先看的就是"它依赖谁"
+        Map<String, Object> view = asMap(getOk("/api/wf/decisions/" + downstream).get("data"));
+        assertEquals(1, asList(view.get("requiredDecisions")).size(),
+                "回读视图里必须有 requiredDecisions，实际视图: " + view);
+
+        // 链断在哪一环都看得出来：amount 只喂给上游，risk 只由上游产出
+        Map<String, Object> result = asMap(postOk("/api/wf/decisions/" + downstream + "/evaluate",
+                body("variables", body("amount", 50000))).get("data"));
+        assertEquals("ceo", asList(result.get("rows")).get(0).get("level"),
+                "上游算出 risk=high，下游据此算出 level=ceo");
+        assertEquals(2, ((Number) result.get("matchedRuleCount")).intValue(),
+                "命中条数只数下游这张表（== high 与恒真的 - 都成立）。"
+                        + "上游那张表此刻也是 2 条命中，若两处并起来会是 4 —— "
+                        + "上游的输出进的是求值上下文，不是本决策的结果");
+
+        // 成环必须在部署端点上就报出来，而不是部署成功、等求值时栈溢出
+        ResponseEntity<String> cyclic = exchange(HttpMethod.POST, "/api/wf/decisions/deploy",
+                body("dmnXml", dmn.replace("<requiredDecision href=\"#" + upstream + "\"/>",
+                        "<requiredDecision href=\"#" + downstream + "\"/>")));
+        assertEquals(HttpStatus.BAD_REQUEST, cyclic.getStatusCode(), cyclic.getBody());
+    }
+
     // ==================== 业务规则任务端到端 ====================
 
     /**

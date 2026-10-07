@@ -157,6 +157,10 @@ public class WfDecisionController {
         view.put("name", decision.getName());
         view.put("version", decision.getVersion());
         view.put("deployTime", decision.getDeployTime());
+        // 决策图的依赖边放在**与 table 同级**：它描述的是节点之间的关系，
+        // 不是表的内容。塞进 tableView 会让"这张表是什么"与"它依赖谁"混在一起，
+        // 而排查图问题恰恰要先看后者。
+        view.put("requiredDecisions", decision.getRequiredDecisions());
         WfDmnDecision.WfDmnTable table = decision.getTable();
         if (table == null) {
             return view;

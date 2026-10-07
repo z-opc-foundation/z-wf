@@ -566,7 +566,7 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 
 ## 9. 测试
 
-971 个测试，全绿（core 884 / web 16 / admin 71）。
+989 个测试，全绿（core 901 / web 16 / admin 72）。
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
@@ -585,10 +585,11 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 | **`WfJobPriorityTest`** | **10** | job 优先级从节点拷贝、两套存储实现同一把尺子、存量库补列、更新时不抹掉、排序是开关 |
 | **`WfComplexGatewayThresholdTest`** | **11** | 阈值放行只合并已抵达的（不误杀在跑的任务）、晚到令牌被消费掉且留痕、不配阈值行为不变、codec 往返、4 类非法配置部署期挡住 |
 | **`WfJobTriggerTest`** | **9** | 只有时间触发型/异步型可提前触发；订阅型、事件网关竞速分支、外部任务三类**分别**说清为什么不行；job 不存在要报错；留痕要点破「停留超时」不适用、且「该响没响」不写假记录 |
+| **`WfDmnDecisionGraphTest`** | **17** | 决策图：声明顺序不影响结果、依赖边活过两种持久化、成环（文件内 / 跨文件 / 自依赖）在部署期挡住且不留半套、上游 0 行与多行不停下来、同名变量冲突 |
 | **`WfVariableServiceTest`** | **12** | 变量读写、批量原子性、审计留痕、终态拒绝 |
 | **`UnsupportedBpmnElementTest`** | **7** | 未支持元素不许静默退化（XML + JSON 两条入口） |
 | `WfAdminEndToEndTest` | 6 | Spring 全栈 + JDBC 落库 + 示例流程端到端 |
-| `WfWebApiTest` | 65 | **真实 HTTP**（`RANDOM_PORT` 起容器）：VO 边界、分页 total、异常→状态码、变量端点 |
+| `WfWebApiTest` | 66 | **真实 HTTP**（`RANDOM_PORT` 起容器）：VO 边界、分页 total、异常→状态码、变量端点 |
 | `WfJobControllerTest` | 10 | job 运维端点的路径/参数/状态码/响应字段；`triggered=false` 仍是 200；两个 job 端点的 id 字段名一致 |
 
 > 加粗的那几个是**行为审计**而非功能测试。本项目有过三次"实现了、注册了、

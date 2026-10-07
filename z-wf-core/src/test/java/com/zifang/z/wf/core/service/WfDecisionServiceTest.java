@@ -181,29 +181,36 @@ class WfDecisionServiceTest {
     }
 
     @Test
-    @DisplayName("决策图（informationRequirement）明确报不支持，不折成顺序求值")
-    void decisionGraphIsRejected() {
+    @DisplayName("决策节点没有决策表仍要报错 —— 不支持文字表达式，且要说清它依赖了谁")
+    void decisionNodeWithoutTableIsRejected() {
+        // 第 35 轮补上决策图之后，这里挡的**不再是**"用了决策图"，
+        // 而是"这个决策节点没有表"：DMN 允许节点承载文字表达式（literal expression），
+        // 那本实现求不了值。放行的症状是「这一跳什么都没算出来」，
+        // 而决策图里恰恰没人会去查空的那一跳。
         String graph = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
                 + "<definitions xmlns=\"https://www.omg.org/spec/DMN/20191111/MODEL/\" id=\"d\">\n"
                 + "  <decision id=\"g\" name=\"图\">\n"
-                + "    <informationRequirement><requiredInput href=\"#a\"/>"
+                + "    <informationRequirement><requiredDecision href=\"#a\"/>"
                 + "</informationRequirement>\n"
                 + "  </decision>\n"
-                + "  <inputData id=\"a\" name=\"a\"/>\n"
+                + "  <decision id=\"a\" name=\"上游\">\n"
+                + "    <decisionTable id=\"at\"><input id=\"i\">"
+                + "<inputExpression id=\"ie\"><text>x</text></inputExpression></input>"
+                + "<output id=\"o\" name=\"out\"/>"
+                + "<rule><inputEntry><text>-</text></inputEntry>"
+                + "<outputEntry><text>\"v\"</text></outputEntry></rule></decisionTable>\n"
+                + "  </decision>\n"
                 + "</definitions>\n";
         WfDefinitionException ex = assertThrows(WfDefinitionException.class,
                 () -> decisions.deployDecision(graph));
-        // 只断「决策图」三个字是**断不住的**：解析器在没有 decisionTable 的兜底分支上
-        // 也写了同一句「决策图（informationRequirement）尚未实现」，
-        // 于是把那处报错摘掉、让它落到兜底上，这条断言照样成立。
-        // 与「删文案类变异要确认删掉的正是判据断的那几个字」同一条纪律：
-        // 相邻两句里只要有一句留着同样的关键词，断言就恒成立。
-        assertTrue(ex.getMessage().contains("有向关系"),
-                "报错要说明决策图要求按有向关系依次求值（决策表那张分支上的话）: "
+        // 只断「没有 <decisionTable>」这几个字是**断不住的**：解析器里有两处会提到它。
+        // 所以这里断的是**只有新分支才写得出的那句话** ——
+        // 把「依赖了谁」写进报错，是第 35 轮才加的。
+        assertTrue(ex.getMessage().contains("literal expression"),
+                "报错要说清是「不支持文字表达式」——只说「没有决策表」会让作者以为漏写了表: "
                         + ex.getMessage());
-        assertFalse(ex.getMessage().contains("没有 <decisionTable>"),
-                "不能落到「没有 decisionTable」那条兜底上 —— "
-                        + "那会让作者以为是漏写表，而不是写了本实现不支持的东西: "
+        assertTrue(ex.getMessage().contains("[a]"),
+                "一个依赖了别人、自己却算不出东西的决策，报错必须点名它依赖了谁: "
                         + ex.getMessage());
     }
 
