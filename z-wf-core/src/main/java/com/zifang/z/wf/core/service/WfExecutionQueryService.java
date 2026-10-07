@@ -135,8 +135,21 @@ public class WfExecutionQueryService {
     /**
      * 变量条件（与存储层下推的那几项分开，只有这里做这一件事）。
      *
-     * <p>比较用 {@code Objects.equals}，不做类型宽松（{@code 1} 与 {@code "1"} 判不等），
-     * 与 {@code correlate} 的匹配条件同一条规矩。
+     * <h3>⚠️ 比较用 {@code String.valueOf}，所以这一支是「类型宽松」的（第 43 轮更正）</h3>
+     * 实现落在 {@code Objects.equals(String.valueOf(value), wanted)} 上，
+     * 于是数字 {@code 1} 与字符串 {@code "1"} <b>判相等</b>。
+     * 本方法原先的注释写着「不做类型宽松（{@code 1} 与 {@code "1"} 判不等）」——
+     * 那句话与紧跟着的实现<b>正好相反</b>，而且被流程级
+     * {@code WfProcessQueryService} 照抄了一遍。
+     *
+     * <p><b>行为是对的，错的是注释</b>，所以这里只改注释、不动实现：
+     * 审批金额在表单里进来是字符串 {@code "5000"}，另一条路径可能存成数字
+     * {@code 5000}；按类型严格比，{@code =5000} 会查不到字符串那一批
+     * <b>而且不报任何错</b>，调用方只看到"就是没有"。
+     * 「查不出来」比「多查出几条形态相同的」危险得多。
+     * 流程级那边的 {@code WfProcessQueryService#matches} 与此保持同一把尺子。
+     * （写纯文本而不是 {@code @link}：{@code matches} 是 private，链接过去是坏链。）
+     *
      * <p><b>键不存在不等于「值为 null」</b>：先 {@code containsKey} 再比，
      * 否则一条没有 {@code approveFlag} 的 token 会被 {@code approveFlag=null} 这个条件命中。
      */

@@ -125,6 +125,15 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      */
     private final WfHistoryLevel historyLevel;
 
+    /**
+     * 按变量值查流程实例的服务（第 43 轮）。
+     *
+     * <p>与 {@code incidentHistory} 同一个理由：只依赖 {@code persistence}，
+     * 不值得为它加一个构造参数 —— 而本类的构造调用点有七十多处。
+     * 就地 new，两个构造器都不用改。
+     */
+    private final WfProcessQueryService processQueryService;
+
     public WfRuntimeService(WfRepositoryService repositoryService,
                             WfPersistence persistence,
                             WfEngine engine,
@@ -155,6 +164,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         this.idGenerator = idGenerator;
         this.incidentHistory = new WfHistoricIncidentService(persistence);
         this.historyLevel = historyLevel == null ? WfHistoryLevel.DEFAULT : historyLevel;
+        this.processQueryService = new WfProcessQueryService(persistence);
     }
 
     // ==================== 发起 ====================
@@ -674,17 +684,29 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         return persistence.findProcessInstance(id);
     }
 
+    /**
+     * 查流程实例。
+     *
+     * <p>带了变量条件时走 {@link WfProcessQueryService}（第 43 轮）：
+     * 过滤与分页都在 Java 里做，理由见那里的类注释。
+     * <b>没带变量条件时原路交给存储层</b>，行为与本特性之前完全一致。
+     */
     public List<WfProcessInstance> queryProcessInstances(WfProcessInstanceQuery query) {
-        return persistence.queryProcessInstances(query);
+        return processQueryService.list(query);
     }
 
     /**
      * 统计符合条件的流程实例总条数（分页组件要它算总页数）。
      *
      * <p>别用 {@code queryProcessInstances(...).size()} 代替：那拿到的是<b>当前页</b>条数。
+     *
+     * <p><b>与 {@link #queryProcessInstances} 必须走同一把尺子</b>（第 43 轮）：
+     * 带变量条件时两边都走 {@link WfProcessQueryService} 的同一条过滤路径。
+     * 各算各的话，分页器的 total 与 records 会对不上 ——
+     * 那个错在界面上表现为「总共 128 条，翻到第 5 页却是空的」。
      */
     public long countProcessInstances(WfProcessInstanceQuery query) {
-        return persistence.countProcessInstances(query);
+        return processQueryService.count(query);
     }
 
     public List<WfProcessInstance> getProcessInstancesByBusinessKey(String businessKey) {

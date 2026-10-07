@@ -54,7 +54,7 @@
 | `startProcessInstanceByMessage` | ✅ | **本轮补上** `WfRuntimeService#startProcessInstanceByMessage` / `#startProcessInstanceBySignal`，REST `POST /api/approval-center/processes/start-by-event`，DTO `WfRequests.StartByEvent`（`messageName` 与 `signalName` **必须且只能填一个**）。前提是定义层**放宽了「恰好一个 startEvent」**这条老规则：BPMN 里「手工发起」与「收到订单才起」是同一流程的两个正常入口，要求唯一等于逼作者把一个流程拆成两个。`WfDefinition#startNode` 只认**无条件**入口（带 `messageRef`/`signalRef` 的不算），跨定义查找走 `eventStartNodes()`。同名事件被多个定义订阅时**报错并点名是哪几个** —— 静默挑一个的后果是「流程起来了但不是预期的那个」，而调用方看不出来 |
 | `suspend` / `activate` / `delete` 实例 | ✅ | `terminate` 对应 delete |
 | **变量服务** `getVariable(s)` / `setVariable(s)` / `getVariableLocal` / `setVariableLocal` | ✅ | **本轮补上** `WfVariableService`：流程级 get/set/remove/has + 任务级 get/set/remove，批量整批只落一次库，变更留审计 |
-| `createProcessInstanceQuery` 流畅查询 | 🟡 | `WfProcessInstanceQuery` 有 10 个条件，但没有 `variableValueEquals`（按变量值查实例，审批系统常用） |
+| `createProcessInstanceQuery` 流畅查询 | ✅ | **第 43 轮补上变量条件**：`WfProcessInstanceQuery` 原有 10 个条件之上加 `variableValueEquals` / `GreaterThan` / `LessThan` / 闭区间，加 `variableName` 单独给就是问「有没有这个变量」（审批里最常问的「哪些单子还没填金额」）。REST `GET /api/approval-center/processes/search` 六个新参数。**互斥单值模型**：每个 setter 先清干净上一个，所以「一个查询只有一个变量条件」是构造上的事实而不是约定。**刻意不进存储层** —— 变量存 `ZWF_PROCESS.VARIABLES` 这个 JSON 文本列，各库 JSON 函数语义不同；而 `LIKE '"amount":100'` 会命中 `"amount":1000`，那是**会骗人的快路径**。**分页也因此回到 Java**（先 `LIMIT` 再过滤会把命中的切在页外）。**溢出报错不截断**：`MAX_SCAN=20000`，超了报错并说清怎么缩小范围，**不给一份缺行的清单** |
 | **`move` / `moveTaskState`**（流程实例迁移） | ✅ | `WfRuntimeService#move` 按 token 粒度迁移，撤掉源节点的待办、该 token 的 job 与到达记录，再在目标节点**重新进入**；给 `sourceActivityId` 就只迁指定源，不给就迁全部未结束 token。REST `POST /api/wf/process/move`。**刻意不检查图上可达性** —— 运营改流程后图往往已对不上，强行校验等于"改一次流程就得重画一遍"，代价是目标节点必须在定义里存在（部署期之外做存在性校验）。**`moveTaskState` 不是缺口**（第 15 轮订正）：它属于 Camunda 的 **standalone task** 体系 —— `TaskService#newTask()` 建的是"不挂任何流程实例的独立任务"，`moveTaskState` 搬的是那种任务在 `Created/Assigned/Completed/Canceled/Failed` 之间的位置。本引擎**没有独立任务**这个概念（`WfTask` 一律由 `WfUserTaskBehavior` 建出，必带 `processInstanceId` + `definitionId`），而"把一个流程内任务换状态"这件事现有能力已经全覆盖：`claim`/`unclaim`/`updateTask`(转办/改责任人)/`delegate`/`resolve`/`complete`/`withdraw`/`force-complete`/`suspend`/`activate`。为对齐一个数字而把 standalone task 这整套引入，代价远大于收益 |
 | `createExecutionQuery` | ✅ | **第 20 轮补上** `WfExecutionQueryService` + `WfExecutionQuery`，REST `GET /api/wf/executions` 与 `/executions/count`。与既有 `getExecutions(processInstanceId)` 的差别**只有一个：查之前不必先知道实例 id** —— 排障的第一句常常是「哪个单子卡在审批节点上」，而那时手里还只有节点。能答的三个问题：① 哪些单子的 token 停在节点 X ② 哪些 token 还没结束（`onlyUnfinished`，与订阅查询互补：订阅答「在等什么」，令牌答「停在哪」）③ 哪条 token 的某个变量是这个值（并行分支最常出问题的那一个）。**刻意不提供 `definitionKey`**：令牌表里没这一列，要支持就得 join 实例表，而"某定义下所有活跃 token"用实例查询再逐个 `getExecutions` 就够。**变量过滤与排序都在 Java 里做、只有一份实现** —— 变量存 JSON 文本列，各库写法不同跨库只能回 Java；过滤一旦在分页之后，分页也不能交给 SQL（先 LIMIT 50 再过滤会剩 3 条，而调用方以为"就这些"）。**排序不交给数据库**：`ENTERED_TIME` 可空，而"NULL 排前还是排后"在 H2/PG/MySQL 上结论相反。`count` 与 list **共用同一次扫描**，不走 SQL `COUNT(*)` —— 否则列表 1 条而 count 说 8 条，调用方只会以为自己算错了 |
 | `getBusinessKey` / `setProcessInstanceName` | ✅ | businessKey 本就有；**第 20 轮补上 `setProcessInstanceName`**（`WfProcessInstance#name`，`ZWF_PROCESS` 新增 `NAME` 列 + 补列迁移），REST `POST /api/wf/process/name`。name 与 businessKey **不能互相顶替** —— 前者是给人看的可读描述，后者是业务方的单号，拿单号当标题会得到一串没人看得懂的编号。**名字的字段只有一个所有者**：只有 `setProcessInstanceName` 改它，`saveProcessInstance` 的部分更新刻意不含该列 —— 引擎每次推进结束时都会把 `context` 里那个**改名前取的**实例对象写回去，名字一旦进了那条列清单，用户改完名再点一次「通过」就被抹回 null。**改名不走乐观锁也不碰 revision**（名字与状态机无关，让"改标题"和"审批推进"抢同一把锁，冲突时报的还是「乐观锁冲突」）。**空串报错、null 才表示清空**（空标题与没起名字在界面上一样、语义却不同）。**实例不存在报错并点名**，不静默返回 |
@@ -3194,3 +3194,132 @@ runtime / management / variable 三个 bean 上」，
   回落是最坏的一种失败 —— 配 `ful` 拼错成 `ful` 之后引擎默默按 `audit` 跑，
   业务方以为变量中间值都留着，直到合规审计那天才发现，而那时没有一条报错可查。
   首尾空白照 `trim` 处理：配置值带空白是常事，为它报错等于让人去查一个不存在的问题。
+
+### 第 43 轮：按变量值查流程实例（`variableValueEquals` / 存在性）
+
+对应 Camunda `ProcessInstanceQuery` 上的 `variableValueEquals` /
+`variableValueGreaterThan` / `variableValueLessThan` / `processVariableNames`，
+填的是台账上标注「**审批系统常用**」的那一格。落到三个地方：
+
+| 层 | 落点 |
+|---|---|
+| 查询条件 | `WfProcessInstanceQuery` 六个字段 + `VariableComparison` 枚举 + 五个 setter |
+| 查询服务 | **新增** `WfProcessQueryService`（`list` / `count`），`WfRuntimeService#queryProcessInstances` / `#countProcessInstances` 改为委派 |
+| REST | `GET /api/approval-center/processes/search` 六个新参数 + 私有 `applyVariableConditions` |
+
+**为什么这一组不进存储层**
+
+变量存在 `ZWF_PROCESS.VARIABLES` 这个 **JSON 文本列**里。
+各库对 JSON 函数的支持与语义都不一样（H2 / PostgreSQL / MySQL 三套写法），
+跨库行为一致就只能回到 Java 里比 —— 与 token 侧的 `WfExecutionQueryService` 完全同构。
+
+**更不能拿 `LIKE '"amount":100'` 糊弄过去**：那样 `"amount":1000` 会被
+`"amount":100` 的条件命中，而屏幕上看起来就是一个正常的过滤 ——
+**错的是数据，查不出来**。与其给一个会骗人的快路径，不如慢一点但对。
+
+**为什么分页也必须回到 Java**
+
+过滤发生在分页**之后**时，把分页交给 SQL 就是错的：
+先 `LIMIT 20` 再过滤，命中的那几条可能被切在页外 ——
+现象是「明明有 3 条符合，翻到第一页却只有 1 条」，而且分页器算出来的总页数是错的。
+
+**互斥单值模型**：允许 `greaterThan` 与 `equals` 同时为真，就得定义「同时给时取交集还是并集」，
+而那种问题在「查金额 5000 以上」这种最常见的用法上**永远不会有人去想** ——
+结果是一批错的单子，而调用方以为条件没生效。
+所以每个 setter **先 `resetVariableCondition()`**，「一个查询只有一个变量条件」是**构造上的事实**。
+
+**溢出报错不截断**：`MAX_SCAN = 20000`（可配）。超了抛异常并说清怎么缩小范围，
+**不给一份缺行的清单** —— 它看起来是完整的，而「第 7 页没有更多了」与
+「还有，只是没读到」在屏幕上没有区别。
+上限给构造参数不只是为了可配：造两万多条流程实例只为证明「超了会报错」，
+代价是一次几分钟的测试，而闸门恰恰是这条路上最要紧的一条。
+
+**count 与 list 走同一把尺子**（`filter` 的同一条路径）。
+两边各算各的话，分页器的 total 与 records 对不上，
+那个错在界面上表现为「总共 128 条，翻到第 5 页却是空的」。
+
+**本轮抓到的一处真缺陷：注释与实现相反（既存，第 20 轮起的代码里就有）**
+
+写判据时发现等值比较的行为与注释说的不一样，查下去是：
+
+```java
+// WfExecutionQueryService#matches 的注释（本轮之前）
+//   「比较用 Objects.equals，不做类型宽松（1 与 "1" 判不等）」
+// 它自己的实现（第 156 行）
+return Objects.equals(String.valueOf(variables.get(name.trim())), wanted);
+```
+
+`String.valueOf(1)` 就是 `"1"` ⇒ **`1` 与 `"1"` 判相等**。
+注释那句话与紧跟着的实现**正好相反**，而本轮我第一版注释正是**照抄它**的。
+
+**处置是只改注释、不动实现**，理由写在注释里：审批金额在表单里进来是字符串
+`"5000"`，另一条路径可能存成数字 `5000`；按类型严格比会让 `=5000`
+**查不到字符串那一批而且不报任何错**，调用方只看到"就是没有"。
+「查不出来」比「多查出几条形态相同的」危险得多。
+⇒ 两处注释（token 侧 + 流程级本轮新增）一起改，
+且在 `VariableComparison.EQUALS` 上写明「这一支就是宽松的」，
+免得下一轮再照着注释写出实现。
+
+**本轮判据自己也补了三处洞**（都是反向验证先报"没红"，查下去是判据的问题）：
+
+1. **溢出边界没人钉**。把 `fetched.size() > maxScan` 改成 `>=`，14 条判据全绿 ——
+   原来两条溢出判据的数据（3 单/上限 2、6 单/上限 5）恰好落在两个判据**等价**的区域。
+   ⇒ 补 `exactlyAtLimitIsNotOverflow`：**恰好等于上限必须能正常返回，上限 +1 才报**，
+   两条配对才锁得住 `>` 还是 `>=`。
+2. **布尔那条阈值挑错了**。用 `> 1` 时，`true → 1.0` 之后 `1.0 > 1` 为假 ⇒ 变异打不动它。
+   ⇒ 阈值降到 0.5，让「true 被当成 1」必然越线。
+3. **慢路径的排序方向没人钉**。把 `sortForDisplay` 改成升序，全绿 ——
+   原先那条前置断言走的是**快路径**（不受 `sortForDisplay` 影响），
+   而慢路径排反了之后过滤结果仍全在命中批次内部，顺序变化根本看不见。
+   ⇒ 补 `slowPathSortsNewestFirst`：把「最新」直接钉成一个具体单号。
+
+**探针打出来的两条事实**（不靠猜，写完判据先打出来验证）：
+
+- 显式写入 `null` 的变量**落库后 `containsKey` 仍为 true**（`{"amount":null}` 保留），
+  而压根没设过的键是 `{}`。⇒ "键不存在 ≠ 值为 null" 这条判据成立。
+- 一次跑 42 条实例，**相邻同毫秒出现 14 次**。
+  ⇒ 排序键只到毫秒 + `Collections.sort` 稳定 ⇒ 同毫秒时退化成插入顺序。
+  分页判据的两批数据之间**必须显式 sleep**，否则「先分页再过滤」的错法根本暴露不出来，
+  判据会变成一条**恒绿**的假断言。
+
+**判据两处覆盖，且两处覆盖的不是同一批**（第 40/41/42 轮同一条纪律的第四次兑现）：
+
+| | core（`WfProcessVariableQueryTest`，16 条） | admin 真 JDBC（`WfProcessVariableQueryJdbcTest`，7 条） |
+|---|---|---|
+| 存储层 | `InMemoryWorkflowPersistence`（变量就是 `Map`，**没有序列化这一步**） | `JdbcWorkflowPersistence`（JSON 文本列，读回时**类型可能被改写**） |
+| 独有 | 四种比较语义 / 互斥模型 / 溢出边界 / 类型不对称 | JSON 往返后比较仍成立；**内存实现与真库实现对同一批数据给出同一个集合**；REST 参数冲突 ⇒ 400 |
+
+admin 那条 `memoryAndJdbcAgreeOnTheSameBatch` 是本轮最值钱的判据：
+它在同一个进程里把两套 persistence 都跑起来喂同一批数据逐条比对结果集 ——
+**症状会发生的场景是「core 全绿、真库上给出另一个答案」**，
+而那种错在单测层面完全不可见。
+
+### 本轮反向验证记录（按变量值查流程实例，第 43 轮）
+
+`/tmp/verify_r43.py`，**14 条变异 + core/admin 两层基线对照**。
+红不红从 `target/surefire-reports/TEST-*.xml` 读，**不解析 stdout**。
+
+**harness 自己踩了四个坑，全部记在脚本里**（它们比变异清单更值得留）：
+
+1. **「测试类不存在」与「筛选串错了」在屏幕上完全一样** ——
+   都是 `surefire` 一行输出都没有、`BUILD SUCCESS`、不生成报告。
+   真因是我把元组里的 `[CORE_TEST]`（列表）改成了裸字符串，
+   而代码 `for test in tests` 按列表遍历 ⇒ 它逐**字符**去跑测试
+   （`"W"`、`"f"`、…、最后 `"t"`），每次 `clean` 又抹掉上一次报告。
+   ⇒ 判据：harness 里任何"按字符迭代"的写法，症状都是这条。
+   **是打印真实 argv 才抓到的**（`-Dtest=t`）—— 靠猜会以为是 surefire 版本问题。
+2. **变异所在模块 ≠ 能抓到它的测试层**：M12–M14 的变异在 `z-wf-web`（REST 接线），
+   判据却在 `z-wf-admin`（端到端）。拿变异所在模块去找测试类 ⇒ 那个模块里没有
+   这条测试。⇒ harness 把这两件事分成两个字段。
+3. **web 的改动必须先 `install` 再跑 admin**（admin 吃的是本地仓库里的 jar，
+   不是源码），**还原之后还要再装一次**，否则下一条跑在上一条的残留上。
+   我自己做手动验证时漏了"还原后重装"，结果下一次 harness 的**基线直接变红** ——
+   这条护栏当场生效，替我挡住了把残缺状态当结论。
+4. **M14 第一版替换体自己编译不过**（`from != null && to != null` 蕴含了后面那个
+   分支 ⇒ `unreachable statement`）。**编译失败按纪律不算 RED**，
+   改成"在同一个 `||` 分支里加内部 `if`"才既改掉行为又编得过。
+
+**还加了一道交叉验证**：光看正则抓到的方法名是不够的 ——
+「测试真绿」与「报告格式变了、正则一个都没抓到」在屏幕上都是空列表，
+于是整批变异会被读成"判据全不敏感"。现在用 `testsuite` 的 `failures`/`errors`
+属性与正则结果对照，对不上就报 `PARSE-MISS` 且**不计入结论**。

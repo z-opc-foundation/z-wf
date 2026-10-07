@@ -293,12 +293,18 @@ public class WfApprovalCenterController {
     }
 
     @GetMapping("/processes/search")
-    @Operation(summary = "012_按业务键/状态搜索流程")
+    @Operation(summary = "012_按业务键/状态/变量搜索流程（变量：只给 variableName 是问存在性；配合 valueEquals / GreaterThan / LessThan / From+To 四选一）")
     public Result<PageResult<WfViews.ProcessInstanceView>> searchProcesses(
             @RequestParam(required = false) String businessKey,
             @RequestParam(required = false) String definitionKey,
             @RequestParam(required = false) String userId,
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) String variableName,
+            @RequestParam(required = false) String variableValueEquals,
+            @RequestParam(required = false) Double variableValueGreaterThan,
+            @RequestParam(required = false) Double variableValueLessThan,
+            @RequestParam(required = false) Double variableValueFrom,
+            @RequestParam(required = false) Double variableValueTo,
             @RequestParam(defaultValue = "1") int pageNum,
             @RequestParam(defaultValue = "20") int pageSize) {
 
@@ -316,12 +322,65 @@ public class WfApprovalCenterController {
         if (isNotBlank(status)) {
             query.setStatus(WfProcessStatus.valueOf(status.trim()));
         }
+        applyVariableConditions(query, variableName, variableValueEquals,
+                variableValueGreaterThan, variableValueLessThan,
+                variableValueFrom, variableValueTo);
         // total 必须单独问：queryProcessInstances 返回的是当前页，
         // 拿它的 size() 当总数会让前端分页器认为只有一页
         long total = runtimeService.countProcessInstances(query);
         List<WfProcessInstance> found = runtimeService.queryProcessInstances(query);
         return Result.success(new PageResult<WfViews.ProcessInstanceView>(
                 viewMapper.toProcessViews(found), total, pageNum, pageSize));
+    }
+
+    /**
+     * 把参数翻译成一个变量条件（第 43 轮）。
+     *
+     * <p><b>三个值参数恰好只能给一个</b>：变量条件是互斥的单值模型
+     * （见 {@code WfProcessInstanceQuery.VariableComparison}），
+     * 同时给的话只能取其中一个而另一个被静默丢掉 ——
+     * 所以这里明着报出来，文案直接指向要改成什么。
+     *
+     * <p>数值参数绑定成 {@code Double} 而不是在方法体里 parse：
+     * 传了 {@code abc} 时由 Spring 报 400 并点名是哪个参数。
+     */
+    private void applyVariableConditions(WfProcessInstanceQuery query, String name,
+                                         String valueEquals, Double greaterThan,
+                                         Double lessThan, Double from, Double to) {
+        int numericGiven = (greaterThan != null ? 1 : 0)
+                + (lessThan != null ? 1 : 0) + (from != null && to != null ? 1 : 0);
+        int comparisonsGiven = numericGiven + (valueEquals != null ? 1 : 0);
+        if (comparisonsGiven > 1) {
+            throw new com.zifang.z.wf.core.service.WfEngineException(
+                    "变量条件只能给一个：variableValueEquals / variableValueGreaterThan / "
+                            + "variableValueLessThan / variableValueFrom+To 是四种互斥的写法，"
+                            + "同时给的话只有一个会生效、另一个被静默丢掉。"
+                            + "要查区间就用 variableValueFrom 配 variableValueTo（闭区间）");
+        }
+        if (!isNotBlank(name)) {
+            if (comparisonsGiven > 0) {
+                throw new com.zifang.z.wf.core.service.WfEngineException(
+                        "查变量必须同时给 variableName：只给值不给名字，"
+                                + "这个条件没有意义（而静默忽略会让人以为筛过了）");
+            }
+            return;
+        }
+        if (valueEquals != null) {
+            query.setVariableValueEquals(name, valueEquals);
+        } else if (greaterThan != null) {
+            query.setVariableValueGreaterThan(name, greaterThan.doubleValue());
+        } else if (lessThan != null) {
+            query.setVariableValueLessThan(name, lessThan.doubleValue());
+        } else if (from != null || to != null) {
+            // 只给一端时按无界处理：给 -∞ / +∞ 与显式写出端点得到的结果完全一样，
+            // 而要求两端都给会让"查 5000 以上的"必须先想清楚下界是 -∞
+            query.setVariableValueBetween(name,
+                    from == null ? Double.NEGATIVE_INFINITY : from.doubleValue(),
+                    to == null ? Double.POSITIVE_INFINITY : to.doubleValue());
+        } else {
+            // 只给名字 = 问"有没有这个变量"，对应"哪些单子还没填金额"
+            query.setVariableName(name);
+        }
     }
 
     @DeleteMapping("/processes")
