@@ -35,6 +35,7 @@ import com.zifang.z.wf.core.model.WfCompensationEntry;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfFilter;
+import com.zifang.z.wf.core.model.WfHistoricIncident;
 import com.zifang.z.wf.core.model.WfFilterType;
 import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfJobType;
@@ -308,6 +309,37 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         // 运维翻批次列表基本都按"谁建的 + 什么时候建的"筛
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_BATCH_OPERATOR ON ZWF_BATCH (OPERATOR_ID, CREATE_TIME)");
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_BATCH_STATE ON ZWF_BATCH (STATE)");
+
+        // 历史故障（第 40 轮）
+        ddl.add("CREATE TABLE IF NOT EXISTS ZWF_INCIDENT_HISTORY ("
+                + "HIST_ID VARCHAR(128) NOT NULL,"
+                // 一个 job 永远只有一行：反复失败时累加而不是追加。
+                // 靠应用层保证只会有一个写入方，但 UNIQUE 仍是这里唯一能挡住
+                // 「两处失败路径同时给同一个 job 建行」的东西 ——
+                // 而那个后果是 failureCount 永远停在 1，且没有任何报错
+                + "JOB_ID VARCHAR(128) NOT NULL,"
+                + "PROC_ID VARCHAR(128),"
+                + "EXEC_ID VARCHAR(128),"
+                + "ELEMENT_ID VARCHAR(128),"
+                + "ATTACHED_TO VARCHAR(128),"
+                // definitionKey / activityName 刻意冗余存：实例与定义都可能被清理，
+                // 而"谁的流程、哪个环节"恰恰是这张表最该留住的东西
+                + "DEFINITION_KEY VARCHAR(128),"
+                + "ACTIVITY_NAME VARCHAR(256),"
+                + "JOB_TYPE VARCHAR(16),"
+                + "SUBSCRIPTION_NAME VARCHAR(128),"
+                // 错误类型与消息分列：排障要同时看到「错在哪类」与「错在哪句」
+                + "ERROR_TYPE VARCHAR(256),"
+                + "ERROR_MSG VARCHAR(2048),"
+                + "FAILURE_COUNT INT DEFAULT 1,"
+                + "FIRST_FAIL_AT TIMESTAMP,"
+                + "LAST_FAIL_AT TIMESTAMP,"
+                + "REV INT,"
+                + "PRIMARY KEY (HIST_ID))");
+        ddl.add("CREATE UNIQUE INDEX IF NOT EXISTS UDX_WF_INCHIST_JOB ON ZWF_INCIDENT_HISTORY (JOB_ID)");
+        // "上周三那批单"就是这条查询：按首次失败时刻切一个时间窗
+        ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_INCHIST_FIRST ON ZWF_INCIDENT_HISTORY (FIRST_FAIL_AT)");
+        ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_INCHIST_PROC ON ZWF_INCIDENT_HISTORY (PROC_ID)");
 
         // 筛选器。整张表都是新增的，不需要补列 ——
         // CREATE TABLE IF NOT EXISTS 对"从来没有这张表"的库直接建，
@@ -2090,7 +2122,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             java.util.Arrays.asList(
                     "ZWF_DEFINITION", "ZWF_PROCESS", "ZWF_EXECUTION", "ZWF_TASK",
                     "ZWF_JOB", "ZWF_ACTIVITY", "ZWF_COMMENT", "ZWF_FILTER",
-                    "ZWF_DECISION", "ZWF_COMPENSATION", "ZWF_BATCH", "ZWF_BATCH_ELEMENT"));
+                    "ZWF_DECISION", "ZWF_COMPENSATION", "ZWF_BATCH", "ZWF_BATCH_ELEMENT",
+                    "ZWF_INCIDENT_HISTORY"));
 
     /**
      * 表名清单，<b>从库里真查</b>而不是直接返回常量。
@@ -2989,6 +3022,199 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             throw new WfPersistenceException("批次明细 " + rs.getString("ELEM_ID")
                     + "（批次 " + rs.getString("BATCH_ID") + "）的状态非法: [" + raw + "]", e);
         }
+    }
+
+    // ==================== 历史故障（第 40 轮） ====================
+
+    @Override
+    public void saveHistoricIncident(WfHistoricIncident incident) {
+        if (incident == null || incident.getJobId() == null) {
+            throw new WfPersistenceException("历史故障记录必须有 jobId —— 它是这行的天然身份");
+        }
+        if (incident.getId() == null) {
+            throw new WfPersistenceException("历史故障记录必须有 id");
+        }
+        // **按"这一行在不在库里"决定插入还是更新，而不是按 id 是否为 null**。
+        // 记录 id 是确定性的（hist- + jobId，见 WfHistoricIncidentService#recordFailure），
+        // 所以「id 非空」根本区分不出新行与旧行 —— 原来写成 `id == null → INSERT` 时，
+        // 新行会走 UPDATE 分支，拿 REV=0 去改一个还不存在的 HIST_ID，
+        // 结果 0 行受影响，抛成"乐观锁冲突"，
+        // 而内存实现按 jobId 建键、对新行根本不走乐观锁检查，于是**完全看不出来**。
+        // 只有走真实 JDBC 的 admin 端到端用例才暴露 —— 这条判据是它逼出来的。
+        if (exists("SELECT 1 FROM ZWF_INCIDENT_HISTORY WHERE HIST_ID=?", incident.getId())) {
+            int affected = update("UPDATE ZWF_INCIDENT_HISTORY SET PROC_ID=?, EXEC_ID=?, ELEMENT_ID=?, "
+                            + "ATTACHED_TO=?, DEFINITION_KEY=?, ACTIVITY_NAME=?, JOB_TYPE=?, "
+                            + "SUBSCRIPTION_NAME=?, ERROR_TYPE=?, ERROR_MSG=?, FAILURE_COUNT=?, "
+                            + "FIRST_FAIL_AT=?, LAST_FAIL_AT=?, REV=? WHERE HIST_ID=? AND REV=?",
+                    incident.getProcessInstanceId(), incident.getExecutionId(), incident.getElementId(),
+                    incident.getAttachedToRef(), incident.getDefinitionKey(),
+                    incident.getActivityName(), incident.getJobType(), incident.getSubscriptionName(),
+                    incident.getErrorType(), incident.getErrorMessage(), incident.getFailureCount(),
+                    timestamp(incident.getFirstFailureTime()), timestamp(incident.getLastFailureTime()),
+                    incident.getRevision(), incident.getId(), incident.getRevision() - 1);
+            if (affected == 0) {
+                throw new WfOptimisticLockException("historicIncident",
+                        incident.getId(), incident.getRevision() - 1);
+            }
+            return;
+        }
+        Connection connection = null;
+        try {
+            connection = dataSource.getConnection();
+            PreparedStatement ps = connection.prepareStatement(
+                    "INSERT INTO ZWF_INCIDENT_HISTORY (HIST_ID, JOB_ID, PROC_ID, EXEC_ID, "
+                            + "ELEMENT_ID, ATTACHED_TO, DEFINITION_KEY, ACTIVITY_NAME, JOB_TYPE, "
+                            + "SUBSCRIPTION_NAME, ERROR_TYPE, ERROR_MSG, FAILURE_COUNT, "
+                            + "FIRST_FAIL_AT, LAST_FAIL_AT, REV) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+            try {
+                int i = 1;
+                ps.setString(i++, incident.getId());
+                ps.setString(i++, incident.getJobId());
+                ps.setString(i++, incident.getProcessInstanceId());
+                ps.setString(i++, incident.getExecutionId());
+                ps.setString(i++, incident.getElementId());
+                ps.setString(i++, incident.getAttachedToRef());
+                ps.setString(i++, incident.getDefinitionKey());
+                ps.setString(i++, incident.getActivityName());
+                ps.setString(i++, incident.getJobType());
+                ps.setString(i++, incident.getSubscriptionName());
+                ps.setString(i++, incident.getErrorType());
+                ps.setString(i++, incident.getErrorMessage());
+                ps.setInt(i++, incident.getFailureCount());
+                ps.setTimestamp(i++, timestamp(incident.getFirstFailureTime()));
+                ps.setTimestamp(i++, timestamp(incident.getLastFailureTime()));
+                ps.setInt(i, incident.getRevision());
+                ps.executeUpdate();
+            } finally {
+                ps.close();
+            }
+        } catch (SQLException e) {
+            // JOB_ID 上有唯一索引：两个线程同时给同一个 job 记第一次失败时，
+            // 败的那一个会撞在这里。**让它响亮地炸出来** ——
+            // 吞掉的话表里会有一行 failureCount=1，而另一个线程以为写的是同一行
+            throw new WfPersistenceException("历史故障记录写入失败: job " + incident.getJobId()
+                    + "（同一 job 并发记失败时会撞上 JOB_ID 的唯一索引）", e);
+        } finally {
+            close(connection);
+        }
+    }
+
+    @Override
+    public WfHistoricIncident findHistoricIncidentByJobId(String jobId) {
+        if (jobId == null || jobId.trim().isEmpty()) {
+            return null;
+        }
+        return queryOne("SELECT * FROM ZWF_INCIDENT_HISTORY WHERE JOB_ID=?", jobId,
+                historicIncidentMapper());
+    }
+
+    @Override
+    public List<WfHistoricIncident> queryHistoricIncidents(WfHistoricIncidentQuery query) {
+        StringBuilder sql = new StringBuilder("SELECT * FROM ZWF_INCIDENT_HISTORY");
+        List<Object> args = new ArrayList<>();
+        appendHistoricIncidentFilters(sql, args, query);
+        // 最近失败在前，与内存实现同一把尺子：历史查询的默认意图就是「刚刚发生了什么」。
+        // LAST_FAIL_AT 相同的按 JOB_ID 兜底 —— 不确定的话分页会漏条目
+        sql.append(" ORDER BY LAST_FAIL_AT DESC, JOB_ID ASC LIMIT ? OFFSET ?");
+        args.add(query == null ? 50 : query.normalizedPageSize());
+        args.add(query == null ? 0
+                : (query.normalizedPageNum() - 1) * query.normalizedPageSize());
+        return queryList(sql.toString(), args.toArray(), historicIncidentMapper());
+    }
+
+    @Override
+    public int countHistoricIncidents(WfHistoricIncidentQuery query) {
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM ZWF_INCIDENT_HISTORY");
+        List<Object> args = new ArrayList<>();
+        appendHistoricIncidentFilters(sql, args, query);
+        Long count = queryOne(sql.toString(), args.toArray(), COUNT_MAPPER);
+        return count == null ? 0 : count.intValue();
+    }
+
+    /** 条件拼装。query 与 count 共用它，两边口径必须一致。 */
+    private void appendHistoricIncidentFilters(StringBuilder sql, List<Object> args,
+                                                WfHistoricIncidentQuery query) {
+        if (query == null) {
+            return;
+        }
+        List<String> parts = new ArrayList<>();
+        if (isNotBlank(query.getJobId())) {
+            parts.add("JOB_ID=?");
+            args.add(query.getJobId());
+        }
+        if (isNotBlank(query.getProcessInstanceId())) {
+            parts.add("PROC_ID=?");
+            args.add(query.getProcessInstanceId());
+        }
+        if (isNotBlank(query.getDefinitionKey())) {
+            parts.add("DEFINITION_KEY=?");
+            args.add(query.getDefinitionKey());
+        }
+        if (isNotBlank(query.getActivityId())) {
+            parts.add("ELEMENT_ID=?");
+            args.add(query.getActivityId());
+        }
+        if (isNotBlank(query.getJobType())) {
+            parts.add("JOB_TYPE=?");
+            args.add(query.getJobType().trim().toUpperCase());
+        }
+        if (isNotBlank(query.getErrorType())) {
+            parts.add("ERROR_TYPE LIKE ?");
+            args.add("%" + query.getErrorType() + "%");
+        }
+        if (isNotBlank(query.getErrorMessageContains())) {
+            parts.add("ERROR_MSG LIKE ?");
+            args.add("%" + query.getErrorMessageContains() + "%");
+        }
+        if (query.getFirstFailureFrom() != null) {
+            parts.add("FIRST_FAIL_AT>=?");
+            args.add(timestamp(query.getFirstFailureFrom()));
+        }
+        if (query.getLastFailureBefore() != null) {
+            parts.add("LAST_FAIL_AT<?");
+            args.add(timestamp(query.getLastFailureBefore()));
+        }
+        if (query.getMinFailureCount() != null) {
+            parts.add("FAILURE_COUNT>=?");
+            args.add(query.getMinFailureCount());
+        }
+        if (!parts.isEmpty()) {
+            sql.append(" WHERE ").append(join(parts, " AND "));
+        }
+    }
+
+    @Override
+    public int deleteHistoricIncidentsBefore(Date before) {
+        if (before == null) {
+            throw new WfPersistenceException("清理历史故障必须给一个时间点");
+        }
+        return update("DELETE FROM ZWF_INCIDENT_HISTORY WHERE LAST_FAIL_AT<?", timestamp(before));
+    }
+
+    private RowMapper<WfHistoricIncident> historicIncidentMapper() {
+        return new RowMapper<WfHistoricIncident>() {
+            @Override
+            public WfHistoricIncident map(ResultSet rs) throws SQLException {
+                WfHistoricIncident incident = new WfHistoricIncident();
+                incident.setId(rs.getString("HIST_ID"));
+                incident.setJobId(rs.getString("JOB_ID"));
+                incident.setProcessInstanceId(rs.getString("PROC_ID"));
+                incident.setExecutionId(rs.getString("EXEC_ID"));
+                incident.setElementId(rs.getString("ELEMENT_ID"));
+                incident.setAttachedToRef(rs.getString("ATTACHED_TO"));
+                incident.setDefinitionKey(rs.getString("DEFINITION_KEY"));
+                incident.setActivityName(rs.getString("ACTIVITY_NAME"));
+                incident.setJobType(rs.getString("JOB_TYPE"));
+                incident.setSubscriptionName(rs.getString("SUBSCRIPTION_NAME"));
+                incident.setErrorType(rs.getString("ERROR_TYPE"));
+                incident.setErrorMessage(rs.getString("ERROR_MSG"));
+                incident.setFailureCount(rs.getInt("FAILURE_COUNT"));
+                incident.setFirstFailureTime(date(rs.getTimestamp("FIRST_FAIL_AT")));
+                incident.setLastFailureTime(date(rs.getTimestamp("LAST_FAIL_AT")));
+                incident.setRevision(rs.getInt("REV"));
+                return incident;
+            }
+        };
     }
 
     private boolean exists(String sql, Object arg) {        Connection connection = null;

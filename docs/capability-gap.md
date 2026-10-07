@@ -93,7 +93,7 @@
 | `createHistoricProcessInstanceQuery` | ✅ | 复用 `WfProcessInstanceQuery` + `WfHistoryService#queryFinishedProcesses`。新增 `finishedOnly` / `unfinishedOnly` 开关 —— 终态有三种（正常完成/外部终止/内部终止），单个 `status` 字段表达不了"已结束"；写死成 `COMPLETED` 会让被终止的单子从历史里消失，而"这单怎么没的"恰恰是事后最常被问的问题。旧的 `getCompletedInstances` / `getCompletedInstancesByUser`（零调用方、全量拉取、只认 COMPLETED）已删除 |
 | `createHistoricVariableInstanceQuery` | ⚠️ 部分 | 能查**变量最终值**（`WfRuntimeService#getVariables` + 历史流程实例组合），但没有 Camunda 那种"历史变量实例"独立实体。本引擎变量是存在流程实例上的 KV，Camunda 的 HistoricVariableInstance 语义（每变量一行、有独立生命周期）没有一一对应物，**刻意不硬造** |
 | `createHistoricDetailQuery`（变量/字段变更明细） | ✅ | `WfVariableAuditQuery` + `WfHistoryService#queryVariableChanges` / `countVariableChanges`，REST `GET /api/wf/history/variable-changes`。条件：流程实例 / 变量名 / 操作人 / 时间区间，可组合 + 真实分页。**批量写是「一个变量一条」审计**而不是整批拼一条 —— 拼一起就没法按变量名精确查（查 `amount` 会顺带命中 `discount_amount`），变量名按 `LIKE 'name:%'` 前缀匹配且对 `%` / `_` 转义（对外承诺精确匹配，且无二次判定兜底，通配符会直接进审计结果）。倒序返回（与轨迹正序相反），同毫秒由 id 兜底；id 序号**定长补零**以保证字典序 == 插入序 |
-| `createHistoricIncidentQuery` | ❌ | 仍缺。`createIncidentQuery` 只覆盖**当前**故障：job 一旦执行成功就被删掉，"上周三那批单为什么全卡住了"这类事后复盘查不到。要做就得给故障建独立的持久化记录 —— 那正是本轮刻意不建独立表所换来的代价，两者不能各要一半 |
+| `createHistoricIncidentQuery` | ✅ | **第 40 轮补上** `WfHistoricIncidentService` + `WfHistoricIncident` + `WfHistoricIncidentQuery` + `WfHistoricIncidentView` + `ZWF_INCIDENT_HISTORY` 表，REST `GET /api/wf/history/incidents` 与 `POST /api/wf/history/incidents/delete-before`。**两套来源刻意不合并**：当前故障（`GET /api/wf/incidents`）全部从 job 现场推导，历史故障全部来自这张表；合并会造出「已经恢复的故障还在当前列表里」这种自相矛盾的结果。**一个 job 一行、反复失败累加**（`failureCount` / `firstFailureTime` / `lastFailureTime`）—— 拆成多行之后「它一共失败几次」就变成要自己 group by 的问题。**`definitionKey` / `activityName` 刻意冗余存**：实例与定义都会被清理，而「谁的流程、哪个环节」恰恰是事后复盘最需要的两列。记录挂在**两处失败写入点**上（job 执行器 + 外部任务 `fail`），漏掉任一处那一类失败就在历史里彻底消失且无报错。`stillFailing` 是**推导值**（现场 job 还在不在），不是历史事实 |
 
 > **本轮修掉的待办/候选相关缺陷**（都是"接口正常返回、内容不对"这一类，最难自查）：
 > ① `getTodoList` 的 `groups` 参数接进来就被丢弃，待办列表**只查 assignee/owner，不查候选池**
@@ -406,8 +406,8 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 
 ## 7. 当前状态小结
 
-- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 971 个测试兜着
-- 从测试与审计中逼出并修复的**真实缺陷 57 项**（43 项截至第 21 轮 + 第 22 轮的
+- 引擎骨架（token 执行树、汇合、乐观锁、持久化抽象）**扎实**，有 1104 个测试兜着
+- 从测试与审计中逼出并修复的**真实缺陷 61 项**（43 项截至第 21 轮 + 第 22 轮的
   `zifang:resultVariable` 读错载体 1 项 + 第 23 轮 DMN 的 3 项
   + 第 24 轮的 `camunda:resultVariable` 前缀读不到 1 项
   + 第 25 轮复杂网关出线条件被忽略 1 项
@@ -2858,3 +2858,96 @@ Camunda 把执行做成一条 batch job 交执行器接手；本轮只提供同�
   —— 那等于断言「字符串不是字符串」。
 - admin 端到端里对一个**尚不存在**的变量调 `.contains`，NPE 指向不到真正原因；
   换成 `assertNull`。读实例变量的 URL 也第一次猜错了（404），查了真实端点才对。
+
+### 第 40 轮：`createHistoricIncidentQuery`（历史故障）
+
+**为什么选它。** 它是台账上唯一一个「真缺口 + 文档明确说了要独立持久化记录」的项，
+而运维价值最高：**「上周三那批单为什么全卡住了」查不到**。
+
+现状是 `WfIncidentService` 每次都从 `ZWF_JOB` **现场推导**出故障 ——
+推导是「现在的样子」，而 job 一旦执行成功（或被清理）就没了。
+所以本轮补的是「**发生过的事**」的记录，两套来源**刻意不合并**：
+合并会造出「已经恢复的故障还在当前列表里」这种自相矛盾的结果，而且没有报错。
+
+**三处设计决定**
+
+1. **一个 job 一行，反复失败时累加**（`failureCount` / `firstFailureTime` / `lastFailureTime`），
+   对应 Camunda 的 `JobLogManager`。拆成多行之后，
+   「它一共失败了几次」就变成一个必须自己 group by 才能回答的问题 ——
+   而那正是这张表存在的理由。
+2. **`definitionKey` / `activityName` 刻意冗余存**。
+   故障记录的全部价值在于「事情过去之后还能查」，而实例会被 `deleteHistoryBefore`
+   清掉、定义会被改版。不冗余的话这一行会退化成「一个 job id 加一句错误信息」，
+   恰好把最有用的两列丢掉。
+3. **用确定性 id（`hist-` + jobId）而不是 ID 生成器**：
+   两个线程同时给同一个 job 记失败时算出的是**同一个主键** ⇒ 撞乐观锁或撞
+   `JOB_ID` 唯一索引，两种都是响亮的失败。随机 id 会让两行都插进去，
+   留下「一个 job 两行、failureCount 各是 1」—— 那正是本表要回答的问题被自己答错了。
+
+**判据抓到的四个真缺陷**
+
+1. **我又写了一份「`XxxException: 消息`」的解析，而且更弱。**
+   `WfIncidentService#errorTypeOf` 已经有一套，我给历史故障新写的那份
+   **少了「首字母大写才算类名」那条** ——
+   于是外部任务报的「连接超时: 连不上 db」在**历史里**被当成一个叫"连接超时"的类型，
+   在**当前故障里**不是。同一条 job、两个答案、两处都不报错。
+   ⇒ 与第 38 轮那条「同一处语义有两个实现时必须一起改」同源。
+   处置：收敛到 `WfJob#exceptionTypeOf` 一处（它是这条格式的生产者旁边），
+   两处消费都调它。
+2. **`saveHistoricIncident` 的插入/更新判据用错了约定。**
+   我按本仓别处的 `id == null → INSERT` 写，而记录 id 是**确定性**的 ⇒ 从不走插入分支，
+   每次都发 UPDATE，新行拿 `REV=0` 去改一个还不存在的 `HIST_ID` ⇒ 0 行 ⇒
+   **抛成「乐观锁冲突」**。
+   **内存实现按 jobId 建键、对新行根本不走乐观锁检查，所以完全看不出来** ——
+   core 与 web 的 1000 多个用例全绿，只有走真实 JDBC 的 admin 端到端用例把它逼出来。
+   ⇒ **判据必须两处覆盖**这条纪律，本轮又一次实打实地兑现了。
+3. **手写 JDBC INSERT 漏了一个 `i++`**：
+   `LAST_FAIL_AT` 与 `REV` 写到了同一个参数位上，`Parameter "#16" is not set`。
+   同样只有 JDBC 抓得到（H2 直接报出来）。
+4. **`InMemoryWorkflowPersistence#findHistoricIncidentByJobId(null)` 抛 NPE**
+   （`ConcurrentHashMap.get(null)`），而 JDBC 侧本来就返回 `null` ——
+   本轮自己引入的两套实现分家。已补防护。
+
+**一条「看起来像缺陷、其实是对的」的行为，被判据钉住了**
+
+第一版用例想用「delegate 抛异常」造一次 job 失败，探针打出来是：
+实例停在 `INTERNALLY_TERMINATED`、`deleteReason` 带着错、job 被删掉、故障记录为 `null`、
+而 `executeAsyncJobs` 返回「执行成功」。
+那是**正确**的：**行为（activity）自己失败就是流程失败**，与「job 基础设施出错」是两回事，
+Camunda 也是这么分的。写成 job 失败的后果是「实例还在跑，却凭空多一条 job 故障」，
+而真正该问的问题（这条流程为什么终止了）在实例的 `deleteReason` 上。
+⇒ 已单独立一条用例 `delegateFailureIsAProcessFailure` 钉住它，
+免得下一轮有人"顺手修正"成 job 失败。
+**真正会抛的 job 级失败**用另一条手段造（把 job 类型改成与它指向的节点对不上），
+它在 `deleteJob` **之前**抛，job 还在。
+
+**反向验证 11/11 红 + 对照全绿**（`/tmp/verify_r40.py`）。
+
+第一轮跑只有 **6/11**，逐条查清后全是**变异与用例各自的问题**，值得记下来：
+
+- **两条判据是装饰性的**。`jobExecutorFailurePathIsAlsoRecorded` 原本直接
+  `new WfHistoricIncidentService(repo).recordFailure(...)` ——
+  于是「把 `WfJobService` 里那行调用删掉」这条变异打不动它，变异跑完照样全绿。
+  **看起来像判据不敏感，其实是判压根没走那条路** ⇒ 与已记的
+  「判据的目标分支从未被执行」同族。改成真让执行器抛一次。
+- **三条变异的锚点指错了**：`failureCount++` 在 `WfHistoricIncident` 里而不在 `WfJob`；
+  `paginate(...)` 那段在批次查询里也一字不差地出现过一次（命中 2 次，判为跳过）；
+  一条改动删掉了变量但下面还在引用它 ⇒ **编译失败，而编译失败按纪律不算 RED**。
+  ⇒ **锚点必须唯一命中，且必须是"能编译且确实改变行为"的改动**。
+- **一条夹具挑错了对象**：`failOnce` 拿 `fetchAndLock` 的第一个 job 就 fail，
+  而 `fail` 的默认退避是 `0ms` ⇒ 同一毫秒内同一个 job 被反复领走，
+  三次失败全落在同一个 job 上。探针打出来是「3 个 job 都在、只有 1 条记录」，
+  现象是「断言说该有 3 条、实际 1 条」，看不出是自己挑错了。
+  ⇒ 改按 `processInstanceId` 挑。
+
+**本轮明确记下的取舍**
+
+- **清理**是独立入口 `deleteIncidentsBefore(Date)`，**不并进 `deleteHistoryBefore`**：
+  后者只清已结束流程，而故障记录可能属于一条还在跑的流程（卡住的定时器就是）。
+  按时间一刀切会把「三天前卡住、今天才发现」的那条删掉 —— 那恰恰是本表最该留住的。
+- **`stillFailing` 是推导值不是历史事实**，且**刻意不下推成 SQL 条件**：
+  「恢复」只有 job 那侧知道，而 job 会被删；给它落库意味着给执行成功、办结、
+  终止、清理四条路径都挂回调，漏一条的后果是「早就修好的单子还挂着故障」。
+  推导则天然不会漏。代价是它不能用来做跨时间的趋势统计，视图上已注明。
+- **不提供 `findHistoricIncident(id)`**：这一行的天然身份就是 job，
+  而所有读路径问的都是「这个 job 失败过没有」或「按条件筛一批」。

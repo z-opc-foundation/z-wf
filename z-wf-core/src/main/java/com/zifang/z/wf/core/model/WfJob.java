@@ -168,6 +168,13 @@ public class WfJob implements Serializable {
      * <p>扣到 0 就钉死在 {@link #RETRIES_EXHAUSTED}，不再继续减 ——
      * 归零后再减会变成 -2、-3，界面上显示"重试 -2 次"没人看得懂。
      *
+     * <p><b>调用方除了扣重试，还必须写一条历史故障记录</b>
+     * （第 40 轮起，见 {@code WfHistoricIncidentService#recordFailure}）。
+     * 截至目前有<b>两处</b>调用方：{@code WfJobService#recordFailure}（执行器路径）
+     * 与 {@code WfExternalTaskService#fail}（外部任务路径）。
+     * 漏掉哪一处，哪一类失败就在历史里彻底消失 ——
+     * 而且<b>不会报错</b>：job 上的失败痕迹一切正常，只是没人把它记下来。
+     *
      * @return 扣减后的剩余次数
      */
     public int recordFailure(String message) {
@@ -180,6 +187,37 @@ public class WfJob implements Serializable {
             this.retries = RETRIES_EXHAUSTED;
         }
         return this.retries;
+    }
+
+    /**
+     * 从 {@code 异常类名 + ": " + 消息} 里把<b>类型</b>截出来；截不出就返回 {@code null}。
+     *
+     * <p><b>这里是这条格式的唯一实现</b>（生产者是各条失败路径传给
+     * {@link #recordFailure} 的那句）。两处消费：当前故障视图
+     * （{@code WfIncidentService}）与历史故障记录（{@code WfHistoricIncident}）。
+     * 曾经两边各写一份，而新写的那份<b>少了「首字母大写才算类名」那条</b> ——
+     * 于是外部任务报的「连接超时: 连不上 db」在历史里会被认成一个叫"连接超时"的类型，
+     * 在当前故障里却不会。同一句话、两个答案，而两边都不报错。
+     *
+     * <p>为什么要有「首字母大写且无空格」这条：{@link #recordFailure} 收的是
+     * 人写的句子（外部任务 {@code fail} 直接透传 worker 报的原因），
+     * 里面带冒号很正常。无条件截一刀会把一句正文的前半截当成类型，
+     * 按类型筛选时把不同的问题混成一类 —— 那比不筛选更坏。
+     *
+     * @param errorMessage {@code EXCEPTION_MSG} 那列的原文
+     * @return 认得出的类型名；认不出返回 {@code null}（**不是**截出来的半句话）
+     */
+    public static String exceptionTypeOf(String errorMessage) {
+        if (errorMessage == null) {
+            return null;
+        }
+        int colon = errorMessage.indexOf(':');
+        if (colon <= 0) {
+            return null;
+        }
+        String head = errorMessage.substring(0, colon).trim();
+        return !head.isEmpty() && head.indexOf(' ') < 0
+                && Character.isUpperCase(head.charAt(0)) ? head : null;
     }
 
     public int nextRevision() {

@@ -29,6 +29,7 @@ import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfCompensationEntry;
 import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfFilter;
+import com.zifang.z.wf.core.model.WfHistoricIncident;
 import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfTask;
@@ -65,7 +66,7 @@ class WfManagementServiceTest {
         assertTrue(String.valueOf(memory.get("storage")).contains("不落库"),
                 "内存存储要把「重启即失」写进返回值：这是排障时最先要确认的一条。实际: "
                         + memory.get("storage"));
-        assertEquals(12, memory.get("storageCount"));
+        assertEquals(13, memory.get("storageCount"));
 
         Map<String, Object> jdbc = propsOf(jdbcPersistence());
         assertEquals("jdbc", jdbc.get("persistence"));
@@ -221,13 +222,14 @@ class WfManagementServiceTest {
     }
 
     @Test
-    @DisplayName("十二个存储项各自数自己 —— 造多少条报多少，互不串味")
+    @DisplayName("十三个存储项各自数自己 —— 造多少条报多少，互不串味")
     void everyStorageEntityIsCountedSeparately() {
-        // 内存侧 getTableCount 是十二段 if 加一条**故意抛异常**的兜底（第 37 轮加的）。
+        // 内存侧 getTableCount 是十三段 if 加一条**故意抛异常**的兜底（第 37 轮加的）。
         // 任何一段写错（返回了隔壁的 size、聚合漏了一层、分支条件串了），
         // 症状都是「某一项的数其实来自另一项」—— 那种错在只测单项时完全看不出来，
         // 因为两项都恰好是 0 时，返回谁都一样。
-        // 所以这里给十二项各造**互不相同**的数量：只要有一项串味，数字立刻对不上。
+        // 所以这里给十三项各造**互不相同**的数量（下方有断言守着这一点）：
+        // 只要有一项串味，数字立刻对不上。
         WfPersistence memory = memoryPersistence();
 
         // 定义：同一个 key 的三个版本 → 3 行（**不是** 1 行，也不是 1 行数）
@@ -245,19 +247,19 @@ class WfManagementServiceTest {
             task.setProcessInstanceId("p1");
             memory.saveTask(task);
         }
-        for (int i = 1; i <= 2; i++) {                                                 // 2
+        for (int i = 1; i <= 4; i++) {                                                 // 4
             WfJob job = new WfJob();
             job.setId("j" + i);
             memory.saveJob(job);
         }
-        for (int i = 1; i <= 4; i++) {                                                 // 4
+        for (int i = 1; i <= 6; i++) {                                                 // 6
             // 活动历史是追加的：同一个实例下 save 几次就有几行
             WfActivityInstance activity = new WfActivityInstance();
             activity.setProcessInstanceId("p1");
             activity.setActivityId("a" + i);
             memory.saveActivityInstance(activity);
         }
-        for (int i = 1; i <= 6; i++) {                                                 // 6
+        for (int i = 1; i <= 7; i++) {                                                 // 7
             memory.saveComment(new WfComment("c" + i, "p1", "u", "comment", "内容" + i));
         }
         for (int i = 1; i <= 8; i++) {                                                 // 8
@@ -265,10 +267,10 @@ class WfManagementServiceTest {
             filter.setId("f" + i);
             memory.saveFilter(filter);
         }
-        for (int i = 1; i <= 7; i++) {                                                 // 7
+        for (int i = 1; i <= 9; i++) {                                                 // 9
             memory.saveDecision(new WfDmnDecision("d" + i, "决策" + i));
         }
-        for (int i = 1; i <= 9; i++) {                                                 // 9
+        for (int i = 1; i <= 10; i++) {                                                // 10
             WfCompensationEntry entry = new WfCompensationEntry();
             entry.setId("cmp" + i);
             entry.setProcessInstanceId("p1");
@@ -276,7 +278,7 @@ class WfManagementServiceTest {
             entry.setSeq(i);
             memory.saveCompensation(entry);
         }
-        for (int i = 1; i <= 3; i++) {                                                 // 3
+        for (int i = 1; i <= 11; i++) {                                                // 11
             WfBatch batch = new WfBatch();
             batch.setId("b" + i);
             batch.setBatchType(WfBatch.Type.INSTANCE);
@@ -285,39 +287,52 @@ class WfManagementServiceTest {
         // 明细**跨两个批次**造（4 + 7），不是全塞进一个：它的计数字段是
         // 「按 batchId 分组的每组长度求和」，写成「分组数」的话
         // 单批次的夹具下 4 == 4，一条用例都测不出来
-        for (int i = 1; i <= 4; i++) {                                                 // 4
+        for (int i = 1; i <= 5; i++) {                                                 // 5
             memory.saveBatchElement(batchElement("be" + i, "b1", "p" + i));
         }
-        for (int i = 1; i <= 7; i++) {                                                 // 7
+        for (int i = 1; i <= 7; i++) {                                                 // 7（5 + 7 = 12）
             memory.saveBatchElement(batchElement("bf" + i, "b2", "q" + i));
         }
 
+        for (int i = 1; i <= 13; i++) {                                               // 13
+            WfHistoricIncident incident = new WfHistoricIncident();
+            incident.setId("hist-job-" + i);
+            incident.setJobId("hist-job-" + i);
+            incident.setFailureCount(1);
+            memory.saveHistoricIncident(incident);
+        }
+
         Map<String, Long> expected = new java.util.LinkedHashMap<>();
-        expected.put("ZWF_DEFINITION", 3L);
+        // 1..13 各用一次。**必须真的互不相同** —— 两项数字一旦撞上，
+        // 「串味了但数字恰好相同」这条失败就测不出来（这坑踩过：EXECUTION 与 JOB
+        // 都曾是 2，DEFINITION 与 BATCH 都曾是 3，而注释里一直写着「互不相同」）
         expected.put("ZWF_PROCESS", 1L);
         expected.put("ZWF_EXECUTION", 2L);
+        expected.put("ZWF_DEFINITION", 3L);
+        expected.put("ZWF_JOB", 4L);
         expected.put("ZWF_TASK", 5L);
-        expected.put("ZWF_JOB", 2L);
-        expected.put("ZWF_ACTIVITY", 4L);
-        expected.put("ZWF_COMMENT", 6L);
+        expected.put("ZWF_ACTIVITY", 6L);
+        expected.put("ZWF_COMMENT", 7L);
         expected.put("ZWF_FILTER", 8L);
-        expected.put("ZWF_DECISION", 7L);
-        expected.put("ZWF_COMPENSATION", 9L);
-        expected.put("ZWF_BATCH", 3L);
-        // 11 与已有的 1..9 都不相等：两项数字一旦撞上，「串味了但数字恰好相同」
-        // 就测不出来（第 37 轮给补偿选 9 时就是这么挑的）
-        expected.put("ZWF_BATCH_ELEMENT", 11L);
+        expected.put("ZWF_DECISION", 9L);
+        expected.put("ZWF_COMPENSATION", 10L);
+        expected.put("ZWF_BATCH", 11L);
+        expected.put("ZWF_BATCH_ELEMENT", 12L);
+        expected.put("ZWF_INCIDENT_HISTORY", 13L);
+        assertEquals(expected.size(), new java.util.HashSet<>(expected.values()).size(),
+                "各项的条数必须互不相同，否则「串味了但数字恰好相同」测不出来。实际: "
+                        + new java.util.TreeMap<>(expected));
         assertEquals(new java.util.TreeSet<>(expected.keySet()),
                 new java.util.TreeSet<>(InMemoryWorkflowPersistence.STORAGE_NAMES),
-                "这里造的十二项必须与存储项名单一一对应 —— 名单多一项或少一项，"
+                "这里造的十三项必须与存储项名单一一对应 —— 名单多一项或少一项，"
                         + "下面的断言就只覆盖了其中一部分。**比集合不比顺序**："
                         + "这里要验的是「覆盖完整」，不是「顺序一致」");
 
         WfManagementService service = new WfManagementService(memory);
         for (java.util.Map.Entry<String, Long> entry : expected.entrySet()) {
             assertEquals(entry.getValue(), service.getTableCount(entry.getKey()),
-                    entry.getKey() + " 数错了。十二项各造了互不相同的条数就是为了抓住串味 —— "
-                            + "如果这些项里有两项碰巧相等，下面这条断言就抓不住");
+                    entry.getKey() + " 数错了。各项各造了互不相同的条数就是为了抓住串味 —— "
+                            + "如果这些项里有两项碰巧相等，下面那条互异性断言会先报错");
         }
     }
 
@@ -390,8 +405,8 @@ class WfManagementServiceTest {
         assertEquals(1, new WfManagementService(repo).getTableCount("ZWF_PROCESS"));
         Map<String, Object> properties = new WfManagementService(repo).getProperties();
         assertNotNull(properties.get("storageCount"));
-        assertEquals(12, properties.get("storageCount"),
-                "建完表之后应当报满十二张 —— 与「未迁移时报空」那条互为对照");
+        assertEquals(13, properties.get("storageCount"),
+                "建完表之后应当报满十三张 —— 与「未迁移时报空」那条互为对照");
     }
 
     /** 造一条成功的批次明细。<b>id 必须显式给</b>：saveBatchElement 少了 id 会直接抛，
@@ -415,7 +430,7 @@ class WfManagementServiceTest {
                     "名字 " + evil + " 绝不能被拼进 SQL");
         }
         // 确认表还在（上面那串没有造成任何影响）
-        assertEquals(12, service.getTables().size());
+        assertEquals(13, service.getTables().size());
     }
 
     @Test

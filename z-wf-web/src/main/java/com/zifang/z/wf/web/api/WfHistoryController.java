@@ -1,5 +1,6 @@
 package com.zifang.z.wf.web.api;
 
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
@@ -16,20 +17,24 @@ import com.zifang.util.core.meta.Result;
 import com.zifang.util.core.meta.page.PageResult;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
+import com.zifang.z.wf.core.model.WfHistoricIncident;
 import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfTask;
 import com.zifang.z.wf.core.persistence.WfHistoricActivityInstanceQuery;
+import com.zifang.z.wf.core.persistence.WfHistoricIncidentQuery;
 import com.zifang.z.wf.core.persistence.WfJobQuery;
 import com.zifang.z.wf.core.persistence.WfProcessInstanceQuery;
 import com.zifang.z.wf.core.persistence.WfTaskQuery;
 import com.zifang.z.wf.core.persistence.WfVariableAuditQuery;
 import com.zifang.z.wf.core.service.WfEngineException;
 import com.zifang.z.wf.core.service.WfHistoryService;
+import com.zifang.z.wf.core.service.WfHistoricIncidentService;
 import com.zifang.z.wf.core.service.WfJobService;
 import com.zifang.z.wf.core.service.WfRuntimeService;
 import com.zifang.z.wf.core.service.WfTaskService;
 import com.zifang.z.wf.web.dto.WfViews;
+import com.zifang.z.wf.core.view.WfHistoricIncidentView;
 import com.zifang.z.wf.web.mapper.WfViewMapper;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -68,6 +73,15 @@ public class WfHistoryController {
 
     @Resource
     private WfViewMapper viewMapper;
+
+    /**
+     * 历史故障（第 40 轮）。<b>不挂在 {@code historyService} 上</b>：
+     * 那是活动 / 任务 / 变量变更的历史查询，而历史故障是另一套数据
+     * （失败那一刻写下的记录，不从 job 现场推导）。
+     * 合成一个服务的话，「两套来源」这件事就藏进了一个类里。
+     */
+    @Resource
+    private WfHistoricIncidentService historicIncidentService;
 
     // ==================== 历史活动 ====================
 
@@ -249,5 +263,88 @@ public class WfHistoryController {
         List<WfComment> rows = historyService.queryVariableChanges(query);
         return Result.success(new PageResult<>(viewMapper.toVariableChangeViews(rows),
                 historyService.countVariableChanges(query), pageNum, pageSize));
+    }
+
+    // ==================== 历史故障（第 40 轮） ====================
+
+    /**
+     * 查<b>历史故障</b>：哪些 job <b>曾经</b>失败过。
+     *
+     * <p>与 {@code GET /api/wf/incidents}（当前故障）刻意分开成两个端点，
+     * 而不是给它加个参数。两者的<b>数据来源就不是一回事</b>：
+     * 当前故障是现场从 job 扫出来的（job 没了就没有了），
+     * 历史故障是失败那一刻写下的记录。合成一个端点会让调用方以为自己筛的是同一个东西，
+     * 而两条数据的覆盖面并不重合 —— 「已经恢复的」只有历史里有。
+     *
+     * <p>{@code firstFailureFrom} / {@code lastFailureBefore} 就是「上周三那批」的写法。
+     */
+    @GetMapping("/incidents")
+    @Operation(summary = "011_查历史故障（曾经失败过；按首次/最近失败时刻切时间窗）")
+    public Result<PageResult<WfHistoricIncidentView>> historicIncidents(
+            @RequestParam(required = false) String jobId,
+            @RequestParam(required = false) String processInstanceId,
+            @RequestParam(required = false) String definitionKey,
+            @RequestParam(required = false) String activityId,
+            @RequestParam(required = false) String type,
+            @RequestParam(required = false) String errorType,
+            @RequestParam(required = false) String errorMessageContains,
+            @RequestParam(required = false) Long firstFailureFrom,
+            @RequestParam(required = false) Long lastFailureBefore,
+            @RequestParam(required = false) Integer minFailureCount,
+            @RequestParam(defaultValue = "1") int pageNum,
+            @RequestParam(defaultValue = "20") int pageSize) {
+
+        WfHistoricIncidentQuery query = new WfHistoricIncidentQuery()
+                .setJobId(jobId)
+                .setProcessInstanceId(processInstanceId)
+                .setDefinitionKey(definitionKey)
+                .setActivityId(activityId)
+                .setJobType(type)
+                .setErrorType(errorType)
+                .setErrorMessageContains(errorMessageContains)
+                .setMinFailureCount(minFailureCount)
+                .setPageNum(pageNum).setPageSize(pageSize);
+        if (firstFailureFrom != null) {
+            query.setFirstFailureFrom(new Date(firstFailureFrom));
+        }
+        if (lastFailureBefore != null) {
+            query.setLastFailureBefore(new Date(lastFailureBefore));
+        }
+        return Result.success(new PageResult<>(
+                toHistoricIncidentViews(historicIncidentService.listIncidents(query),
+                        historicIncidentService),
+                historicIncidentService.countIncidents(query), pageNum, pageSize));
+    }
+
+    @PostMapping("/incidents/delete-before")
+    @Operation(summary = "012_清理某时刻之前的历史故障（**独立于 deleteHistoryBefore**）")
+    public Result<Integer> deleteHistoricIncidentsBefore(@RequestParam Long before) {
+        return Result.success(historicIncidentService.deleteIncidentsBefore(new Date(before)));
+    }
+
+    private List<WfHistoricIncidentView> toHistoricIncidentViews(
+            List<WfHistoricIncident> rows, WfHistoricIncidentService incidentHistory) {
+        List<WfHistoricIncidentView> views = new ArrayList<>();
+        for (WfHistoricIncident row : rows) {
+            WfHistoricIncidentView view = new WfHistoricIncidentView();
+            view.setId(row.getId());
+            view.setJobId(row.getJobId());
+            view.setProcessInstanceId(row.getProcessInstanceId());
+            view.setExecutionId(row.getExecutionId());
+            view.setActivityId(row.getElementId());
+            view.setDefinitionKey(row.getDefinitionKey());
+            view.setActivityName(row.getActivityName());
+            view.setJobType(row.getJobType());
+            view.setSubscriptionName(row.getSubscriptionName());
+            view.setErrorType(row.getErrorType());
+            view.setErrorMessage(row.getErrorMessage());
+            view.setFailureCount(row.getFailureCount());
+            view.setFirstFailureTime(row.getFirstFailureTime());
+            view.setLastFailureTime(row.getLastFailureTime());
+            // 推导值：现场那个 job 还在不在、还带不带失败痕迹
+            view.setStillFailing(incidentHistory.isStillFailing(row));
+            views.add(view);
+        }
+        return views;
     }
 }

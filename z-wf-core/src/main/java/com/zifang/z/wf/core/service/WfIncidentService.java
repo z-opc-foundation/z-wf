@@ -230,7 +230,12 @@ public class WfIncidentService {
         view.setSubscriptionName(job.getSubscriptionName() != null
                 ? job.getSubscriptionName() : job.getTopic());
         view.setErrorMessage(job.getExceptionMessage());
-        view.setErrorType(errorTypeOf(job.getExceptionMessage()));
+        // 类型解析只有一处实现（第 40 轮收敛到 WfJob#exceptionTypeOf）。
+        // 这里曾经有一份逐字相同的私有副本 —— 同一句话两个答案的温床：
+        // 新写的那份少了「首字母大写才算类名」这条，于是外部任务报的
+        // 「连接超时: 连不上 db」在历史里被当成类型、在当前故障里不是
+        view.setErrorType(com.zifang.z.wf.core.model.WfJob.exceptionTypeOf(
+                job.getExceptionMessage()));
         view.setLastFailureTime(job.getLastFailureTime());
         view.setFailedMillis(job.getLastFailureTime() == null ? null
                 : System.currentTimeMillis() - job.getLastFailureTime().getTime());
@@ -246,25 +251,4 @@ public class WfIncidentService {
         return view;
     }
 
-    /**
-     * 从失败信息里拆出异常类名。
-     *
-     * <p>{@code recordFailure} 存的是 {@code 异常类名 + ": " + 消息}（执行器那条路径）
-     * 或调用方给的原文（外部任务 {@code handleFailure}）。拆不出来就返回 null ——
-     * 凭空造一个类型名（比如统一叫 {@code ERROR}）会让"按类型归类"这个用法
-     * 看起来能用却分不出任何东西。
-     */
-    private String errorTypeOf(String errorMessage) {
-        if (errorMessage == null) {
-            return null;
-        }
-        int colon = errorMessage.indexOf(':');
-        if (colon <= 0) {
-            return null;
-        }
-        String head = errorMessage.substring(0, colon).trim();
-        // 只有像类名（首字母大写、无空格）才认；否则那是句正文被截成了"类名"
-        return !head.isEmpty() && head.indexOf(' ') < 0
-                && Character.isUpperCase(head.charAt(0)) ? head : null;
-    }
 }

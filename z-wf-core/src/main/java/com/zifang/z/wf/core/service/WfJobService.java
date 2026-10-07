@@ -105,9 +105,20 @@ public class WfJobService {
 
     private final WfPersistence persistence;    private final WfRuntimeService runtimeService;
 
+    /**
+     * 历史故障记录器（第 40 轮）。
+     *
+     * <p><b>构造时就地建出来，而不是当参数传进来</b>：它只需要 {@code persistence}，
+     * 而那本来就是这个类的参数 —— 为此多引一个依赖，
+     * 等于把一个辅助动作挂到 21 处构造调用上，而换不来任何可替换性
+     * （它无状态，替掉它也没有别的实现）。
+     */
+    private final WfHistoricIncidentService incidentHistory;
+
     public WfJobService(WfPersistence persistence, WfRuntimeService runtimeService) {
         this.persistence = persistence;
         this.runtimeService = runtimeService;
+        this.incidentHistory = new WfHistoricIncidentService(persistence);
     }
 
     /**
@@ -420,6 +431,12 @@ public class WfJobService {
         latest.recordFailure(e.getClass().getSimpleName() + ": " + e.getMessage());
         latest.nextRevision();
         persistence.saveJob(latest);
+        // **在 job 落库之后才记历史**，而且不 try/catch：
+        // ① 顺序不能反 —— 历史记录写失败却把 job 的失败吞掉，等于为了留副本丢了正本；
+        // ② 不 catch 是因为它与 job 写的是同一个库，job 写成功而它写失败基本不可能，
+        //    真发生了说明存储本身有问题，而那必须响亮地炸出来而不是安静地少一行。
+        //    job 已经不在了的那条早退分支同样不记：一份写不上正本的副本没有意义。
+        incidentHistory.recordFailure(latest, latest.getExceptionMessage());
     }
 
     /**

@@ -1678,6 +1678,93 @@ class WfWebApiTest {
         return json.readValue(response.getBody(), Map.class);
     }
 
+    // ==================== 历史故障端点（第 40 轮） ====================
+
+    /**
+     * 历史故障走真实 HTTP。
+     *
+     * <p>和批量那条一样的理由：z-wf-web 的单测是 {@code standaloneSetup}
+     * （手工 new controller + 注入 service），<b>断不到自动装配</b>。
+     * {@code WfHistoricIncidentService} 有没有注册成 Bean、{@code ZWF_INCIDENT_HISTORY}
+     * 建表建了没有、{@code JOB_ID} 上的唯一索引在不在 —— 只有起完整上下文才看得见。
+     *
+     * <p>这条还顺带钉住一件 JDBC 侧才暴露的事：<b>错误类型是记下来的、不是查出来的</b>。
+     * 内存实现里它可以现算，库里则要经过 {@code ERROR_TYPE} 那一列的往返；
+     * 如果建表时漏了这一列，外部任务报的人话（「连接超时: …」）在生产上会被截成空类型，
+     * 而按类型筛选时"一条都查不出来"的样子与"确实没有这类故障"完全一样。
+     */
+    @Test
+    @DisplayName("历史故障端点：外部任务失败 → 历史里查得到 → job 好了之后仍在")
+    void historicIncidentEndpointOverHttp() throws Exception {
+        String tag = String.valueOf(System.nanoTime());
+        deployExternalNotifyProcess(tag);
+        String businessKey = "INC-" + tag;
+        Map<String, Object> start = postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webIncidentProcess-" + tag,
+                        "businessKey", businessKey, "userId", "incident-alice",
+                        "deptId", "d1", "variables", new HashMap<>()));
+        String pid = (String) start.get("data");
+        assertNotNull(pid, "应返回流程实例 id");
+
+        // 领 → fail，走真实的外部任务失败路径
+        // /fetch 的 data **本身就是一个数组**，不是包着 records 的对象 ——
+        // 多套一层 asMap 会得到 ClassCastException，报错指向不到真正的原因
+        List<Map<String, Object>> claimed = asList(postOk("/api/wf/external-tasks/fetch",
+                body("topic", "incident-topic-" + tag, "workerId", "w1", "maxTasks", 5))
+                .get("data"));
+        assertFalse(claimed.isEmpty(), "应当能领到外部任务");
+        String taskId = (String) claimed.get(0).get("id");
+        postOk("/api/wf/external-tasks/" + taskId + "/fail",
+                body("workerId", "w1", "errorMessage", "下游 503"));
+
+        Map<String, Object> page = asMap(getOk("/api/wf/history/incidents"
+                + "?processInstanceId=" + pid).get("data"));
+        assertEquals(1, ((Number) page.get("total")).intValue(),
+                "失败之后历史故障应当有一条。实际: " + page);
+        Map<String, Object> record = asList(page.get("records")).get(0);
+        assertEquals("下游 503", record.get("errorMessage"), "失败原因要原样带出来");
+        assertEquals("EXTERNAL", record.get("jobType"));
+        assertEquals("webIncidentProcess-" + tag, record.get("definitionKey"),
+                "定义的 key 是**冗余存**的 —— 它是「谁的流程」这个问题的唯一答案");
+        assertEquals(1, ((Number) record.get("failureCount")).intValue());
+        assertEquals(Boolean.TRUE, record.get("stillFailing"),
+                "job 还在卡着 ⇒ stillFailing=true（它是推导值，不是历史事实）");
+        assertNull(record.get("errorType"),
+                "「下游 503」不是类名，所以没有类型 —— **宁可空着也不硬切一刀**");
+
+        // job 好了之后：当前故障空了，历史仍在
+        List<Map<String, Object>> again = asList(postOk("/api/wf/external-tasks/fetch",
+                body("topic", "incident-topic-" + tag, "workerId", "w2", "maxTasks", 5))
+                .get("data"));
+        assertFalse(again.isEmpty(), "fail 之后应当能重新领到");
+        postOk("/api/wf/external-tasks/" + again.get(0).get("id") + "/complete",
+                body("workerId", "w2", "variables", new HashMap<>()));
+
+        Map<String, Object> after = asMap(getOk("/api/wf/history/incidents"
+                + "?processInstanceId=" + pid).get("data"));
+        assertEquals(1, ((Number) after.get("total")).intValue(),
+                "**「上周三那批单为什么全卡住了」问的就是这一条** —— job 没了记录还在");
+        assertEquals(Boolean.FALSE, asList(after.get("records")).get(0).get("stillFailing"),
+                "job 已经干完 ⇒ 不再是「还卡着」，但历史记录本身不动");
+    }
+
+    /** 部署一个带外部任务的流程，topic 带 tag 避免跨用例抢活。 */
+    private void deployExternalNotifyProcess(String tag) {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"webIncidentProcess-" + tag + "\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"is\"/>\n"
+                + "    <serviceTask id=\"notify\" name=\"通知下游\""
+                + " zifang:type=\"external\" zifang:topic=\"incident-topic-" + tag + "\"/>\n"
+                + "    <endEvent id=\"ie\"/>\n"
+                + "    <sequenceFlow id=\"if1\" sourceRef=\"is\" targetRef=\"notify\"/>\n"
+                + "    <sequenceFlow id=\"if2\" sourceRef=\"notify\" targetRef=\"ie\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        repositoryService.deploy(new com.zifang.z.wf.core.definition.WfXmlParser().parse(xml));
+    }
+
     // ==================== 批量操作端点（第 39 轮） ====================
 
     /**

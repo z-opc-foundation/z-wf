@@ -26,6 +26,7 @@ import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfCompensationEntry;
 import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfFilter;
+import com.zifang.z.wf.core.model.WfHistoricIncident;
 import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfJobType;
 import com.zifang.z.wf.core.model.WfProcessInstance;
@@ -90,6 +91,15 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
      */
     private final Map<String, List<WfBatchElement>> batchElements =
             new ConcurrentHashMap<String, List<WfBatchElement>>();
+
+    /**
+     * 历史故障记录（第 40 轮）。<b>键刻意是 jobId 而不是记录 id</b>：
+     * 一个 job 永远只有一行（反复失败时累加），所以 jobId 就是这行的天然身份，
+     * 按它取是 O(1)。JDBC 那边的主键仍是记录 id、另在 JOB_ID 上建唯一索引 ——
+     * 对外语义一致，差的只是索引怎么摆。
+     */
+    private final Map<String, WfHistoricIncident> historicIncidents =
+            new ConcurrentHashMap<String, WfHistoricIncident>();
 
     @Override
     public void initialize() {
@@ -920,7 +930,8 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
             java.util.Arrays.asList(
                     "ZWF_DEFINITION", "ZWF_PROCESS", "ZWF_EXECUTION", "ZWF_TASK",
                     "ZWF_JOB", "ZWF_ACTIVITY", "ZWF_COMMENT", "ZWF_FILTER",
-                    "ZWF_DECISION", "ZWF_COMPENSATION", "ZWF_BATCH", "ZWF_BATCH_ELEMENT"));
+                    "ZWF_DECISION", "ZWF_COMPENSATION", "ZWF_BATCH", "ZWF_BATCH_ELEMENT",
+                    "ZWF_INCIDENT_HISTORY"));
 
     @Override
     public List<String> getTableNames() {
@@ -987,6 +998,9 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
                 total += list.size();
             }
             return total;
+        }
+        if ("ZWF_INCIDENT_HISTORY".equals(name)) {
+            return historicIncidents.size();
         }
         // 刻意**不兜底返回某一张表的行数**（第 37 轮）。
         // 原来这里最后一句是 `return decisions.size()`：名字在 STORAGE_NAMES 里、
@@ -1457,6 +1471,158 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         return target;
     }
 
+    // ==================== 历史故障（第 40 轮） ====================
+
+    @Override
+    public void saveHistoricIncident(WfHistoricIncident incident) {
+        if (incident == null || incident.getJobId() == null) {
+            throw new WfPersistenceException("历史故障记录必须有 jobId —— 它是这行的天然身份");
+        }
+        WfHistoricIncident existing = historicIncidents.get(incident.getJobId());
+        // 与 saveTask / saveJob / saveBatch 同一套乐观锁契约，见 WfPersistence#saveHistoricIncident。
+        // 一次重试链里可能有两个执行器线程先后记失败，没有版本号会丢掉一次 failureCount
+        if (existing != null && incident.getRevision() != existing.getRevision() + 1) {
+            throw new WfOptimisticLockException("historicIncident",
+                    incident.getJobId(), existing.getRevision() + 1);
+        }
+        historicIncidents.put(incident.getJobId(), copy(incident));
+    }
+
+    @Override
+    public WfHistoricIncident findHistoricIncidentByJobId(String jobId) {
+        // null 直接返回 null：**两套实现必须对 null 输入给出同一个答案**。
+        // ConcurrentHashMap.get(null) 抛 NPE，而 JDBC 那侧本来就返回 null ——
+        // 不加这道防护的话，同一个查询在内存模式下崩、在生产模式下返回空，
+        // 而开发期常用的恰恰是内存模式。
+        if (jobId == null || jobId.trim().isEmpty()) {
+            return null;
+        }
+        return copy(historicIncidents.get(jobId));
+    }
+
+    @Override
+    public List<WfHistoricIncident> queryHistoricIncidents(WfHistoricIncidentQuery query) {
+        List<WfHistoricIncident> matched = new ArrayList<>();
+        for (WfHistoricIncident raw : historicIncidents.values()) {
+            if (matches(raw, query)) {
+                matched.add(copy(raw));
+            }
+        }
+        // 最近一次失败在前：**历史故障查询的默认意图就是「刚刚发生了什么」**。
+        // 同一毫秒内按 jobId 兜底保证次序确定 —— 不确定的话分页会漏条目
+        matched.sort((a, b) -> {
+            Date ta = a.getLastFailureTime();
+            Date tb = b.getLastFailureTime();
+            if (ta != null && tb != null && !ta.equals(tb)) {
+                return tb.compareTo(ta);
+            }
+            return String.valueOf(a.getJobId()).compareTo(String.valueOf(b.getJobId()));
+        });
+        if (query == null) {
+            return matched;
+        }
+        return paginate(matched, (query.normalizedPageNum() - 1) * query.normalizedPageSize(),
+                query.normalizedPageSize());
+    }
+
+    @Override
+    public int countHistoricIncidents(WfHistoricIncidentQuery query) {
+        int count = 0;
+        for (WfHistoricIncident raw : historicIncidents.values()) {
+            if (matches(raw, query)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    @Override
+    public int deleteHistoricIncidentsBefore(Date before) {
+        if (before == null) {
+            throw new WfPersistenceException("清理历史故障必须给一个时间点");
+        }
+        int removed = 0;
+        for (Map.Entry<String, WfHistoricIncident> entry : historicIncidents.entrySet()) {
+            WfHistoricIncident incident = entry.getValue();
+            if (incident.getLastFailureTime() != null && incident.getLastFailureTime().before(before)) {
+                historicIncidents.remove(entry.getKey());
+                removed++;
+            }
+        }
+        return removed;
+    }
+
+    /**
+     * 历史故障过滤。与 {@link #queryHistoricIncidents} / {@link #countHistoricIncidents}
+     * 共用同一段判定：列表说 3 条而 total 说 5 条的话，分页器会以为还有第 2 页。
+     */
+    private boolean matches(WfHistoricIncident incident, WfHistoricIncidentQuery query) {
+        if (query == null) {
+            return true;
+        }
+        if (isNotBlank(query.getJobId()) && !query.getJobId().equals(incident.getJobId())) {
+            return false;
+        }
+        if (isNotBlank(query.getProcessInstanceId())
+                && !query.getProcessInstanceId().equals(incident.getProcessInstanceId())) {
+            return false;
+        }
+        if (isNotBlank(query.getDefinitionKey())
+                && !query.getDefinitionKey().equals(incident.getDefinitionKey())) {
+            return false;
+        }
+        if (isNotBlank(query.getActivityId())
+                && !query.getActivityId().equals(incident.getElementId())) {
+            return false;
+        }
+        if (isNotBlank(query.getJobType())
+                && !query.getJobType().equalsIgnoreCase(incident.getJobType())) {
+            return false;
+        }
+        if (isNotBlank(query.getErrorType()) && (incident.getErrorType() == null
+                || !incident.getErrorType().contains(query.getErrorType()))) {
+            return false;
+        }
+        if (isNotBlank(query.getErrorMessageContains()) && (incident.getErrorMessage() == null
+                || !incident.getErrorMessage().contains(query.getErrorMessageContains()))) {
+            return false;
+        }
+        if (query.getFirstFailureFrom() != null && (incident.getFirstFailureTime() == null
+                || incident.getFirstFailureTime().before(query.getFirstFailureFrom()))) {
+            return false;
+        }
+        if (query.getLastFailureBefore() != null && (incident.getLastFailureTime() == null
+                || !incident.getLastFailureTime().before(query.getLastFailureBefore()))) {
+            return false;
+        }
+        return query.getMinFailureCount() == null
+                || incident.getFailureCount() >= query.getMinFailureCount();
+    }
+
+    private static WfHistoricIncident copy(WfHistoricIncident source) {
+        if (source == null) {
+            return null;
+        }
+        WfHistoricIncident target = new WfHistoricIncident();
+        target.setId(source.getId());
+        target.setJobId(source.getJobId());
+        target.setProcessInstanceId(source.getProcessInstanceId());
+        target.setExecutionId(source.getExecutionId());
+        target.setElementId(source.getElementId());
+        target.setAttachedToRef(source.getAttachedToRef());
+        target.setDefinitionKey(source.getDefinitionKey());
+        target.setActivityName(source.getActivityName());
+        target.setJobType(source.getJobType());
+        target.setSubscriptionName(source.getSubscriptionName());
+        target.setErrorType(source.getErrorType());
+        target.setErrorMessage(source.getErrorMessage());
+        target.setFailureCount(source.getFailureCount());
+        target.setFirstFailureTime(source.getFirstFailureTime());
+        target.setLastFailureTime(source.getLastFailureTime());
+        target.setRevision(source.getRevision());
+        return target;
+    }
+
     @Override
     public int deleteJobsByExecution(String executionId) {
         int removed = 0;
@@ -1525,6 +1691,7 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         compensations.clear();
         batches.clear();
         batchElements.clear();
+        historicIncidents.clear();
     }
 
     // ==================== 保存筛选器 ====================

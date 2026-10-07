@@ -32,6 +32,7 @@ import com.zifang.z.wf.core.service.WfBatchService;
 import com.zifang.z.wf.core.service.WfDelegateRegistry;
 import com.zifang.z.wf.core.service.WfDecisionService;
 import com.zifang.z.wf.core.service.WfHistoryService;
+import com.zifang.z.wf.core.service.WfHistoricIncidentService;
 import com.zifang.z.wf.core.service.WfJobService;
 import com.zifang.z.wf.core.service.WfExternalTaskService;
 import com.zifang.z.wf.core.service.WfRepositoryService;
@@ -162,6 +163,23 @@ public class WfAutoConfiguration {
         }
         log.info("z-wf 注册钩子 {} 个", count);
         return dispatcher;
+    }
+
+    // ==================== 历史故障（第 40 轮） ====================
+
+    /**
+     * 历史故障查询（第 40 轮）。
+     *
+     * <p><b>记录动作本身不通过这个 bean</b>：{@code WfJobService} 与
+     * {@code WfExternalTaskService} 在构造时就地建了一份同类的记录器，
+     * 因为那两条链路是热路径，为它加构造参数要动 21 处调用点。
+     * 这里注册的是<b>查询侧</b>用的那一份 —— 与记录侧无状态、可互换，
+     * 两边各自独立持有不会导致读到看不见的数据。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WfHistoricIncidentService wfHistoricIncidentService(WfPersistence persistence) {
+        return new WfHistoricIncidentService(persistence);
     }
 
     // ==================== 服务 ====================

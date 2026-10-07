@@ -475,6 +475,33 @@ class UnsupportedBpmnElementTest {
             return 0;
         }
 
+        // 历史故障（第 40 轮）。理由同上：只关心「退化元素被部署期挡住」
+        @Override
+        public void saveHistoricIncident(com.zifang.z.wf.core.model.WfHistoricIncident incident) {
+        }
+
+        @Override
+        public com.zifang.z.wf.core.model.WfHistoricIncident findHistoricIncidentByJobId(String jobId) {
+            return null;
+        }
+
+        @Override
+        public List<com.zifang.z.wf.core.model.WfHistoricIncident> queryHistoricIncidents(
+                com.zifang.z.wf.core.persistence.WfHistoricIncidentQuery query) {
+            return java.util.Collections.emptyList();
+        }
+
+        @Override
+        public int countHistoricIncidents(
+                com.zifang.z.wf.core.persistence.WfHistoricIncidentQuery query) {
+            return 0;
+        }
+
+        @Override
+        public int deleteHistoricIncidentsBefore(java.util.Date before) {
+            return 0;
+        }
+
         @Override
         public int deleteJobsByExecution(String executionId) {
             return 0;

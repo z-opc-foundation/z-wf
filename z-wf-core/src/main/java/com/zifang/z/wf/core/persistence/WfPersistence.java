@@ -387,6 +387,53 @@ public interface WfPersistence {
     /** 删掉某实例的全部补偿登记。 */
     int deleteCompensationsByProcessInstance(String processInstanceId);
 
+    // ==================== 历史故障（第 40 轮） ====================
+
+    /**
+     * 写一条历史故障记录（{@link com.zifang.z.wf.core.model.WfHistoricIncident}）。
+     *
+     * <p><b>同一个 job 只会有这一行，第二次写是累加</b>（{@code failureCount} +1、
+     * 刷 {@code lastFailureTime}）。实现要认得"这一行已经存在" ——
+     * 重复插入会让「它一共失败了几次」变成要自己 group by 才能回答的问题，
+     * 而那正是这张表存在的理由。
+     *
+     * <p><b>插入还是更新由实现按"库里有没有这一行"自己判断</b>，
+     * <b>不要</b>沿用别处的 {@code id == null} 约定：这一行的 id 是<b>确定性</b>的
+     * （{@code hist-} + jobId，见
+     * {@code WfHistoricIncidentService#recordFailure}），
+     * 所以"id 非空"根本区分不出新行与旧行 ——
+     * 照抄那条约定会让新行走更新分支、用 REV=0 去改一个不存在的行，抛成乐观锁冲突。
+     */
+    void saveHistoricIncident(com.zifang.z.wf.core.model.WfHistoricIncident incident);
+
+    /**
+     * 按 job id 取它那条历史故障记录；没有则返回 {@code null}。
+     *
+     * <p>记录失败时走这条路判断"是不是第一次失败" —— 失败路径在热路径上，
+     * 每失败一次都全表扫一遍是不可接受的，而 job id 上有唯一性。
+     *
+     * <p><b>刻意没有 {@code findHistoricIncident(id)}</b>：这一行的天然身份就是
+     * job，而所有读路径问的都是"这个 job 失败过没有"或"按条件筛一批"。
+     * 加一个按 id 取的入口只会诱使人先查 id 再转手，绕远路还多一次索引维护。
+     */
+    com.zifang.z.wf.core.model.WfHistoricIncident findHistoricIncidentByJobId(String jobId);
+
+    List<com.zifang.z.wf.core.model.WfHistoricIncident> queryHistoricIncidents(
+            WfHistoricIncidentQuery query);
+
+    /** 条数，条件与 {@link #queryHistoricIncidents} 必须一致，<b>忽略分页</b>。 */
+    int countHistoricIncidents(WfHistoricIncidentQuery query);
+
+    /**
+     * 删掉「最后一次失败」早于给定时刻的历史故障记录。
+     *
+     * <p><b>刻意不并进 {@link #deleteHistoryBefore}</b>：那个方法只清
+     * <b>已结束流程</b>的历史，而故障记录可能属于一条<b>还在跑</b>的流程
+     * （卡住的定时器就是个还在跑的例子）。按时间一刀切过去会把
+     * 「三天前卡住、今天才发现」的那条记录删掉 —— 而那恰恰是本表最该留住的东西。
+     */
+    int deleteHistoricIncidentsBefore(Date before);
+
     // ==================== 批次（第 39 轮） ====================
 
     /**

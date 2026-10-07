@@ -65,9 +65,16 @@ public class WfExternalTaskService {
     private final WfPersistence persistence;
     private final WfRuntimeService runtimeService;
 
+    /**
+     * 历史故障记录器（第 40 轮）。理由与 {@code WfJobService} 里的同一个字段一致：
+     * 只依赖 {@code persistence}，不值得为它加构造参数。
+     */
+    private final WfHistoricIncidentService incidentHistory;
+
     public WfExternalTaskService(WfPersistence persistence, WfRuntimeService runtimeService) {
         this.persistence = persistence;
         this.runtimeService = runtimeService;
+        this.incidentHistory = new WfHistoricIncidentService(persistence);
     }
 
     /**
@@ -157,6 +164,10 @@ public class WfExternalTaskService {
         job.setLockedAt(null);
         job.nextRevision();
         persistence.saveJob(job);
+        // 历史故障（第 40 轮）。外部任务这条路径与 job 执行器那条**是两处独立的写入点**，
+        // 两边都必须记 —— 只改一处的话，「外部任务反复失败」在历史里一片空白，
+        // 而那恰恰是最需要事后复盘的一类（失败原因由 worker 自己报，最五花八门）
+        incidentHistory.recordFailure(job, job.getExceptionMessage());
         log.info("外部任务 {} 失败（剩余重试 {}）: {}", taskId, job.getRetries(), errorMessage);
     }
 
