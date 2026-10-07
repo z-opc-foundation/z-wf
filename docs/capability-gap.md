@@ -124,7 +124,7 @@
 | FormService | ⛔ 有意排除，见 §5 |
 | AuthorizationService | ⛔ 有意排除，见 §5 |
 | FilterService（保存的查询） | ✅ | 早已实现：`WfFilterService` + `WfFilter` + `ZWF_FILTER` 表，REST `GET/POST/PUT/DELETE /api/wf/filters` 与 `GET /api/wf/filters/{id}/results`。见 §1.2。**这一行曾经长期挂着 ❌** —— 功能早就有了而能力表没跟上，读表的人会以为"保存筛选条件"得业务方自己存，于是自己又造了一套 |
-| ExternalTaskService | ✅ | 已实现（**第 8 轮起**：早先列为有意排除 —— 理由是「`serviceTask` + delegate 已覆盖同样场景，不需要额外的拉取协议」—— 后因需要接外部系统主动领活而补上，**这一条已从 §5 移除**）。`WfExternalTaskService`（fetchAndLock / complete / fail / release / list）+ `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制。REST 7 端点在 `/api/wf/external-tasks`。**剩余**：Camunda 侧的 `handleBpmnError` / `handleEscalation` 交回流程、`setVariableLocal` |
+| ExternalTaskService | ✅ | 已实现（**第 8 轮起**：早先列为有意排除 —— 理由是「`serviceTask` + delegate 已覆盖同样场景，不需要额外的拉取协议」—— 后因需要接外部系统主动领活而补上，**这一条已从 §5 移除**）。`WfExternalTaskService`（fetchAndLock / complete / **handleBpmnError** / fail / release / list）+ `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制。REST **8** 端点在 `/api/wf/external-tasks`（`handleBpmnError` 是**第 41 轮**补的，详见本轮小节）。**`handleEscalation` 经核实不是缺口**（第 41 轮）—— 升级在本引擎是**订阅型**的，外部 serviceTask 上的升级边界照样建 `ESCALATION` 订阅，而 `escalate(code)` 本就是按码广播；再造一个只会给同一件事第二个入口。**剩余**：Camunda 侧的 `setVariableLocal`、优先级与批量操作 |
 | DecisionService（DMN） | ✅ | 第 24 轮起可被 BPMN 的 `businessRuleTask` 直接调用（见 §2）。第 23 轮实现：`WfDecisionService`（`parseDecision` / `deployDecision` / `findDecisionByKey` / `findDecisionsByKey` / `deleteDecision` / `evaluateDecision`）+ `WfDmnParser` + `WfDmnEvaluator` + `ZWF_DECISION` 表（带版本，与流程定义同一套版本语义）+ REST `POST /api/wf/decisions/deploy`、`GET /api/wf/decisions/{key}`、`GET /api/wf/decisions/{key}/versions[/{version}]`、`POST /api/wf/decisions/{key}/evaluate`、`DELETE /api/wf/decisions/{key}/versions/{version}`。**六种 HitPolicy 全支持**：UNIQUE（命中多条直接报违规）/ ANY（多条输出必须一致）/ FIRST / RULE_ORDER（多结果聚合）/ COLLECT（列表）/ OUTPUT_PRIORITY（按 `outputValues` 的先后排序）。聚合器 SUM / MIN / MAX / COUNT。**单目测试补全**：`inputEntry` 省略左操作数时以该列 `inputExpression` 的值为左操作数（`> 5000` 写作 `(amount) > 5000`）；`outputValues` 列表逐项展开。**决策图已支持（第 35 轮）**：`informationRequirement/requiredDecision` 组成的有向图，求值时**按依赖关系递归展开**（不是按声明顺序跑一遍 —— 那会在依赖顺序与声明顺序不一致时算出错误结果且不报错），上游的 `<output name>` 作为其输出值进入下游的求值上下文；成环在**部署期**报错（跨文件成环也挡：环检测查的是「本文件 + 库里已部署」凑出的闭合图），挡住时一条决策都不落库。仍不支持 **DMN 文字表达式（literal expression）**（不带 `decisionTable` 的决策节点部署期报错）与 **FEEL**（`[a..b]` 区间、`date(` / `time(` / `duration(`、`@"..."` 上下文 —— 部署期挡下高置信度的那几类，其余留给运行期 fail-closed） |
 | CaseService（CMMN） | ⛔ 有意排除，见 §5 |
 | Batch（批量操作） | ✅ | 第 39 轮实现：`WfBatchService`（createBatch / countTargets / executeBatch / suspendBatch / activateBatch / deleteBatch / queryBatches）+ `WfBatch` / `WfBatchCriteria` / `WfBatchOperation` / `WfBatchElement` + `ZWF_BATCH` / `ZWF_BATCH_ELEMENT` 两表，REST 9 端点在 `/api/wf/batches`。作用对象分 **INSTANCE / TASK / JOB** 三类；操作 `setVariable` / `setVariables` / `removeVariable` / `suspend` / `activate` / `setJobRetries` / `setPriority`。**两段式**（创建只记「改哪些改什么」，`GET /{id}/count` 先看命中数，`POST /{id}/execute` 才动手）与**逐个目标独立成败**（失败原因逐条落 `ZWF_BATCH_ELEMENT`）是两处最要紧的设计。**剩余**：Camunda 默认的异步执行（落一条 batch job 由执行器接手）本轮不做，理由见 §7 第 39 轮记录 |
@@ -224,7 +224,7 @@
 | 生命周期监听器 | ExecutionListener / TaskListener，按事件类型注册，几十个事件点 | 3 个 hook 接口共 15 个回调（`WfHookDispatcher`）。本轮做完行为级审计后修掉 3 处失效回调，并补了流转 / job 生命周期 / 任务消失三类事件点，详见下文 |
 | 表达式 | JUEL（`${}` / `#{}`） | z-util EL（`${}`） |
 | Java Delegate | `JavaDelegate` / `DelegateExpression` / `ClassDelegate` | `WfJavaDelegate` + `WfDelegateRegistry` |
-| 外部任务 Worker | `ExternalTaskService` | ✅ `WfExternalTaskService`（fetchAndLock / complete / fail / release / list）。**剩余**：Camunda 侧的 `handleBpmnError` / `handleEscalation` 交回流程、`setVariableLocal`、优先级与批量操作 |
+| 外部任务 Worker | `ExternalTaskService` | ✅ `WfExternalTaskService`（fetchAndLock / complete / **handleBpmnError（第 41 轮）** / fail / release / list）。`handleEscalation` **经核实不是缺口**（第 41 轮，`escalate` 按码广播已覆盖）。**剩余**：`setVariableLocal`、优先级与批量操作 |
 
 ### 3.2 本轮补的事件点
 
@@ -2951,3 +2951,143 @@ Camunda 也是这么分的。写成 job 失败的后果是「实例还在跑，�
   推导则天然不会漏。代价是它不能用来做跨时间的趋势统计，视图上已注明。
 - **不提供 `findHistoricIncident(id)`**：这一行的天然身份就是 job，
   而所有读路径问的都是「这个 job 失败过没有」或「按条件筛一批」。
+
+### 第 41 轮：外部任务把「外部世界出的结果」交回流程（`handleBpmnError`）
+
+**为什么选它。** 台账上 `ExternalTaskService` 那一行挂着
+「Camunda 侧的 `handleBpmnError` / `handleEscalation` 交回流程」，
+而它是**真缺口**：补上之前 worker 只有 `complete` 与 `fail` 两个选择 ——
+成功交差，或者失败重试到死。
+而"外部系统抛了一个带错误码的错误、流程上配了对应的错误边界希望走补救分支"
+这种最常见的情形**根本无法表达**：只能一路 `fail` 到重试耗尽，
+配好的错误边界从头到尾不会触发，job 躺在库里等人。
+
+**一处查证结论：`handleEscalation` 不是缺口。**
+台账上那一项一直挂着 ❌ 且备注为空（从没被调查过）。本轮查下来它不该做：
+
+- 升级在本引擎是**订阅型**的 —— `WfContext#startTimerJobs` 给每个边界建 job，
+  升级边界建的是 `ESCALATION` 型订阅，而那个方法**不看宿主节点的类型**
+  （`userTask` / `serviceTask` / `subProcess` 一视同仁）
+  ⇒ 外部 serviceTask 上的升级边界**照样订阅了**；
+- `escalate(code)` 是**按码广播**给所有订阅者的（`fireAllSubscriptions`），
+  本来就不针对某一个任务。
+- Camunda 的 `handleEscalation` 是「针对 taskId 这一条」，而 worker 手里
+  **没有 taskId**（外部任务在引擎里没有 `WfTask`），只有 job，
+  而"我要报一条 overdue 升级"这句话本身就是按码说的。
+
+⇒ 再造一个只会给同一件事第二个入口。
+结论不是靠读代码推的，是靠 `externalEscalationIsAlreadyCoveredByEscalate`
+这条用例跑绿证实的（它断言订阅确实存在、码对得上、升级确实打断宿主、
+沿出线确实给 director 派了待办）。
+
+**两处必须共用而不是抄一份的地方**
+
+`handleBpmnError`（任务侧）里本来就有「无边界 ⇒ 内部终止」与「搬 token 到边界」
+两段。外部任务侧要回答的是**同一个问题**、答案也只能有一个，
+所以抽成 `terminateForUncaughtError` / `routeToErrorBoundary` / `tokenOnNode` 三个私有方法：
+
+- 写两份的后果不是代码重复，而是**两份答案会漂** ——
+  比如曾经有一份忘了作废待办，于是"终止"了却留着一批永远办不完的待办，
+  从外面看和"流程卡住"没有任何区别；
+- 只测其中一条路的测试**永远发现不了**这种漂移。
+
+**顺带修掉的一处真实不一致（在本轮之前就存在）**
+「有边界但找不到 token」那条终止分支，原来**只作废宿主节点上的待办**，
+单 token 流程里与「无边界」那条等价，多实例里却会留下一批挂着的待办，
+而实例已经是终态了 —— 永远没人来办。
+统一到 `terminateForUncaughtError` 之后**无条件作废本实例全部待办**。
+
+**三处设计决定**
+
+1. **`tokenOnNode` 必须核对 token 真的停在宿主节点上**，
+   对不上就退回全实例扫描，找不到就返回 `null`（走「终止」那条路）。
+   原任务侧那一版是**拿到就信**的；路由时会把找到的那条 token **直接搬到边界上**，
+   而它是当前流程里唯一的"当前执行" —— 它若其实停在别处，搬走等于把流程从别处硬拽下来。
+2. **先删 job 再路由**，顺序与 `completeExternalTask` 一致。
+   反过来（先路由后删）的话，路由会把 token 从宿主节点搬走、顺带撤掉它起过的表。
+3. **闸门没过 ⇒ 什么都不记**。轨迹评论与历史故障都写在
+   「token 确实还停在这个节点上」之后：闸门没过意味着**什么都没做**
+   （不是锁持有者 / worker 超时重发），那时留下一条"失败过"就是在骗人。
+
+**错误码进消息正文而刻意不进 `errorType`**
+那个字段是"异常类名"，而 BPMN 错误码不是 Java 类。
+塞进去会让「按异常类型筛」筛出一堆不相干的行，而筛出来的行看上去又完全合规 ——
+那是更难查的一种错。
+
+**判据抓到的两处真缺陷（都是写测试时发现的，不是变异抓的）**
+
+1. **测试夹具本身是一份部署不上去的定义。**
+   边界出线上原本接的是 `isForCompensation="true"` 的节点，
+   而 `WfDefinitionValidator` 明确禁止补偿处理器有入线/出线
+   （正常路径上它不会被 token 走到，接了入线就会在正轨上先执行一遍退款）——
+   这份定义在部署期就被拒。
+   **根子是混淆了两套机制**：错误边界是「token 被搬过去、沿出线走」，
+   补偿是「撤销作用域时按登记逆序执行补偿处理器」。
+2. **夹具调错了对象**：`setVariableLocal(jobId, ...)` 传的是 jobId，
+   而那个方法收的是 executionId。这段逻辑来自早前的补偿思路，本轮根本用不上。
+
+**本轮明确记下的缺口**
+
+**外部任务侧「token 已经不在节点上 ⇒ 按重复提交处理」这条分支没有判据。**
+它在代码里、在注释里都写清楚了（与 `completeExternalTask` 同一把尺子），
+但**造不出一个能走到它的场景**：能把 token 挪走的路径
+（complete / fail 后重试 / 升级 / 定时器边界）都会同时把那只 job 删掉，
+于是请求先在 `requireLockHolder` 那一步就报「外部任务不存在」。
+⇒ 按"覆盖不了的行为宁可不写判据、只记下缺口"处理，
+没有为它硬造一个只能通过反射走出来的用例。
+
+### 本轮反向验证记录（外部任务 `handleBpmnError`，第 41 轮）
+
+**13 条变异 + 三层对照（core / web / admin），脚本 `/tmp/verify_r41.py`。**
+
+设计上刻意分层：不是所有判据都需要起完整 Spring 上下文，
+而**只有 admin 层能抓到的东西恰恰是最值钱的那一类**（第 40 轮的教训）。
+
+| 变异 | 层 | 打的是哪一条 |
+|---|---|---|
+| M1 去掉 job 类型校验 | core | `nonExternalJobIsRejected` |
+| M2 去掉锁归属校验 | core | `wrongWorkerCannotReportError` |
+| M3 委派成 `complete`（当成成功交差） | core | 路由与终止两条用例 |
+| M4 报错不写历史故障 | core | `reportingAnErrorAlsoRecordsIt` |
+| M5 错误码为空不拒绝 | core | `emptyErrorCodeIsRejected` |
+| M6 终止时不再作废待办 | core | `unmatchedErrorTerminatesWithReason`（**旧路径的用例**） |
+| M7 token 没真的搬到边界上 | core | 路由用例（任务侧 + 外部侧各一条） |
+| M8 job 没被消费掉 | core | **没红**（原因见下） |
+| M9 `requireErrorCode` 变成空转 | core | 任务侧 + 外部侧各一条空码用例 |
+| M10 REST 层漏传 `errorCode` | web | 两条 happy path |
+| M11 REST 层漏传 `workerId` | web | 两条 happy path |
+| M12 历史故障正文丢掉错误码 | **admin** | `externalBpmnErrorOverHttp` |
+| M13 报错不写历史故障（再验一次） | **admin** | `externalBpmnErrorOverHttp` |
+
+**M6 与 M12 是这一轮值得单说的两条。**
+
+M6 打在**本轮之前就存在**的那段终止逻辑上（不是本轮新写的），
+由一条**早就不动这个文件的**老用例抓住 ——
+这正是「两处终止收敛到一处」的真实收益：修一处，两边同时变好。
+
+M12 只有 admin 层红：核心与 web 的判据只断言「有一行历史故障」，
+而"那一行里有没有错误码"是 admin 端到端才断言的
+（内存实现上 `recordFailure(job, message)` 照样存得进去、查得出来）。
+⇒ 与第 40 轮同一条纪律，**判据要两处覆盖，且两处覆盖的东西不该是同一批**。
+
+**M8 没红 —— 这不是判据不敏感，是查出来的**
+
+把 `handleExternalBpmnError` 里那行显式 `persistence.deleteJob(jobId)` 去掉，
+两条判据（路由 / 终止）照样绿。**结论不能写成「这行是冗余」**，得先问是谁替它做的：
+
+- **终止那条路**：`terminateForUncaughtError` → `cancelOpenTasks(instanceId)`，
+  而 `nodeId == null` 时它的最后一步是 `deleteJobsByProcessInstance` ——
+  **整个实例的 job 全撤**，那只外部任务自然也没了；
+- **路由那条路**：`routeToErrorBoundary` → `engine.startFrom` → leave →
+  `clearJobsOf(token)`，落库时顺带撤掉本 token 上的 job。
+
+也就是说，**今天有两套彼此独立的间接机制各自覆盖了同一件事**
+（`completeExternalTask` 的注释里记的也是同一件事）。
+所以这行是**纵深防御**而不是冗余：它的价值在于「哪一套间接机制都不是这件事的保证」——
+`deleteJobsByProcessInstance` 存在的理由是「实例收尾要把表清干净」，
+`clearJobsOf` 存在的理由是「token 离开了节点要撤掉它起过的表」，
+两者都与「这件外部任务完结了」不是一回事。哪天其中一条为了别的理由收窄，
+活就会留下来被重新领一遍，而外部动作通常不可重入。
+
+⇒ **保留**。同时按「覆盖不了的行为宁可不写判据、只记下缺口」把这条记在这里，
+不为了凑一个绿的变异而去造一个只能靠反射走出来的用例。

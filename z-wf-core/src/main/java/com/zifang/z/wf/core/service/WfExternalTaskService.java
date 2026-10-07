@@ -141,6 +141,44 @@ public class WfExternalTaskService {
     }
 
     /**
+     * 交差：报一个<b>带错误码的业务错误</b>，让流程走错误边界（第 41 轮）。
+     *
+     * <p>与 {@link #complete} / {@link #fail} 的区别在于交的是"什么"：
+     * complete 交结果，fail 交"这次没做成、可以再试"，
+     * 而这里交的是"外部系统明确说了做不了，原因是这个错误码"。
+     * 少了它，worker 只能一路 fail 到重试耗尽 ——
+     * 重试对一个**业务上已经确定失败**的动作是纯浪费，
+     * 而流程上配好的错误边界一次都不会被触发，job 躺在库里等人。
+     *
+     * <p><b>校验顺序：先验锁归属，再验 job 类型</b>，与 complete / fail 同一把尺子。
+     * 反过来的话，任意一个 worker 都能拿别人领的活去"报错"，
+     * 而报错是要<b>把流程推进补偿分支</b>的 —— 那不是误操作，是破坏。
+     *
+     * <p>路由本身委托给 {@link WfRuntimeService#handleExternalBpmnError}：
+     * 找边界、终止、搬 token、落库那一整套只有那里有一份。
+     *
+     * @param taskId    领到的外部任务 id
+     * @param workerId  报错人，必须是当前锁持有者
+     * @param errorCode 错误码，与边界事件的 errorRef 匹配（不区分大小写）
+     * @param variables 外部系统带回的补充数据；<b>不并进流程变量</b>，
+     *                  与任务侧 {@code handleBpmnError} 保持一致 ——
+     *                  它是"这次报错的载荷"，不是"流程走到下一步需要的上下文"
+     * @return 被触发后流程实例的最新状态
+     */
+    public WfProcessInstance handleBpmnError(String taskId, String workerId,
+                                             String errorCode, String message,
+                                             Map<String, Object> variables) {
+        WfJob job = requireLockHolder(taskId, workerId);
+        if (job.getType() != com.zifang.z.wf.core.model.WfJobType.EXTERNAL) {
+            throw new WfEngineException("job " + taskId + " 不是外部任务（类型 "
+                    + job.getType() + "），不能按外部任务报错处理。"
+                    + "定时器/升级/消息那些 job 由各自的触发器投递，没有'worker 来报错'这回事");
+        }
+        return runtimeService.handleExternalBpmnError(taskId, workerId,
+                errorCode, message, variables);
+    }
+
+    /**
      * 交差失败：记原因、扣重试、<b>解锁</b>。
      *
      * <p>解锁是必须的：外部失败大多是瞬时的（下游在重启、限流、网络抖动），

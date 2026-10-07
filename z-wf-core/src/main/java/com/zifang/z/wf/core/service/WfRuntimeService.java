@@ -106,6 +106,16 @@ public class WfRuntimeService implements WfSubProcessLauncher {
 
     private final WfIdGenerator idGenerator;
 
+    /**
+     * 历史故障记录器（第 40 轮；第 41 轮又挂了一处写入点）。
+     *
+     * <p>与 {@code WfJobService} / {@code WfExternalTaskService} 里的同名字段同一个理由：
+     * 它只依赖 {@code persistence}，不值得为它加一个构造参数 ——
+     * 而 {@code WfRuntimeService} 的构造调用点遍布测试与配置类。
+     * 放在 5 参构造里就地 new，两个构造器都不用改，调用方更是一个不用动。
+     */
+    private final WfHistoricIncidentService incidentHistory;
+
     public WfRuntimeService(WfRepositoryService repositoryService,
                             WfPersistence persistence,
                             WfEngine engine,
@@ -124,6 +134,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         this.engine = engine;
         this.hookDispatcher = hookDispatcher;
         this.idGenerator = idGenerator;
+        this.incidentHistory = new WfHistoricIncidentService(persistence);
     }
 
     // ==================== 发起 ====================
@@ -1416,10 +1427,7 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         if (instance.getStatus().isTerminal()) {
             throw new WfEngineException("流程实例已结束，无法再路由错误: " + instance.getId());
         }
-        if (errorCode == null || errorCode.trim().isEmpty()) {
-            throw new WfEngineException("errorCode 不能为空："
-                    + "没有码就没有边界事件能捕获它，流程只能直接失败");
-        }
+        requireErrorCode(errorCode);
         WfDefinition definition = definitionOf(instance);
         String nodeId = task.getDefinitionId();
         WfNode boundary = findErrorBoundary(definition, nodeId, errorCode);
@@ -1432,49 +1440,118 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                 instance.getId(), nodeId, errorCode, message);
 
         if (boundary == null) {
-            instance.setStatus(WfProcessStatus.INTERNALLY_TERMINATED);
-            instance.setEndTime(new Date());
-            instance.setDeleteReason("BPMN 错误 [" + errorCode + "]: " + message
-                    + "（节点 " + nodeId + " 上没有匹配该错误码的边界事件）");
-            instance.nextRevision();
-            persistence.saveProcessInstance(instance);
-            // 待办全部作废，否则它们会永远挂在办理人列表里
-            cancelOpenTasks(instance.getId());
-            return instance;
+            return terminateForUncaughtError(instance, nodeId, errorCode, message,
+                    "节点 " + nodeId + " 上没有匹配该错误码的边界事件");
         }
 
-        // ---- 找 token：它必须停在宿主节点上，否则路由没有"当前执行"可言 ----
-        WfExecution execution = task.getExecutionId() != null
-                ? persistence.findExecution(task.getExecutionId()) : null;
-        if (execution == null) {
-            for (WfExecution candidate
-                    : persistence.findExecutionsByProcessInstance(instance.getId())) {
-                if (nodeId.equals(candidate.getActivityId())) {
-                    execution = candidate;
-                    break;
-                }
-            }
-        }
+        // ---- 找 token：它必须停在宿主节点上，否则路由没有「当前执行」可言 ----
+        WfExecution execution = tokenOnNode(instance, nodeId, task.getExecutionId());
 
         cancelOpenTasksOn(instance.getId(), nodeId);
         if (execution == null) {
-            instance.setStatus(WfProcessStatus.INTERNALLY_TERMINATED);
-            instance.setEndTime(new Date());
-            instance.setDeleteReason("BPMN 错误 [" + errorCode + "] 无可用 token，无法路由到边界事件 "
-                    + boundary.getId());
-            instance.nextRevision();
-            persistence.saveProcessInstance(instance);
-            return instance;
+            return terminateForUncaughtError(instance, nodeId, errorCode, message,
+                    "没有停在节点 " + nodeId + " 上的 token，无法路由到边界事件 "
+                            + boundary.getId());
         }
 
         // ---- 把 token 移到边界事件上，由它沿出线走补偿分支 ----
-        WfContext context = contextForError(instance, definition, execution, variables);
-        execution.setActivityId(boundary.getId());
-        execution.setState(WfExecution.State.ACTIVE);
-        execution.setEnteredTime(new Date());
+        return routeToErrorBoundary(instance, definition, boundary, execution,
+                errorCode, variables);
+    }
+
+    /**
+     * 错误码不能为空。
+     *
+     * <p>抽出来是因为<b>两个入口（任务侧与外部任务侧）都要这道闸</b>，
+     * 而漏掉任何一边都会让"没填码"这件事变成一次静默的内部终止 ——
+     * worker 以为报上去了，流程却直接死了，两边都没有报错。
+     */
+    private void requireErrorCode(String errorCode) {
+        if (errorCode == null || errorCode.trim().isEmpty()) {
+            throw new WfEngineException("errorCode 不能为空："
+                    + "没有码就没有边界事件能捕获它，流程只能直接失败");
+        }
+    }
+
+    /**
+     * 找出<b>仍停在 {@code hostNodeId} 上</b>的那条 token。
+     *
+     * <p>优先用调用方给的那条（任务/外部任务都带着自己的 executionId），
+     * 但**必须核对它真的在这个节点上**，对不上就退回全实例扫描。
+     *
+     * <p>核对的理由是一条真实存在的坏后果：路由错误时会把找到的那条 token
+     * <b>直接搬到边界事件上</b>，而这条 token 是当前流程里唯一的"当前执行"。
+     * 它若其实停在别的节点（多实例、补偿撤销后复用、别的路径抢先推进过），
+     * 搬走它等于把流程从别处硬拽下来 —— 那比不路由更糟。
+     * 找不到就返回 {@code null}，由调用方走「没有 token ⇒ 终止」那条路，
+     * 至少失败是显式的。
+     */
+    private WfExecution tokenOnNode(WfProcessInstance instance, String hostNodeId,
+                                    String preferredExecutionId) {
+        if (hostNodeId == null) {
+            return null;
+        }
+        if (preferredExecutionId != null) {
+            WfExecution preferred = persistence.findExecution(preferredExecutionId);
+            if (preferred != null && hostNodeId.equals(preferred.getActivityId())) {
+                return preferred;
+            }
+        }
+        for (WfExecution candidate
+                : persistence.findExecutionsByProcessInstance(instance.getId())) {
+            if (hostNodeId.equals(candidate.getActivityId())) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 没有边界事件能接住这个错误 ⇒ 让流程以「内部终止」收场，并说清是哪一步、哪个码。
+     *
+     * <p><b>任务侧与外部任务侧共用这一段</b>（第 41 轮）。它们要回答的是同一个问题 ——
+     * "这个错误没人接，流程怎么办"，答案也只能有一个：失败，并且失败得可查。
+     * 各写一份的后果不是重复劳动，而是两份答案会漂 ——
+     * 比如曾经有一份忘了作废待办，于是「终止」了却留着一批永远办不完的待办，
+     * 从外面看和「流程卡住」没有任何区别。
+     *
+     * <p>因此这里<b>无条件作废本实例的全部待办</b>，包括「有边界但找不到 token」那条路。
+     * 那条路原先只作废宿主节点上的待办：单 token 流程里两者等价，
+     * 多实例里却会留下一批挂着的待办，而实例已经是终态了 —— 永远没人来办。
+     */
+    private WfProcessInstance terminateForUncaughtError(WfProcessInstance instance,
+                                                        String nodeId, String errorCode,
+                                                        String message, String cause) {
+        instance.setStatus(WfProcessStatus.INTERNALLY_TERMINATED);
+        instance.setEndTime(new Date());
+        instance.setDeleteReason("BPMN 错误 [" + errorCode + "]: " + message
+                + "（" + cause + "）");
+        instance.nextRevision();
+        persistence.saveProcessInstance(instance);
+        // 待办全部作废，否则它们会永远挂在办理人列表里
+        cancelOpenTasks(instance.getId());
+        return instance;
+    }
+
+    /**
+     * 把 token 从宿主节点搬到匹配的边界事件上，由它沿出线继续。
+     *
+     * <p>任务侧与外部任务侧共用（第 41 轮）：搬 token、记轨迹、起上下文、落库、
+     * 收事务这一整套只有一份实现。复制一份的后果是两条路各自漂移，
+     * 而症状是"任务报的错误能走补偿分支，外部任务报的不行" ——
+     * 一个只看其中一条路的测试永远发现不了。
+     */
+    private WfProcessInstance routeToErrorBoundary(WfProcessInstance instance,
+                                                  WfDefinition definition, WfNode boundary,
+                                                  WfExecution token, String errorCode,
+                                                  Map<String, Object> variables) {
+        WfContext context = contextForError(instance, definition, token, variables);
+        token.setActivityId(boundary.getId());
+        token.setState(WfExecution.State.ACTIVE);
+        token.setEnteredTime(new Date());
         context.recordActivity(boundary.getId(), boundary.getName(),
                 boundary.getType().bpmnName(), "error:" + errorCode);
-        engine.startFrom(context, execution);
+        engine.startFrom(context, token);
         persistAll(context);
         finishTransaction(context);
         log.info("流程 {} 的错误 [{}] 已路由到边界事件 {}",
@@ -2326,6 +2403,97 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         persistAll(context);
         finishTransaction(context);
         return instance;
+    }
+
+    /**
+     * 外部任务把「外部系统出的结果」交回流程 —— 不是成功，也不是可重试的失败，
+     * 而是一个<b>带错误码的业务错误</b>，流程上配了错误边界来接它。
+     *
+     * <p>第 41 轮补上的入口。在此之前 worker 只有 {@link #completeExternalTask}
+     * 与 {@code WfExternalTaskService#fail}：成功交差，或者失败重试到死。
+     * 而"外部系统明确告诉你它失败了、并且带了错误码"这种最常见的情形
+     * <b>根本无法表达</b> —— 只能一路 fail 到重试耗尽，
+     * 流程上配好的错误边界从头到尾不会被触发，job 躺在库里等人。
+     *
+     * <p>与 {@link #handleBpmnError} 是<b>兄弟而不是替代</b>：那条以任务为中心
+     * （要一个 open 的 taskId），这条以 job 为中心 —— 外部任务在引擎里
+     * 根本没有 {@code WfTask}。真正共用的只有「找边界 → 没有就终止 / 有就搬 token」
+     * 那一段，也就是 {@link #routeToErrorBoundary} 与 {@link #terminateForUncaughtError}。
+     * 那两段**不能各写一份**：写两份的症状不是代码重复，
+     * 而是两条路的行为会悄悄漂，而只测其中一条的测试永远发现不了。
+     *
+     * <p><b>先删 job 再路由</b>，顺序与 {@link #completeExternalTask} 一致。
+     * 实测（反向验证 M8）这行<b>删掉也不会红</b>：终止那条路里
+     * {@code cancelOpenTasks} 最后一步是 {@code deleteJobsByProcessInstance}，
+     * 路由那条路里 {@code startFrom} 的 leave 会 {@code clearJobsOf(token)} ——
+     * 两套彼此独立的间接机制各自把那只 job 撤了。
+     * 留着这一行是因为<b>两者都不是这件事的保证</b>：
+     * 前者存在的理由是「实例收尾要把表清干净」，后者是「token 离开了节点要撤表」，
+     * 与「这件外部任务完结了」不是一回事。哪天其中一条为了别的理由收窄，
+     * 活就会留下来被重新领一遍，而外部动作通常不可重入。
+     * 更要紧的是<b>次序</b>：先删的话，路由中途抛异常也只剩下「这次没成」，
+     * 而不会留下一只还能被领走的活 —— 那等于让同一个外部动作做第二遍。
+     *
+     * <p><b>token 已经不在节点上时返回当前实例而不抛异常</b>，
+     * 与 {@link #completeExternalTask} 同一把尺子：worker 超时重发是常态，
+     * 而第一次可能已经把流程推走了。它需要知道的是"不用再做了"，
+     * 抛异常会让它无限重试一件已经办完的事。
+     *
+     * @param jobId 领到的外部任务 id（锁归属由 {@code WfExternalTaskService} 校验）
+     * @return 被触发后流程实例的最新状态
+     */
+    public WfProcessInstance handleExternalBpmnError(String jobId, String workerId,
+                                                     String errorCode, String message,
+                                                     Map<String, Object> variables) {
+        WfJob job = persistence.findJob(jobId);
+        if (job == null) {
+            throw new WfEngineException("外部任务不存在: " + jobId);
+        }
+        WfProcessInstance instance = requireInstance(job.getProcessInstanceId());
+        if (instance.getStatus().isTerminal()) {
+            throw new WfEngineException("流程实例已结束，无法再路由错误: " + instance.getId());
+        }
+        requireErrorCode(errorCode);
+        WfDefinition definition = definitionOf(instance);
+        String nodeId = job.getElementId();
+        WfExecution token = job.getExecutionId() == null
+                ? null : persistence.findExecution(job.getExecutionId());
+        if (token == null || token.isEnded() || !nodeId.equals(token.getActivityId())) {
+            log.info("外部任务 {} 报错时 token 已不在节点 {} 上（当前 {}），按重复提交处理",
+                    jobId, nodeId, token == null ? "不存在" : token.getActivityId());
+            return instance;
+        }
+        WfNode boundary = findErrorBoundary(definition, nodeId, errorCode);
+
+        // ---- 留痕：轨迹上一条（人看）+ 历史故障一行（排障查） ----
+        //
+        // 刻意放在闸门**之后**：闸门没过意味着**什么都没做**（不是锁持有者、
+        // 或者 worker 超时重发），那时留下一条"失败过"就是在骗人。
+        //
+        // 第 40 轮挂了两处独立的失败写入点，这里是第三处。漏掉它的症状不是少一行记录，
+        // 而是「外部任务带着错误码失败过」这件事在历史里彻底查不到 ——
+        // 而那恰恰是最需要事后复盘的一类：谁在什么时候报了哪个码。
+        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                instance.getId(), workerId, "error",
+                "外部任务 [" + job.getTopic() + "] 在节点 " + nodeId
+                        + " 抛出 BPMN 错误 [" + errorCode + "]: " + message));
+        // 错误码进消息正文而**不进 errorType**：那个字段是"异常类名"，
+        // 而 BPMN 错误码不是 Java 类。塞进去会让「按异常类型筛」筛出一堆不相干的行，
+        // 而筛出来的行看上去又完全合规 —— 那是更难查的一种错。
+        incidentHistory.recordFailure(job,
+                "外部任务 BPMN 错误 [" + errorCode + "]: " + message);
+        log.warn("流程 {} 外部任务 [{}] 在节点 {} 抛出 BPMN 错误 [{}]: {}",
+                instance.getId(), job.getTopic(), nodeId, errorCode, message);
+
+        // 先删后路由，理由见上面那段
+        persistence.deleteJob(jobId);
+
+        if (boundary == null) {
+            return terminateForUncaughtError(instance, nodeId, errorCode, message,
+                    "节点 " + nodeId + " 上没有匹配该错误码的边界事件");
+        }
+        return routeToErrorBoundary(instance, definition, boundary, token,
+                errorCode, variables);
     }
 
     /**

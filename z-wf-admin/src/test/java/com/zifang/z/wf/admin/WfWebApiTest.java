@@ -2575,6 +2575,213 @@ class WfWebApiTest {
     }
 
     /**
+     * 外部任务报错交回（第 41 轮）走真实 HTTP。
+     *
+     * <p>和外部任务那条闭环用例同一个理由，只是这一条压的是<b>另一段 JDBC 代码</b>：
+     * 报错交回要在<b>删 job 之前</b>往 {@code ZWF_INCIDENT_HISTORY} 插一行，
+     * 而"插入还是更新"是按「库里有没有这一行」判的（第 40 轮记过一次教训：
+     * 内存实现完全看不出来，只有真库才暴露）。所以这里必须盯住那条记录真的落库了。
+     *
+     * <p>另外盯两件只在真链路里才成立的事：
+     * ① 原来的活从列表里消失了；② 补救分支上的退款活<b>能被另一个 worker 领到</b> ——
+     * 后者说明 token 真的走过去了，而不只是"数据库里状态看着对"。
+     */
+    @Test
+    @DisplayName("外部任务报错端点：job 被消费、退款活派得出来、历史故障里查得到")
+    void externalBpmnErrorOverHttp() throws Exception {
+        String tag = String.valueOf(System.nanoTime());
+        deployExternalErrorBoundaryProcess(tag);
+        String pid = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webExternalErrorProcess-" + tag,
+                        "businessKey", "EXT-ERR-" + tag, "userId", "err-owner-" + tag))
+                .get("data");
+
+        String worker = "web-we-" + tag;
+        List<Map<String, Object>> claimed = asList(postOk("/api/wf/external-tasks/fetch",
+                body("topic", "charge-topic-" + tag, "workerId", worker, "maxTasks", 10))
+                .get("data"));
+        String taskId = null;
+        for (Map<String, Object> t : claimed) {
+            if (pid.equals(t.get("processInstanceId"))) {
+                taskId = (String) t.get("id");
+            }
+        }
+        assertNotNull(taskId, "应当领到本实例的扣款活。实际 " + claimed);
+
+        Map<String, Object> done = asMap(postOk("/api/wf/external-tasks/" + taskId
+                + "/bpmn-error", body("workerId", worker,
+                        "errorCode", "PAYMENT_FAILED", "errorMessage", "扣款接口返回 502"))
+                .get("data"));
+        assertEquals(pid, done.get("processInstanceId"));
+        assertEquals("ACTIVE", done.get("status"),
+                "有边界可接时不该终止 —— 终止是最重的后果，不能顺手就做");
+
+        // 1) 原来的活没了
+        for (Map<String, Object> t : asList(
+                getOk("/api/wf/external-tasks?topic=charge-topic-" + tag).get("data"))) {
+            assertFalse(taskId.equals(t.get("id")),
+                    "报过错的活必须被消费掉 —— 留着会被重新领一遍，外部动作就做了两次");
+        }
+
+        // 2) 补救分支上的退款活真的派出来了，而且**别人领得到**
+        List<Map<String, Object>> refunds = asList(postOk("/api/wf/external-tasks/fetch",
+                body("topic", "refund-topic-" + tag, "workerId", "web-wr-" + tag, "maxTasks", 10))
+                .get("data"));
+        assertFalse(refunds.isEmpty(),
+                "token 必须已经走到补救分支上，否则报错只是把流程按停了");
+        boolean mine = false;
+        for (Map<String, Object> t : refunds) {
+            if (pid.equals(t.get("processInstanceId"))) {
+                mine = true;
+            }
+        }
+        assertTrue(mine, "退款活应当属于本实例。实际 " + refunds);
+
+        // 3) 历史故障里查得到，且明确**不再 stillFailing**
+        Map<String, Object> page = asMap(getOk("/api/wf/history/incidents"
+                + "?processInstanceId=" + pid).get("data"));
+        assertEquals(1, ((Number) page.get("total")).intValue(),
+                "报错交回也要留下一条历史故障 —— job 已经没了，不留就再也查不到它坏过。实际: " + page);
+        Map<String, Object> record = asList(page.get("records")).get(0);
+        assertEquals(Boolean.FALSE, record.get("stillFailing"),
+                "job 已经被消费掉了 ⇒ 这不是「还卡着」");
+        assertNull(record.get("errorType"),
+                "BPMN 错误码**不是 Java 类名** —— 塞进异常类型会让「按类型筛」筛出不相干的行");
+        assertTrue(String.valueOf(record.get("errorMessage")).contains("PAYMENT_FAILED"),
+                "错误码要留在消息正文里。实际: " + record.get("errorMessage"));
+    }
+
+    @Test
+    @DisplayName("外部任务报错端点：没有边界可接时流程终止，绝不静默继续")
+    void externalBpmnErrorWithoutBoundaryTerminatesOverHttp() throws Exception {
+        String tag = String.valueOf(System.nanoTime());
+        deployExternalNoBoundaryProcess(tag);
+        String pid = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webExternalNoBoundaryProcess-" + tag,
+                        "businessKey", "EXT-NB-" + tag, "userId", "nb-owner-" + tag))
+                .get("data");
+
+        String worker = "web-wnb-" + tag;
+        List<Map<String, Object>> claimed = asList(postOk("/api/wf/external-tasks/fetch",
+                body("topic", "nb-topic-" + tag, "workerId", worker, "maxTasks", 10))
+                .get("data"));
+        String taskId = null;
+        for (Map<String, Object> t : claimed) {
+            if (pid.equals(t.get("processInstanceId"))) {
+                taskId = (String) t.get("id");
+            }
+        }
+        assertNotNull(taskId, "应当领到本实例的活");
+
+        Map<String, Object> done = asMap(postOk("/api/wf/external-tasks/" + taskId
+                + "/bpmn-error", body("workerId", worker,
+                        "errorCode", "PAYMENT_FAILED", "errorMessage", "扣款接口返回 502"))
+                .get("data"));
+        assertEquals(Boolean.TRUE, done.get("terminal"),
+                "**静默继续等于「这一步没做但看起来做了」** —— 这是最坏的一种失败");
+        assertEquals("INTERNALLY_TERMINATED", done.get("status"));
+        assertEquals("INTERNALLY_TERMINATED", instanceStatus(pid),
+                "响应里的状态和库里读出来的必须一致，否则调用方会以为流程还活着");
+
+        for (Map<String, Object> t : asList(
+                getOk("/api/wf/external-tasks?topic=nb-topic-" + tag).get("data"))) {
+            assertFalse(taskId.equals(t.get("id")), "终止之后不该还留着活");
+        }
+    }
+
+    @Test
+    @DisplayName("外部任务报错端点：非锁持有者与缺错误码都报 400，且什么都不改")
+    void externalBpmnErrorRejectsBadCallsOverHttp() throws Exception {
+        String tag = String.valueOf(System.nanoTime());
+        deployExternalErrorBoundaryProcess(tag);
+        String pid = (String) postOk("/api/approval-center/processes/start",
+                body("definitionKey", "webExternalErrorProcess-" + tag,
+                        "businessKey", "EXT-BAD-" + tag, "userId", "bad-owner-" + tag))
+                .get("data");
+
+        String worker = "web-wbad-" + tag;
+        List<Map<String, Object>> claimed = asList(postOk("/api/wf/external-tasks/fetch",
+                body("topic", "charge-topic-" + tag, "workerId", worker, "maxTasks", 10))
+                .get("data"));
+        String taskId = null;
+        for (Map<String, Object> t : claimed) {
+            if (pid.equals(t.get("processInstanceId"))) {
+                taskId = (String) t.get("id");
+            }
+        }
+        assertNotNull(taskId, "应当领到本实例的活");
+
+        ResponseEntity<String> stolen = exchange(HttpMethod.POST,
+                "/api/wf/external-tasks/" + taskId + "/bpmn-error",
+                body("workerId", "web-not-me-" + tag,
+                        "errorCode", "PAYMENT_FAILED", "errorMessage", "我抢的"));
+        assertEquals(HttpStatus.BAD_REQUEST, stolen.getStatusCode(),
+                "别人领的活不能替他报错 —— 报错是要把流程推进补偿分支的： " + stolen.getBody());
+
+        ResponseEntity<String> noCode = exchange(HttpMethod.POST,
+                "/api/wf/external-tasks/" + taskId + "/bpmn-error",
+                body("workerId", worker, "errorMessage", "忘了填码"));
+        assertEquals(HttpStatus.BAD_REQUEST, noCode.getStatusCode(),
+                "缺错误码应当报 400 而不是随便找个边界： " + noCode.getBody());
+
+        // 两次被拒都不能改动任何东西
+        for (Map<String, Object> t : asList(
+                getOk("/api/wf/external-tasks?topic=charge-topic-" + tag).get("data"))) {
+            assertTrue(taskId.equals(t.get("id")),
+                    "活必须还在原地等着真正的持有者。实际 " + getOk(
+                            "/api/wf/external-tasks?topic=charge-topic-" + tag).get("data"));
+        }
+        assertEquals("ACTIVE", instanceStatus(pid), "流程状态不该被一次失败的调用改动");
+        assertEquals(0, ((Number) asMap(getOk("/api/wf/history/incidents"
+                + "?processInstanceId=" + pid).get("data")).get("total")).intValue(),
+                "**被拒的调用一点痕迹都不该留** —— 记一条故障就是在骗人："
+                        + "这次调用什么都没做");
+    }
+
+    /** 外部任务 + 错误边界，出线上接一只普通的退款外部任务。 */
+    private void deployExternalErrorBoundaryProcess(String tag) {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"webExternalErrorProcess-" + tag + "\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"ees\"/>\n"
+                + "    <serviceTask id=\"charge\" name=\"扣款\""
+                + " zifang:type=\"external\" zifang:topic=\"charge-topic-" + tag + "\"/>\n"
+                + "    <boundaryEvent id=\"onFail\" attachedToRef=\"charge\">\n"
+                + "      <errorEventDefinition errorRef=\"PAYMENT_FAILED\"/>\n"
+                + "    </boundaryEvent>\n"
+                + "    <serviceTask id=\"refund\" name=\"退款\""
+                + " zifang:type=\"external\" zifang:topic=\"refund-topic-" + tag + "\"/>\n"
+                + "    <endEvent id=\"eee1\"/>\n"
+                + "    <endEvent id=\"eee2\"/>\n"
+                + "    <sequenceFlow id=\"eef1\" sourceRef=\"ees\" targetRef=\"charge\"/>\n"
+                + "    <sequenceFlow id=\"eef2\" sourceRef=\"charge\" targetRef=\"eee1\"/>\n"
+                + "    <sequenceFlow id=\"eef3\" sourceRef=\"onFail\" targetRef=\"refund\"/>\n"
+                + "    <sequenceFlow id=\"eef4\" sourceRef=\"refund\" targetRef=\"eee2\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        repositoryService.deploy(new com.zifang.z.wf.core.definition.WfXmlParser().parse(xml));
+    }
+
+    /** 同样的外部任务，**不挂错误边界**：同一个错误码无处可捕，只能终止。 */
+    private void deployExternalNoBoundaryProcess(String tag) {
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"webExternalNoBoundaryProcess-" + tag + "\""
+                + " isExecutable=\"true\">\n"
+                + "    <startEvent id=\"nbs\"/>\n"
+                + "    <serviceTask id=\"charge\" name=\"扣款\""
+                + " zifang:type=\"external\" zifang:topic=\"nb-topic-" + tag + "\"/>\n"
+                + "    <endEvent id=\"nbe\"/>\n"
+                + "    <sequenceFlow id=\"nbf1\" sourceRef=\"nbs\" targetRef=\"charge\"/>\n"
+                + "    <sequenceFlow id=\"nbf2\" sourceRef=\"charge\" targetRef=\"nbe\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        repositoryService.deploy(new com.zifang.z.wf.core.definition.WfXmlParser().parse(xml));
+    }
+
+    /**
      * 部署一个带外部任务步骤的测试定义。
      *
      * <p>同样不能靠示例流程：现有示例里没有任何 zifang:topic 节点。

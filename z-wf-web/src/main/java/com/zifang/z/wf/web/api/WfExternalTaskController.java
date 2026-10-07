@@ -77,15 +77,29 @@ public class WfExternalTaskController {
         return Result.success();
     }
 
+    @PostMapping("/{taskId}/bpmn-error")
+    @Operation(summary = "004_报错交回：报一个带错误码的业务错误，流程走错误边界"
+            + "（与 fail 的区别是「确定失败」对「再试一次」）")
+    public Result<Map<String, Object>> bpmnError(@PathVariable String taskId,
+                                                 @RequestBody BpmnErrorRequest request) {
+        if (request == null) {
+            throw new com.zifang.z.wf.core.service.WfEngineException("请求体不能为空");
+        }
+        WfProcessInstance instance = externalTaskService.handleBpmnError(taskId,
+                request.getWorkerId(), request.getErrorCode(), request.getErrorMessage(),
+                request.getVariables());
+        return Result.success(toInstanceView(instance));
+    }
+
     @PostMapping("/{taskId}/release")
-    @Operation(summary = "004_主动释放：解锁但不扣重试（如部署回滚、认错 topic）")
+    @Operation(summary = "005_主动释放：解锁但不扣重试（如部署回滚、认错 topic）")
     public Result<Void> release(@PathVariable String taskId, @RequestParam String workerId) {
         externalTaskService.release(taskId, workerId);
         return Result.success();
     }
 
     @GetMapping
-    @Operation(summary = "005_查外部任务（管理端/排障）")
+    @Operation(summary = "006_查外部任务（管理端/排障）")
     public Result<List<WfExternalTaskView>> list(@RequestParam(required = false) String topic,
                                                  @RequestParam(required = false) Integer pageNum,
                                                  @RequestParam(required = false) Integer pageSize) {
@@ -93,13 +107,13 @@ public class WfExternalTaskController {
     }
 
     @GetMapping("/count")
-    @Operation(summary = "006_某主题积压了多少活")
+    @Operation(summary = "007_某主题积压了多少活")
     public Result<Long> count(@RequestParam(required = false) String topic) {
         return Result.success(externalTaskService.countTasks(topic));
     }
 
     @GetMapping("/locked")
-    @Operation(summary = "007_某个 worker 当前锁着哪些活")
+    @Operation(summary = "008_某个 worker 当前锁着哪些活")
     public Result<List<WfExternalTaskView>> locked(@RequestParam String workerId,
                                                    @RequestParam(required = false) String topic) {
         return Result.success(externalTaskService.listLockedBy(topic, workerId));
@@ -175,6 +189,52 @@ public class WfExternalTaskController {
 
         public void setWorkerId(String workerId) {
             this.workerId = workerId;
+        }
+
+        public Map<String, Object> getVariables() {
+            return variables;
+        }
+
+        public void setVariables(Map<String, Object> variables) {
+            this.variables = variables;
+        }
+    }
+
+    /**
+     * 报错交回请求（第 41 轮）。
+     *
+ * <p>{@code errorCode} 是<b>必填的</b>：没有它就没有边界事件能捕获，
+     * 引擎会直接拒绝这次调用而不是"随便找个边界" ——
+     * 后者会让流程走到一条与失败原因无关的分支上，而从外面看完全正常。
+ */
+    public static class BpmnErrorRequest {
+        private String workerId;
+        private String errorCode;
+        private String errorMessage;
+        private Map<String, Object> variables;
+
+        public String getWorkerId() {
+            return workerId;
+        }
+
+        public void setWorkerId(String workerId) {
+            this.workerId = workerId;
+        }
+
+        public String getErrorCode() {
+            return errorCode;
+        }
+
+        public void setErrorCode(String errorCode) {
+            this.errorCode = errorCode;
+        }
+
+        public String getErrorMessage() {
+            return errorMessage;
+        }
+
+        public void setErrorMessage(String errorMessage) {
+            this.errorMessage = errorMessage;
         }
 
         public Map<String, Object> getVariables() {
