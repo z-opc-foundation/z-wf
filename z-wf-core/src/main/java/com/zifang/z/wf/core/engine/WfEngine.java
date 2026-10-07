@@ -1265,6 +1265,10 @@ public class WfEngine {
         // zifang:priority，让任务的排序与队列的取用顺序对得上。
         // 两处各配各的话，会出现「待办里排最前、流程却最后才跑」
         job.setPriority(node.getPriority());
+        // 互斥标记从宿主节点抄过来（默认 true，与 Camunda 一致）。
+        // 抄成 job 而不是留在节点上的理由见 WfJob#exclusive：
+        // 执行器判断"要不要排它"时手上只有 job，且 job 可能早就排好了、定义早就换版本
+        job.setExclusive(node.isExclusive());
         job.setRetries(com.zifang.z.wf.core.model.WfJob.DEFAULT_RETRIES);
         return job;
     }

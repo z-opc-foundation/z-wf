@@ -222,6 +222,10 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 // job 优先级（第 28 轮）。与 CYCLE_INDEX 分列的理由同源：
                 // 两者都是"与 RETRIES 无关的另一个数"，挤在一列会互相覆盖
                 + "PRIORITY INT DEFAULT 50,"
+                // job 是否互斥（第 34 轮）。默认值 1 是**语义的一部分**而不是随手填的：
+                // Camunda 的异步续跑默认就是 exclusive，而 0 恰好是 SQL 的假值，
+                // 补列时 DB2/Oracle 之外的方言都会拿它当默认值 —— 写 DEFAULT 1 才是对的。
+                + "EXCLUSIVE SMALLINT DEFAULT 1,"
                 + "REV INT,"
                 + "PRIMARY KEY (JOB_ID))");
 
@@ -381,6 +385,11 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         // 于是升级前排队的 job 全部变成"最低优先级"，且没有任何报错，
         // 表现是"加急的单子插到队尾去了"。
         addJobColumnIfMissing(connection, "PRIORITY INT DEFAULT 50");
+        // 同上：默认值必须是 1（互斥）而不是 0。
+        // 存量行在补列后这一列是 1，等于"按 Camunda 默认语义继续跑"，
+        // 而不是被当成"全部不互斥"——后者会让升级那一刻起所有异步 job 同时放开并发，
+        // 且没有任何报错，只有偶发的乐观锁冲突
+        addJobColumnIfMissing(connection, "EXCLUSIVE SMALLINT DEFAULT 1");
     }
 
     /**
@@ -2312,7 +2321,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         if (exists) {
             int affected = update("UPDATE ZWF_JOB SET RETRIES=?, CYCLE_INDEX=?, EXCEPTION_MSG=?, "
                             + "LAST_FAIL_TIME=?, DUEDATE=?, JOB_TYPE=?, TOPIC=?, LOCKED_BY=?, "
-                            + "LOCK_AT=?, SUBSCRIPTION_NAME=?, PRIORITY=?, REV=? WHERE JOB_ID=? AND REV=?",
+                            + "LOCK_AT=?, SUBSCRIPTION_NAME=?, PRIORITY=?, EXCLUSIVE=?, "
+                            + "REV=? WHERE JOB_ID=? AND REV=?",
                     job.getRetries(), job.getCycleIndex(), job.getExceptionMessage(),
                     timestamp(job.getLastFailureTime()), timestamp(job.getDuedate()),
                     // 类型必须跟着 UPDATE 走。只写 INSERT 的话，任何对已有 job 的
@@ -2329,6 +2339,10 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                     // 优先级必须跟着 UPDATE 走：流程推进会把 job 查出来改一改再存回去，
                     // 漏掉这一列等于每次更新都把优先级抹回默认值
                     job.getPriority(),
+                    // 互斥标记同理：漏掉它，任何一次"查出来改一改再存回去"都会把
+                    // exclusive 抹回列默认值（1），于是显式写了 exclusive="false"
+                    // 的 job 在第一次更新之后就变成互斥，且没有任何报错
+                    job.isExclusive() ? 1 : 0,
                     job.getRevision(), job.getId(), job.getRevision() - 1);
             if (affected == 0) {
                 throw new WfOptimisticLockException("job", job.getId(), job.getRevision() - 1);
@@ -2342,8 +2356,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                     "INSERT INTO ZWF_JOB (JOB_ID, PROC_ID, EXEC_ID, ELEMENT_ID, ATTACHED_TO, "
                             + "JOB_TYPE, TOPIC, LOCKED_BY, LOCK_AT, DUEDATE, RETRIES, "
                             + "CYCLE_INDEX, EXCEPTION_MSG, SUBSCRIPTION_NAME, CREATE_TIME, "
-                            + "LAST_FAIL_TIME, PRIORITY, REV) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                            + "LAST_FAIL_TIME, PRIORITY, EXCLUSIVE, REV) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
             try {
                 int i = 1;
                 ps.setString(i++, job.getId());
@@ -2363,6 +2377,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 ps.setTimestamp(i++, timestamp(job.getCreateTime()));
                 ps.setTimestamp(i++, timestamp(job.getLastFailureTime()));
                 ps.setInt(i++, job.getPriority());
+                ps.setInt(i++, job.isExclusive() ? 1 : 0);
                 ps.setInt(i, job.getRevision());
                 ps.executeUpdate();
             } finally {
@@ -2549,6 +2564,11 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             job.setCreateTime(date(rs.getTimestamp("CREATE_TIME")));
             job.setLastFailureTime(date(rs.getTimestamp("LAST_FAIL_TIME")));
             job.setPriority(rs.getInt("PRIORITY"));
+            // 存量库在补列之前的数据这一列是 NULL，getInt 读成 0
+            // —— 而 0 的语义是"不互斥"，会让老 job 在读回来之后突然失去互斥保护。
+            // 必须兜回 1，与建表默认值一致
+            int exclusive = rs.getInt("EXCLUSIVE");
+            job.setExclusive(rs.wasNull() ? true : exclusive != 0);
             job.setRevision(rs.getInt("REV"));
             return job;
         }

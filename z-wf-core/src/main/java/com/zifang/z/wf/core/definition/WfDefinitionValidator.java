@@ -1318,6 +1318,32 @@ public class WfDefinitionValidator {
      * 排了 job 却没有 worker 会来领它，而流程就在那一格等着，不报错也不动。
      */
     private void validateAsync(WfNode node) {
+        // exclusive 写在非异步节点上：属性本身对**这个节点**没有意义。
+        // Camunda 官方扩展属性表的 Constraints 行原文：
+        // "The camunda:exclusive attribute is only evaluated if the attribute
+        //  camunda:asyncBefore or camunda:asyncAfter is set to true"
+        //
+        // 报 WARN 而不是 ERROR：行为完全确定（那个节点根本不会排 job，
+        // 没有 job 可谈互斥），既不会挂死也不会算错。
+        // 但作者多半是照着别的节点抄了属性名，或者以为"标了就生效"，
+        // 而图上看不出任何区别 —— 说出来比默默忽略有用。
+        //
+        // **这条必须在 `if (!isAsync()) return;` 之前**：本方法开头就有那道早退，
+        // 而这里管的恰好是**非**异步节点 —— 放在早退之后它就永远不执行，
+        // 而那种"看起来写了其实从不运行"的规则比没有更坏：
+        // 它让人以为"非异步节点写 exclusive 会被提醒"，而实际上没人提醒。
+        // （第一版就是这么放错的，被本轮新加的判据当场抓到。）
+        //
+        // **判不出"有没有显式写过"**：解析后只剩一个 boolean，
+        // 没写与写了 true 在字段上完全相同（见 WfNode#exclusive 的默认值说明）。
+        // 所以这里只能在**非异步**时报 —— 那正是属性必然无效的那一种。
+        if (!node.isAsyncBefore() && !node.isAsyncAfter() && exclusiveWasWritten(node)) {
+            add(WfValidationIssue.Severity.WARN, node.getId(),
+                    "exclusive 写在这个节点上，但它没有 asyncBefore/asyncAfter —— "
+                            + "该属性只在异步续跑时才有意义（Camunda 官方约束："
+                            + "\"only evaluated if camunda:asyncBefore or camunda:asyncAfter "
+                            + "is set to true\"）。当前照常忽略它");
+        }
         if (!node.isAsync()) {
             return;
         }
@@ -1425,8 +1451,22 @@ public class WfDefinitionValidator {
         }
     }
 
-    /** 完成条件里是否出现了任一标准循环变量。 */
-    private static boolean referencesLoopVariable(String condition) {
+    /**
+     * {@code exclusive} 属性是否被显式写过。
+     *
+     * <p>解析后字段里「没写」与「写了 true」完全一样（默认值就是 true），
+     * 分不出来 —— 解析期在 {@link WfXmlParser#PROPERTY_EXCLUSIVE_WRITTEN}
+     * 留了这一个比特，这里只负责读它。
+     *
+     * <p>注意 WfNode 手工构造（不走解析器）时不会有这个标记，那种节点
+     * 一律当作"没写过" —— 与"用默认值"一致，不会误报。
+     */
+    private boolean exclusiveWasWritten(WfNode node) {
+        return node.getProperties() != null
+                && node.getProperties().get(WfXmlParser.PROPERTY_EXCLUSIVE_WRITTEN) != null;
+    }
+
+    /** 完成条件里是否出现了任一标准循环变量。 */    private static boolean referencesLoopVariable(String condition) {
         String[] names = {"loopCounter", "nrOfInstances", "nrOfActiveInstances",
                 "nrOfCompletedInstances"};
         for (String name : names) {

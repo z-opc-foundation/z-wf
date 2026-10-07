@@ -203,6 +203,31 @@ public class WfNode implements Serializable {
      */
     private boolean asyncAfter;
 
+    /**
+     * {@code camunda:exclusive} / {@code zifang:exclusive}：这个异步 job <b>互斥</b>，
+     * 即<b>不与同一流程实例的其它 exclusive job 并发执行</b>。
+     *
+     * <p><b>默认值是 {@code true}</b>（与 Camunda 一致），而不是"不写就是 false"：
+     * Camunda 7 官方扩展属性表原文（docs.camunda.org/manual/7.21/reference/bpmn20/
+     * custom-extensions/extension-attributes/#exclusive）：
+     * "Exclusive Jobs are the default configuration. All asynchronous continuations
+     * and timer events are thus exclusive by default."
+     * 要放开并发得显式写 {@code exclusive="false"}。
+     * ⇒ 反过来做（默认不互斥）会让「照搬 Camunda 模型但没写这个属性」的那一批
+     * 悄悄失去 Camunda 给的保证，而图上看不出任何区别。
+     *
+     * <p><b>此前本实现压根不读这个属性</b>：从 Camunda 导出的模型带着
+     * {@code camunda:exclusive="false"}，照搬过来被静默丢弃 ——
+     * 作者以为关掉了互斥，实际什么都没发生。
+     *
+     * <p>Camunda 那条约束同样对齐：<b>只有在 {@code asyncBefore} / {@code asyncAfter}
+     * 为 true 时这个属性才有意义</b>（原表 Constraints 行：
+     * "The camunda:exclusive attribute is only evaluated if the attribute
+     * camunda:asyncBefore or camunda:asyncAfter is set to true"）。
+     * 写在非异步节点上由校验器报 WARN。
+     */
+    private boolean exclusive = true;
+
     /** callActivity / subProcess：被引用的流程定义 key。 */
     private String calledElementKey;
 
@@ -660,6 +685,15 @@ public class WfNode implements Serializable {
 
     public void setAsyncAfter(boolean asyncAfter) {
         this.asyncAfter = asyncAfter;
+    }
+
+    /** 这个异步 job 是否互斥（不与同实例的其它 exclusive job 并发）。默认 {@code true}。 */
+    public boolean isExclusive() {
+        return exclusive;
+    }
+
+    public void setExclusive(boolean exclusive) {
+        this.exclusive = exclusive;
     }
 
     /** 这个节点是否要异步（任一方向）。 */

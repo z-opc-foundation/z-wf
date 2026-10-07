@@ -51,6 +51,18 @@ public class WfXmlParser {
      */
     public static final String PROPERTY_TIMER_CONFLICT = "zifang:timerConflict";
 
+    /**
+     * {@code exclusive} 属性<b>被显式写过</b>的标记（值为 {@code Boolean.TRUE}）。
+     *
+     * <p>为什么需要它：{@code exclusive} 的<b>默认值是 {@code true}</b>
+     * （与 Camunda 一致），所以解析完的字段里「没写」与「写了 true」完全一样，
+     * 分不出来。而校验器要报的正是「作者写了、但写在一个用不上它的节点上」——
+     * 那必须能区分"没写"和"写了"。
+     *
+     * <p>于是这里只记「写过」这一个比特，值本身仍以字段为准。
+     */
+    public static final String PROPERTY_EXCLUSIVE_WRITTEN = "zifang:exclusiveWritten";
+
     /** messageEventDefinition 与 signalEventDefinition 同时出现。 */
     public static final String PROPERTY_EVENT_CONFLICT = "zifang:eventConflict";
 
@@ -372,6 +384,15 @@ public class WfXmlParser {
         // "z-wf 不支持异步" —— 而它其实支持。async 是 Camunda 里最常被直接沿用的扩展之一。
         node.setAsyncBefore(booleanExtension(element, "asyncBefore"));
         node.setAsyncAfter(booleanExtension(element, "asyncAfter"));
+        // exclusive 的默认值是 **true**（Camunda：异步续跑与定时器默认都互斥），
+        // 所以不能直接用 booleanExtension —— 它把「没配」和「配成 false」都读成 false。
+        // 这里取 Boolean：只有真的写了才覆盖默认值。
+        node.setExclusive(booleanOrDefault(element, "exclusive", true));
+        // 记「写过」而不是记值：值已经落在字段上了，而这里要回答的是
+        // 另一个问题 —— 作者到底有没有把这个属性写出来过（见常量注释）
+        if (exclusiveWritten(element)) {
+            node.getProperties().put(PROPERTY_EXCLUSIVE_WRITTEN, Boolean.TRUE);
+        }
         node.setCandidateUsers(splitList(extension(element, "candidateUsers")));
         node.setCandidateGroups(splitList(extension(element, "candidateGroups")));
         node.setRequiredVariables(splitList(extension(element, "requiredVariables")));
@@ -773,6 +794,46 @@ public class WfXmlParser {
             value = camundaAttribute(element, name);
         }
         return "true".equalsIgnoreCase(value == null ? null : value.trim());
+    }
+
+    /**
+     * 同 {@link #booleanExtension}，但**保留"没配"与"配成 false"的区别**。
+     *
+     * <p>只有默认值为 {@code true} 的属性能这么读：
+     * {@code booleanExtension} 把两者一律读成 {@code false}，
+     * 用在 {@code exclusive} 上会让「没写」和「显式写 false」完全等价 ——
+     * 而 Camunda 的默认值恰恰是 {@code true}，
+     * 那样读等于对没写这个属性的模型（绝大多数）反向执行了它的语义。
+     *
+     * <p>只认 {@code "false"} 作为关闭：写了别的值（{@code "0"}、空串）按默认值算，
+     * 与 {@code booleanExtension}「只认 true」的宽松口径一致。
+     */
+    private boolean booleanOrDefault(Element element, String name, boolean defaultValue) {
+        String value = extension(element, name);
+        if (value == null) {
+            value = camundaAttribute(element, name);
+        }
+        if (value == null || value.trim().isEmpty()) {
+            return defaultValue;
+        }
+        if ("false".equalsIgnoreCase(value.trim())) {
+            return false;
+        }
+        return defaultValue;
+    }
+
+    /**
+     * 布尔扩展属性是否<b>被显式写过</b>（不分前缀）。
+     *
+     * <p>与 {@link #booleanOrDefault} 的区别是它不解释值，只回答"写没写" ——
+     * 默认值为 true 的属性需要靠它把"没写"与"写了 true"分开。
+     */
+    private boolean exclusiveWritten(Element element) {
+        String value = extension(element, "exclusive");
+        if (value == null) {
+            value = camundaAttribute(element, "exclusive");
+        }
+        return value != null && !value.trim().isEmpty();
     }
 
     /**

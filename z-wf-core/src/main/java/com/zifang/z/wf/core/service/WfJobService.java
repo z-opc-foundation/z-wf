@@ -52,8 +52,58 @@ public class WfJobService {
             WfJobType.TIMER,
             WfJobType.EVENT_TIMER};
 
-    private final WfPersistence persistence;
-    private final WfRuntimeService runtimeService;
+    /**
+     * exclusive 互斥用的实例级锁，**只在执行期持有**，不进任何持久化层。
+     *
+     * <p><b>为什么是进程内锁而不是数据库行锁</b>：排他发生在"推进 token"这一步，
+     * 而推进要读实例、读 token、写回，并发做两件事时真正冲突的是内存里的
+     * {@code WfContext} 与那条 {@code WfExecution} —— 那是本进程的对象图，
+     * 数据库层的锁管不到。而数据库层真要加锁，就得给 job 表加一列"正在被谁执行"
+     * 并在崩溃后清理它（Camunda 用 `LOCK_OWNER` / `LOCK_TIME` 与周期续期做这件事），
+     * 那是另一个量级的改动，且本仓的 job 本来就不跨 JVM 领取。
+     *
+     * <p><b>用 {@link java.util.concurrent.locks.ReentrantLock} 而不是 {@code synchronized}</b>：
+     * 前者可以 {@code tryLock} 出局（拿到锁就推进、拿不到就留给下一次扫描），
+     * {@code synchronized} 做不到 —— 而"等锁"会把一次扫描阻塞成串行的，
+     * 恰好把"要不要并发"这件事又变回由调用方的线程数决定。
+     *
+     * <p><b>跨 JVM 无效</b>：多个应用实例各跑各的执行器时互不感知。
+     * 这一点必须写在文档里而不是留着让人以为它是全局保证 ——
+     * 见 {@link #withInstanceLock}。
+     */
+    private final java.util.concurrent.ConcurrentMap<String,
+            java.util.concurrent.locks.ReentrantLock> instanceLocks =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 在实例级互斥下推进一条 exclusive job。
+     *
+     * <p>拿不到锁时<b>返回 false 跳过这一轮</b>，而不是排队等：
+     * 等锁会把一次扫描拖成串行，而互斥要保证的只是"不同时执行"。
+     * 跳过的那条下一轮扫描还在（job 没被删），届时多半锁已经空了。
+     *
+     * @return 是否真的推进了（false = 本轮跳过，不算失败）
+     */
+    private boolean withInstanceLock(WfJob job, java.util.function.Supplier<Boolean> action) {
+        if (!job.isExclusive() || job.getProcessInstanceId() == null) {
+            return action.get();
+        }
+        java.util.concurrent.locks.ReentrantLock lock =
+                instanceLocks.computeIfAbsent(job.getProcessInstanceId(),
+                        k -> new java.util.concurrent.locks.ReentrantLock());
+        if (!lock.tryLock()) {
+            log.debug("流程 {} 已有 exclusive job 在推进，本轮跳过 {}（互斥）",
+                    job.getProcessInstanceId(), job.getId());
+            return false;
+        }
+        try {
+            return action.get();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private final WfPersistence persistence;    private final WfRuntimeService runtimeService;
 
     public WfJobService(WfPersistence persistence, WfRuntimeService runtimeService) {
         this.persistence = persistence;
@@ -241,9 +291,11 @@ public class WfJobService {
      *         调用方区分开，它们不是失败，也不该被算进执行计数
      */
     private boolean fire(WfJob job) {
-        runtimeService.checkTimerJobDispatch(job);
-        persistence.deleteJob(job.getId());
-        return runtimeService.fireTimer(job);
+        return withInstanceLock(job, () -> {
+            runtimeService.checkTimerJobDispatch(job);
+            persistence.deleteJob(job.getId());
+            return runtimeService.fireTimer(job);
+        });
     }
 
     /**
@@ -345,7 +397,7 @@ public class WfJobService {
      * 只触发一次；代价是校验必须排在删除之前，理由见那里的注释。）
      */
     private boolean resumeAsync(WfJob job) {
-        return runtimeService.executeAsyncJob(job);
+        return withInstanceLock(job, () -> runtimeService.executeAsyncJob(job));
     }
 
     /**

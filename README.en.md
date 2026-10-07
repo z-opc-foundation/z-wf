@@ -366,7 +366,7 @@ converts between them, so the storage layout can evolve without touching engine 
 
 ## Testing
 
-962 tests, all green (core 875 / web 16 / admin 71). `mvn -o clean install`.
+971 tests, all green (core 884 / web 16 / admin 71). `mvn -o clean install`.
 
 Six of the test classes are **behaviour audits** rather than feature tests —
 one per node type and one per extension-point callback. This project shipped

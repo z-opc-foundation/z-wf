@@ -137,6 +137,16 @@ public final class WfDefinitionCodec {
         private String activationCondition;
         private boolean asyncBefore;
         private boolean asyncAfter;
+
+        /**
+         * 用 {@link Boolean} 而不是 {@code boolean}：<b>存量 JSON 里没有这个键</b>。
+         *
+         * <p>解码成 {@code boolean} 的话 Jackson 把它当 {@code false} ——
+         * 也就是"全部不互斥"。于是升级那一刻起，所有已部署流程里的异步 job
+         * 一起失去 Camunda 默认给的那层保护，而日志里什么异常都没有。
+         * 兜回 {@code true} 是唯一与默认值一致的选择。
+         */
+        private Boolean exclusive;
         private String resultVariable;
         private String decisionRef;
         private String decisionRefBinding;
@@ -350,6 +360,15 @@ public final class WfDefinitionCodec {
 
         public void setAsyncAfter(boolean asyncAfter) {
             this.asyncAfter = asyncAfter;
+        }
+
+        /** 存量为 {@code null}（老 JSON 无此键），由解码处兜成默认的 {@code true}。 */
+        public Boolean getExclusive() {
+            return exclusive;
+        }
+
+        public void setExclusive(Boolean exclusive) {
+            this.exclusive = exclusive;
         }
 
         public boolean isMultiInstance() {
@@ -657,6 +676,7 @@ public final class WfDefinitionCodec {
         gn.setActivationCondition(node.getActivationCondition());
             gn.setAsyncBefore(node.isAsyncBefore());
             gn.setAsyncAfter(node.isAsyncAfter());
+            gn.setExclusive(node.isExclusive());
             gn.setMultiInstance(node.isMultiInstance());
             gn.setLoopCardinality(node.getLoopCardinality());
             gn.setLoopCollection(node.getLoopCollection());
@@ -759,6 +779,9 @@ public final class WfDefinitionCodec {
         node.setActivationCondition(gn.getActivationCondition());
             node.setAsyncBefore(gn.isAsyncBefore());
             node.setAsyncAfter(gn.isAsyncAfter());
+            // 存量 JSON 没有这个键（getExclusive() 返回 null）⇒ 兜成默认 true，
+            // 与 WfNode#exclusive 的默认值一致 —— 见该字段的注释
+            node.setExclusive(gn.getExclusive() == null || gn.getExclusive());
             node.setMultiInstance(gn.isMultiInstance());
             node.setLoopCardinality(gn.getLoopCardinality());
             node.setLoopCollection(gn.getLoopCollection());

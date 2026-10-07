@@ -103,6 +103,21 @@ public class WfJob implements Serializable {
      */
     private int priority = com.zifang.z.wf.core.definition.WfNode.DEFAULT_PRIORITY;
 
+    /**
+     * 这条 job 是否<b>互斥</b>：不与同一流程实例的其它 exclusive job 并发执行。
+     *
+     * <p>默认 {@code true}，与 Camunda 一致（"Exclusive Jobs are the default
+     * configuration"）。
+     *
+     * <p><b>为什么落到 job 上、而不是只留在节点定义里</b>：执行器判断"要不要排它"
+     * 时手上只有 job，读不到节点定义；而 job 可能早就排好了、定义早就换过版本。
+     * 把它抄进 job，执行期看到的才是当初排它时的那个意图。
+     *
+     * <p>与 {@link #priority} 同属"建 job 时从宿主节点抄一份"的字段，
+     * 也同样要过存量库补列那一关。
+     */
+    private boolean exclusive = true;
+
     /** 最近一次失败的异常信息，排障时直接看得到为什么它不执行。 */
     private String exceptionMessage;
 
@@ -269,6 +284,15 @@ public class WfJob implements Serializable {
 
     public void setPriority(int priority) {
         this.priority = priority;
+    }
+
+    /** 是否互斥（不与同实例的其它 exclusive job 并发）。默认 {@code true}。 */
+    public boolean isExclusive() {
+        return exclusive;
+    }
+
+    public void setExclusive(boolean exclusive) {
+        this.exclusive = exclusive;
     }
 
     public void setCycleIndex(int cycleIndex) {
