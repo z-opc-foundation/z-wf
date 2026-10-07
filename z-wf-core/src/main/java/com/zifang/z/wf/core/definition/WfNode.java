@@ -287,11 +287,31 @@ public class WfNode implements Serializable {
     private boolean nonInterrupting;
 
     /**
-     * {@code parallelMultiple="true"}：同一事件可以重复触发。
+     * {@code parallelMultiple="true"}：边界事件<b>按多实例的每个实例各建一个</b>。
      *
-     * <p>本实现只支持<b>单次触发</b>，所以识别出来是为了报 ERROR 而不是静默按
-     * 单次跑 —— 作者写"每来一次就催一遍"而实际只催一次，是那种几个月后
-     * 才被人发现的偏差。
+     * <p><b>这个属性与"能不能重复触发"毫无关系</b> —— 反复触发是
+     * {@code timeCycle} 循环定时器的事。此处原先的注释写的是
+     * 「同一事件可以重复触发」，校验器照着它报 ERROR，两者说的是同一件不存在的事：
+     * 读了这句的人会以为 {@code parallelMultiple} 是个"重复提醒"开关，
+     * 而它真正的含义是<b>边界事件挂几个</b>。
+     *
+     * <p>BPMN 2.0 的语义（默认 {@code false}）：
+     * <ul>
+     *   <li>{@code false}：边界事件属于<b>整个活动</b>。会签三个人，
+     *       超时边界只起一个表；到点触发时<b>销毁全部实例</b>
+     *       （Camunda 7 官方 BPMN 2.0 实现参考原文：
+     *       "all instances that are still active will be destroyed"）。</li>
+     *   <li>{@code true}：<b>每个实例各有各的边界事件</b>。三个人起三条表，
+     *       各自从自己进入这一刻起算；触发一个只打断那一个，其余实例照办。
+     *       这才是"每个人各自有 SLA"能落地的那一种。</li>
+     * </ul>
+     *
+     * <p>宿主不是多实例时这个属性<b>没有意义</b>（只有一个实例可挂），
+     * 校验器报 WARN 而不是 ERROR：行为仍然确定（等同 {@code false}），
+     * 不会挂死也不会算错，只是作者的心愿不会实现。
+     *
+     * <p>Camunda 7 / 8 <b>都只实现 {@code false} 那一种</b>，
+     * {@code true} 是本实现按规范补的，见 {@code docs/capability-gap.md} 第 33 轮记录。
      */
     private boolean parallelMultiple;
 

@@ -274,7 +274,13 @@ public class WfEngine {
         // 必须在"停留"类节点之前：定时器测的就是这一步停多久。
         // 结束事件不会挂定时器边界（挂上去也没有"停留"可言），
         // 但放在一起读起来更顺 —— 起表与节点是否真的停下无关，交给 job 自己去判断。
-        context.startTimerJobs(definition.eventBoundariesOf(node.getId()));
+        //
+        // **多实例宿主要把 parallelMultiple 的那些边界排除掉**：那类边界
+        // 「每个实例各有一个」，表要跟着实例走（见 startPerInstanceBoundaryJobs），
+        // 在这里起就等于三个实例共用第一条表，恰好退化成 false 的语义。
+        // 剩下的（整个活动一个的那类）照常在宿主这条 token 上起一条。
+        context.startTimerJobs(definition.eventBoundariesOf(node.getId()),
+                node.isMultiInstance() ? b -> !b.isParallelMultiple() : null);
 
         // ---- 异步前置：节点还没执行，先挂起 ----
         // 位置在 arriveAt 之后、任何业务行为之前：asyncBefore 的定义就是
@@ -527,6 +533,25 @@ public class WfEngine {
      * {@code ${approvers[loopCounter]}}：实测 z-util 的 EL 不支持变量下标
      * （{@code approvers[1]} 可以，{@code approvers[loopCounter]} 抛 ElException）。
      */
+    /**
+     * 多实例宿主上，为 {@code parallelMultiple="true"} 的边界<b>按实例</b>起表。
+     *
+     * <p>BPMN 2.0 里 {@code parallelMultiple="true"} 的含义是「边界事件为多实例的
+     * <b>每个实例</b>各建一个」：三个人会签就有三个超时边界，各自从自己进入那一刻起算。
+     * 不这么做（让三个实例共用一条表）的后果是：触发其中一个就等于同时回答了三个实例，
+     * 实际行为与 {@code parallelMultiple="false"} 一模一样 —— 属性写了，等于没写。
+     *
+     * <p>用 {@link WfNode#isParallelMultiple()} 当过滤条件而不是"全部边界"：
+     * 整个活动一个的那类边界已经由 {@code enter} 在宿主 token 上起过了，
+     * 这里再起一遍就变成两条表抢同一个事件。
+     */
+    private void startPerInstanceBoundaryJobs(WfContext context, WfNode host,
+                                             WfExecution instanceToken) {
+        context.startTimerJobsFor(instanceToken,
+                context.getDefinition().eventBoundariesOf(host.getId()),
+                WfNode::isParallelMultiple);
+    }
+
     private void enterMultiInstance(WfContext context, WfNode node, WfExecution token) {
         int count = resolveLoopCount(context, node);
         if (count <= 0) {
@@ -549,6 +574,7 @@ public class WfEngine {
             bindLoopVariables(context, node, token, 0, null);
             token.getVariables().put(WfMultiInstance.PLANNED_TOTAL, count);
             createInstanceTask(context, node, token, 0);
+            startPerInstanceBoundaryJobs(context, node, token);
             return;
         }
 
@@ -572,6 +598,7 @@ public class WfEngine {
             }
             bindLoopVariables(context, node, branch, i, elements);
             createInstanceTask(context, node, branch, i);
+            startPerInstanceBoundaryJobs(context, node, branch);
         }
     }
 
@@ -597,8 +624,13 @@ public class WfEngine {
         }
         bindLoopVariables(context, node, token, next, null);
         token.setState(WfExecution.State.ACTIVE);
+        // 每个串行实例是一轮新的"停留"，所以各自的超时边界也要各起一条 ——
+        // 复用第一条表的话，第二个实例的 SLA 会从**第一个**实例进入时算起，
+        // 于是它在还差很久的时候就被打断了
         token.setEnteredTime(new Date());
-        return createInstanceTask(context, node, token, next);
+        boolean created = createInstanceTask(context, node, token, next);
+        startPerInstanceBoundaryJobs(context, node, token);
+        return created;
     }
 
     /**

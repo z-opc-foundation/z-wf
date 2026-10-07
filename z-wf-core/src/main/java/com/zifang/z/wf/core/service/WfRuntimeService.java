@@ -1779,10 +1779,21 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         log.info("流程 {} 节点 {} 被 {} 打断，触发边界事件 {}",
                 instance.getId(), job.getAttachedToRef(), reason, boundary.getId());
 
-        // 宿主节点上的待办作废：人已经被打断了，待办还挂着只会让人以为还能办
-        cancelOpenTasksOn(instance.getId(), job.getAttachedToRef());
+        // 宿主节点上的待办作废：人已经被打断了，待办还挂着只会让人以为还能办。
+        // **parallelMultiple="true" 时只撤本实例那一条** —— 其余实例不受影响，
+        // 它们的待办必须还能办。
+        WfNode hostNode = definition.node(job.getAttachedToRef());
+        boolean perInstance = boundary.isParallelMultiple()
+                && hostNode != null && hostNode.isMultiInstance();
+        cancelOpenTasks(instance.getId(), job.getAttachedToRef(),
+                perInstance ? job.getExecutionId() : null);
 
         WfContext context = contextForError(instance, definition, execution, null);
+        // 多实例宿主上还要**销毁其余实例的 token**，否则它们永远停在那儿。
+        // 必须在 startFrom 之前做：下游的汇合判定与实例终态判定读的都是
+        // 「还有没有活跃 token」，带着这些残留 token 往下走会让整条补偿分支
+        // 一直等不到「所有人都离开」，于是流程永久不结束且不报错。
+        destroyRemainingInstances(context, definition, execution, boundary);
         execution.setActivityId(boundary.getId());
         execution.setState(WfExecution.State.ACTIVE);
         execution.setEnteredTime(new Date());
@@ -1798,6 +1809,71 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         // 历史还没记），于是"这个 job 触发后流程走到哪了"这类统计永远差一步
         fireJobExecuted(definition, instance.getId(), job, true);
         return instance;
+    }
+
+    /**
+     * 中断型边界事件触发后，销毁宿主节点上<b>其余未结束的实例 token</b>。
+     *
+     * <p><b>这是第 33 轮修掉的真缺陷。</b>在此之前 {@link #fireEventBoundary}
+     * 只把 job 绑的那一条 token 搬到边界事件上，其余实例的 token 原地不动。
+     * 它们的待办被 {@link #cancelOpenTasksOn} 全部作废了（这一半是对的：
+     * 人都被打断了，不该还能办），于是它们变成<b>没有待办、没有 job、没有定时器</b>
+     * 的僵尸 token —— 永远不会再动，而实例终态判定看的正是"还有没有活跃 token"。
+     * 症状是：补救任务办完、token 走到 endEvent 已结束，**实例状态仍停在 ACTIVE**，
+     * 没有异常、没有日志、没有故障记录。定时查"在跑的实例"时它永远在那儿。
+     *
+     * <p>依据：BPMN 2.0 的 {@code parallelMultiple} 默认值是 {@code false}，
+     * 含义是「边界事件属于整个活动」，触发时销毁全部实例。Camunda 7 官方
+     * BPMN 2.0 实现参考原文（docs.camunda.org/7.3/api-references/bpmn20/，
+     * 抓取时确认页面已加载、标题 "BPMN 2.0 Implementation Reference"、333 KB）：
+     * "In case of an interrupting boundary event, when the event is caught,
+     * all instances that are still active will be destroyed."
+     *
+     * <p>{@code parallelMultiple="true"} 时<b>只打断本实例</b> —— 那是"每个人
+     * 各自有 SLA"的语义，动别人的实例就等于又退回整个活动一起被打断。
+     *
+     * <p>非多实例宿主进来时这里什么也不做：那种节点上只有一条 token，
+     * 而它就是 {@code execution} 本身，已被排除。
+     *
+     * @return 被销毁的 token 数（用于留痕与排障）
+     */
+    private int destroyRemainingInstances(WfContext context, WfDefinition definition,
+                                          WfExecution execution, WfNode boundary) {
+        if (boundary.isParallelMultiple()) {
+            return 0;
+        }
+        String hostNodeId = boundary.getAttachedToRef();
+        WfNode host = definition.node(hostNodeId);
+        if (host == null || !host.isMultiInstance()) {
+            return 0;
+        }
+        int destroyed = 0;
+        for (WfExecution other : context.getProcessExecutions()) {
+            if (other == null || other.isEnded()) {
+                continue;
+            }
+            // 快照里的自己那条不能碰（它不是正在推进的那个对象），
+            // 也不要按 id 再判一次 —— 与 collapseSiblings 同一套口径
+            if (other.getId() != null && other.getId().equals(execution.getId())) {
+                continue;
+            }
+            if (!hostNodeId.equals(other.getActivityId())) {
+                continue;
+            }
+            other.setState(WfExecution.State.ENDED);
+            context.markTouched(other);
+            destroyed++;
+        }
+        if (destroyed > 0) {
+            // 不静默：销毁了几条 token 必须在轨迹上写一句。
+            // 排障的人看到「流程不结束」时，得能直接读出是不是这一步干的
+            persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                    context.getProcessInstanceId(), "system", "job",
+                    "多实例节点 " + hostNodeId + " 被边界事件 " + boundary.getId()
+                            + " 打断，按 parallelMultiple=" + false
+                            + "（整个活动一个边界事件）销毁其余 " + destroyed + " 个实例"));
+        }
+        return destroyed;
     }
 
     /**
@@ -2551,6 +2627,22 @@ public class WfRuntimeService implements WfSubProcessLauncher {
 
     /** 作废未完成任务；{@code nodeId} 非 null 时只作废该节点上的。 */
     private void cancelOpenTasksOn(String processInstanceId, String nodeId) {
+        cancelOpenTasks(processInstanceId, nodeId, null);
+    }
+
+    /**
+     * 作废未完成任务。
+     *
+     * @param onlyExecutionId 非 {@code null} 时<b>只作废这一条 token 上的</b>待办。
+     *        {@code parallelMultiple="true"} 的边界必须走这个口径 ——
+     *        按节点撤会把同一活动里<b>其余实例</b>的待办一起撤掉，
+     *        症状是「只打断一个人，另外两个人的待办却也消失了」：
+     *        他们的 token 还在（图上还看得出在办），待办没了（待办列表上空了），
+     *        两者对不上且没有任何报错。
+     *        {@code WfTaskQuery} 没有 executionId 条件（它是对外的查表 API，
+     *        而「同节点的不同实例」是引擎内部靠 executionId 区分的），所以在内存里筛。
+     */
+    private void cancelOpenTasks(String processInstanceId, String nodeId, String onlyExecutionId) {
         WfTaskQuery query = new WfTaskQuery().setProcessInstanceId(processInstanceId)
                 .setOpenOnly(true).setPageNum(1).setPageSize(Integer.MAX_VALUE);
         if (nodeId != null) {
@@ -2558,7 +2650,13 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         }
         // 先把要作废的收齐：作废之后就查不到了（openOnly 只看未完成），
         // 分两个循环的话第二个循环永远空转，定时器一个都撤不掉
-        List<WfTask> pendingTasks = persistence.queryTasks(query);
+        List<WfTask> pendingTasks = new ArrayList<>();
+        for (WfTask candidate : persistence.queryTasks(query)) {
+            if (onlyExecutionId != null && !onlyExecutionId.equals(candidate.getExecutionId())) {
+                continue;
+            }
+            pendingTasks.add(candidate);
+        }
         for (WfTask pending : pendingTasks) {
             pending.setStatus(WfTask.Status.CANCELLED);
             pending.setEndTime(new Date());

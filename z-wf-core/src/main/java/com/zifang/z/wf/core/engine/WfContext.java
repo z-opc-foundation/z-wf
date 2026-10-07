@@ -114,12 +114,46 @@ public class WfContext {
      * 已经把它设成当前时刻，所以并行分支上同一个节点的不同 token 各自起表、互不干扰。
      */
     public void startTimerJobs(java.util.Collection<WfNode> boundaries) {
-        WfExecution execution = getCurrentExecution();
+        startTimerJobs(boundaries, null);
+    }
+
+    /**
+     * 只为当前 token 起满足 {@code filter} 的那些边界。
+     *
+     * @param filter 只起满足条件的边界；{@code null} 表示全起
+     */
+    public void startTimerJobs(java.util.Collection<WfNode> boundaries,
+                               java.util.function.Predicate<WfNode> filter) {
+        startTimerJobs(getCurrentExecution(), boundaries, filter);
+    }
+
+    /**
+     * 为<b>指定的一条</b> token 起定时器边界，只起满足 {@code filter} 的那些。
+     *
+     * <p>{@code parallelMultiple="true"} 的边界必须走这里：它们的表是
+     * <b>每个实例一条</b>，而 {@link #startTimerJobs} 绑的是"当前 token"
+     * （进入节点时是<b>第一条</b>实例那条）。若让它们走默认那条路，
+     * 三个实例会共用一条表 —— 触发其中一个就等于同时回答了三个实例，
+     * 实际仍然是"整个活动一个边界事件"，恰好是 {@code parallelMultiple="false"} 的语义。
+     *
+     * @param filter 只起满足条件的边界；{@code null} 表示全起
+     */
+    public void startTimerJobsFor(WfExecution execution,
+                                  java.util.Collection<WfNode> boundaries,
+                                  java.util.function.Predicate<WfNode> filter) {
+        startTimerJobs(execution, boundaries, filter);
+    }
+
+    private void startTimerJobs(WfExecution execution, java.util.Collection<WfNode> boundaries,
+                                java.util.function.Predicate<WfNode> filter) {
         if (execution == null || boundaries == null || boundaries.isEmpty()) {
             return;
         }
         Date base = execution.getEnteredTime() != null ? execution.getEnteredTime() : new Date();
         for (WfNode boundary : boundaries) {
+            if (filter != null && !filter.test(boundary)) {
+                continue;
+            }
             WfJob job = new WfJob();
             job.setProcessInstanceId(getProcessInstanceId());
             job.setExecutionId(execution.getId());

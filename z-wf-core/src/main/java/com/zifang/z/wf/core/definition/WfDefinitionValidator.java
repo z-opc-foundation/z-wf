@@ -1074,7 +1074,8 @@ public class WfDefinitionValidator {
      *       后续周期<b>没有宿主可以打断</b>。挂着让它继续响毫无意义。</li>
      * </ul>
      * 放过后一种等于「作者写每次催一次、实际只催一次」，
-     * 而流程图上看不出任何异常 —— 与 {@code parallelMultiple} 是同一类偏差。
+     * 而流程图上看不出任何异常 —— 与 {@code parallelMultiple} 挡在非多实例宿主上
+     * 要报 WARN 是同一类偏差：属性写了，作者以为的那件事没发生。
      */
     private void validateCycleTimer(WfNode node) {
         if (!node.isNonInterrupting()) {
@@ -1206,16 +1207,31 @@ public class WfDefinitionValidator {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
                     "边界事件上: " + eventConflict + "。一个边界事件只能挂一种触发条件");
         }
-        // 重复触发：识别出来是为了报 ERROR，不是静默按单次跑。
-        // 作者写"每来一次就催一遍"而实际只催一次 —— 那种偏差几个月后才被发现，
-        // 而且从流程图上看不出任何异常
+        // parallelMultiple="true"（第 33 轮起支持）：
+        // 它说的是"边界事件按多实例的每个实例各建一个"，**不是"能不能重复触发"**。
+        // 这条规则原先写的是"不支持（重复触发）"—— 照着一个错的属性解释去拒绝
+        // 一个规范里真实存在的属性，于是任何照 BPMN 写的 parallelMultiple="true"
+        // 都部署不了，而挡它的理由还把属性讲反了。
+        //
+        // 现在只保留一条真问题：宿主不是多实例时，这个属性**无处可施**。
+        // 报 WARN 而不是 ERROR：行为完全确定（等同不写），既不会挂死也不会算错，
+        // 作者的心愿只是不会实现 —— 挡住不让人部署是过度反应，
+        // 而放着不说就是让一个按规范写模型的人以为它生效了。
         if (node.isParallelMultiple()) {
-            add(WfValidationIssue.Severity.ERROR, node.getId(),
-                    "边界事件的 parallelMultiple=\"true\"（重复触发）本实现不支持。"
-                            + "本实现只支持单次触发的边界事件：触发一次后订阅即作废。"
-                            + "静默按单次跑的后果是「每来一次就催一遍」变成「只催一遍」，"
-                            + "且流程图上看不出任何异常。要重复提醒请用循环定时器"
-                            + "（timeCycle），或在外部按周期重复投递消息");
+            WfNode host = node.getAttachedToRef() == null
+                    ? null : definition.node(node.getAttachedToRef());
+            if (host == null || !host.isMultiInstance()) {
+                add(WfValidationIssue.Severity.WARN, node.getId(),
+                        "parallelMultiple=\"true\" 挂在非多实例节点 "
+                                + (host == null ? node.getAttachedToRef() : host.getId())
+                                + " 上，这个属性在这里没有意义 —— "
+                                + "它的含义是「多实例时每个实例各有各的边界事件」，"
+                                + "而宿主只有一个实例可挂。当前按不写处理（行为与 "
+                                + "parallelMultiple=\"false\" 一致）。"
+                                + "另外这个属性与「能不能重复触发」无关："
+                                + "要每隔一段时间提醒一次请用 timeCycle 循环定时器"
+                                + "（需配 cancelActivity=\"false\"）");
+            }
         }
         // 非中断型没有出线时，新起的那条 token 无处可去：它会永远停在这个边界节点上，
         // 而宿主的流程看起来一切正常 —— 一条永远等下去且没人管的分支

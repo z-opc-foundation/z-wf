@@ -436,13 +436,20 @@ class WfNonInterruptingBoundaryTest {
     }
 
     @Test
-    @DisplayName("非中断 + parallelMultiple 仍报 ERROR：只支持单次触发")
-    void nonInterruptingWithParallelMultipleIsRejected() {
+    @DisplayName("非中断 + parallelMultiple 在非多实例宿主上放行（只报 WARN）")
+    void nonInterruptingWithParallelMultipleDeploys() {
+        // 第 33 轮改判：原先断言「非中断 + parallelMultiple 报 ERROR（只支持单次触发）」。
+        // 那条规则把 parallelMultiple 解释成"重复触发"，而 BPMN 2.0 里它是
+        // 「多实例时每个实例各有各的边界事件」—— 拒绝一个规范里真实存在的属性，
+        // 而理由还把属性讲反了。宿主 remind 是普通 userTask，只有一个实例可挂，
+        // 该属性在这里没有意义、行为与不写一致 ⇒ 放行 + WARN。
+        // 非中断型与 parallelMultiple 在多实例宿主上同时成立的语义，
+        // 由 WfParallelMultipleBoundaryTest 覆盖。
         String both = BPMN.replace(" cancelActivity=\"false\"", " parallelMultiple=\"true\"");
-        WfDefinitionException e = assertThrows(WfDefinitionException.class,
-                () -> repository.deployXml(both, "niProcess"));
-        assertTrue(e.getMessage().contains("parallelMultiple"),
-                "报错要说清是重复触发。实际 " + e.getMessage());
+        WfDefinition deployed = repository.deployXml(both, "niProcess");
+        assertNotNull(deployed, "宿主不是多实例时不该挡部署");
+        assertTrue(deployed.node("remindBoundary").isParallelMultiple(),
+                "属性要保留下来：丢在解析阶段的话，图上写着 parallelMultiple 而引擎当作没写");
     }
 
     @Test

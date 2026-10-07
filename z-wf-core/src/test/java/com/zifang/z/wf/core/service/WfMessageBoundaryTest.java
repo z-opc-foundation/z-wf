@@ -1,6 +1,7 @@
 package com.zifang.z.wf.core.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -248,15 +249,29 @@ class WfMessageBoundaryTest {
     // ==================== 部署期 ====================
 
     @Test
-    @DisplayName("并行多触发（parallelMultiple）仍被拒：只支持单次触发，不能静默按单次跑")
-    void parallelMultipleRejectedAtDeployTime() {
+    @DisplayName("parallelMultiple 挂在非多实例宿主上：放行（只报 WARN），不是拒")
+    void parallelMultipleOnPlainHostDeploysWithWarning() {
+        // 第 33 轮改判：这条原先断言「parallelMultiple 一律部署期被拒」，
+        // 理由写的是"不支持重复触发"—— 而 BPMN 2.0 里这个属性说的是
+        // 「多实例时每个实例各有各的边界事件」，与重复触发无关。
+        // 照着一个错的解释去拒绝一个规范里真实存在的属性，等于让所有
+        // 照 BPMN 写的模型都部署不了，而理由还把属性讲反了。
+        //
+        // 现在宿主 approve 是**普通** userTask（只有一个实例可挂），
+        // 该属性在这里没有意义，行为与不写一致且完全确定 ⇒ 放行 + WARN。
+        // 真正有意义的用法（多实例宿主上按实例触发）见 WfParallelMultipleBoundaryTest。
         String repeated = BPMN.replace(
                 "<boundaryEvent id=\"cancelBoundary\" attachedToRef=\"approve\">",
                 "<boundaryEvent id=\"cancelBoundary\" attachedToRef=\"approve\" parallelMultiple=\"true\">");
-        WfDefinitionException e = assertThrows(WfDefinitionException.class,
-                () -> repository.deployXml(repeated, "cancelProcess"));
-        assertTrue(e.getMessage().contains("parallelMultiple"),
-                "报错要说清是重复触发。实际: " + e.getMessage());
+        WfDefinition deployed = repository.deployXml(repeated, "cancelProcess");
+        assertNotNull(deployed, "宿主只有一个实例时不该挡部署：行为与不写完全一致，"
+                + "挡下来只会让人以为这个属性有别的含义");
+
+        // 落库读回仍认得这个属性（不是解析完就丢）
+        WfDefinition reloaded = repo.findDefinition("cancelProcess", deployed.getVersion());
+        assertTrue(reloaded.node("cancelBoundary").isParallelMultiple(),
+                "属性必须一路带到持久化层 —— 只活在内存里的话，"
+                        + "重启后行为与「没写这个属性」一致，而图上明明写着它");
     }
 
     @Test
