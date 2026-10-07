@@ -77,7 +77,7 @@
 | `addComment` / `getProcessInstanceComments` | ✅ | |
 | `addIdentityLink` / `deleteIdentityLink` | 🟡 | 候选人用户/组存在 `WfTask.candidateUsers/candidateGroups`，**可运行时增删**（`addCandidateUser/Group` / `removeCandidateUser/Group`，REST `POST /api/wf/task/candidate`），BPMN 部署时写入的与运行时加的走同一份数据。**仍缺** Camunda 那套带 type 的通用关联表（participating / starter 等）—— 刻意不另建：审批场景的判定需求现有字段已覆盖，另建一张表会带来两个真源 |
 | `handleBpmnError` | ✅ | **本轮补上**：`BpmnError(code, msg)` 抛错 → 路由到匹配的边界事件 → 走补偿分支；无匹配则流程终止并记错误码 |
-| `handleEscalation` | ❌ | |
+| `handleEscalation` | ✅ | **第 41 轮经核实：不是缺口，不必造**。升级在本引擎是**订阅型**的（`WfContext#startTimerJobs` 给每个边界建 job，**不看宿主节点类型** ⇒ 外部 serviceTask 上的升级边界照样订阅），而 `escalate(code)` 是**按码广播**，本就不针对某一个任务 —— worker 手里也没有 taskId（外部任务在引擎里没有 `WfTask`），只有 job。再造一个只会给同一件事第二个入口 |
 | 任务级变量 `setVariableLocal` / `getVariablesLocal` | ✅ | **本轮补上第三层作用域**：`WfVariableService#setVariableLocal(executionId, …) / getVariableLocal / getVariablesLocal / hasVariableLocal / removeVariableLocal`，REST `GET/POST /api/wf/process/branch-variables`（**入参用 `taskId` 而不是 `executionId`** —— 执行树是引擎内部结构，仓里有测试钉着「任务响应里不得出现 executionId」；服务层 `executionIdOfTask` 负责换算）。它填的是**并行分支真正的需求**：两条分支各自要不同的局部值时，写流程级会互相覆盖（后写的赢），写任务级则对条件表达式**完全不可见** —— 只剩「污染全局」或「完全无效」两个都不对的选项。它对条件可见靠的是 `WfContext#mergedVariables()` 早就把当前 token 的变量并了进去（引擎内部量 `loopCounter`/`loopAssignee` 就是走这条路生效的），缺的从来不是求值，而是一个**能让业务方写进去的入口**。**读时不做作用域回退**：token 上没设就是没有，哪怕外层有同名值 —— 回退会让「这条分支覆盖了什么」无法回答，而并行分支排障问的正是这个 |
 | 任务挂起（suspension state） | ✅ | `WfTaskService#suspendTask / activateTask`，REST `POST /api/wf/task/suspend\|activate`。**挂起后仍留在待办列表并带 `suspended` 标记**（前端显示暂停角标），刻意不隐藏 —— 挂起常是「等条件成立」不是「单子不存在」，藏起来用户的感受是「我那张单不见了」。闸门覆盖认领/办结/转办/委派/撤回/强制完成/跳转**全部七处**，且报错文案与「已结束」分开：挂起能一键恢复，报成结束会让人去查历史而不是恢复 |
 | `withdraw` | ✅ | z-wf 扩展，比 Camunda 多 |
@@ -114,7 +114,7 @@
 | `createIncidentQuery` | 🟡 | **本轮补上** `WfIncidentService` + `WfIncidentView` + `WfIncidentQuery`，REST `GET /api/wf/incidents` 与 `/incidents/count`，并进 `GET /api/wf/process/overview`。回答的是订阅回答不了的那一半：「在等什么」与「已经没干成」必须一起给 —— 只有订阅时，"单子不动了"分不清是在耐心等还是已经炸了，而这两者处置完全不同。**故障从 job 派生，不建 Camunda 那张独立 incident 表**：故障的定义完全由 job 的 `retries` + `lastFailureTime` 决定，另存一份就多一处可能与 job 对不上，而排障时最不能容忍的就是对不上。代价见 `createHistoricIncidentQuery` 那行 |
 | `createMetricQuery`（引擎指标） | 🟡 | 只有 `getProcessStatusCounts` 一个自定义统计 |
 | `getTableCount` / `getTableNames` / `getProperties` | ✅ | **第 19 轮补上**。自省挂在 `WfPersistence` SPI 上（`getTableNames` / `getTableCount`），`WfManagementService` 负责视图与措辞，REST `GET /api/wf/management/properties` / `/tables` / `/tables/count?name=`。三条硬规矩：① **未知名抛异常不返回 0** —— 拼错表名得到"这里是空的"会把排障方向从「我拼错了」带偏到「谁把它清空了」；② JDBC 侧 `getTableNames()` **从 `DatabaseMetaData` 真查**而不是报常量 —— 常量回答"打算建哪些"，这里要回答"这个库现在真有哪些"，两者在迁移没跑时会分家；③ 视图**显式带 `kind`（table / collection）** —— 内存实现里根本没有表，不标出来运维看到 `ZWF_TASK` 会跑去数据库里找一圈。属性**刻意不含连接串/账号/口令** |
-| 诊断 / 历史级别调整 | ❌ | |
+| 诊断 / 历史级别调整 | ✅ | **第 42 轮补上 `z.wf.history-level`**（`none` / `activity` / `audit` / `full`），对齐 Camunda 的四档命名与次序。档位带进 `GET /api/wf/management/properties`（连同「这一档会少记什么」的说明）。**默认档是 `full` 而不是 Camunda 的 `audit`** —— 因为本引擎引入本特性之前<b>变量审计就是开着的</b>，把默认设成低一档等于「加了配置项本身就在下线一个功能」。⚠️ **从 Camunda 迁配置要注意**：Camunda 的 `audit` 保留变量历史，本引擎的 `audit` 不保留（见本轮小节）。**刻意不做运行期改级别**，理由同 Camunda："history level is stored in the database and cannot be changed later"。**「剩余」指的是自诊断报告**（内存快照 / 线程转储那类），不是历史级别 |
 
 ### 1.6 其余服务
 
@@ -3091,3 +3091,106 @@ M12 只有 admin 层红：核心与 web 的判据只断言「有一行历史故�
 
 ⇒ **保留**。同时按「覆盖不了的行为宁可不写判据、只记下缺口」把这条记在这里，
 不为了凑一个绿的变异而去造一个只能靠反射走出来的用例。
+
+### 第 42 轮：历史级别 `z.wf.history-level`
+
+**为什么选它。** 台账上「诊断 / 历史级别调整」一直挂着 ❌ 且备注为空。
+它是 Camunda 里最常被真实项目调整的一个性能旋钮
+（`process-engine.xml` 的 `<history-level>`，docs.camunda.org 参考文档列为
+`history` 属性，取值 `none|activity|audit|full`），
+而本引擎此前是**一律全记**：活动轨迹、评论留痕、变量审计每条都落库，
+且没有任何办法关掉其中一部分。
+
+**Camunda 四档的原文语义**（User Guide「Choosing a History Level」，7.x 一致）：
+
+- `none`：不记任何历史事件
+- `activity`：流程实例与活动实例的起止 + 任务实例的建/改/完/删
+- `audit`（Camunda 默认）：再加**变量实例**的创建/更新/删除
+- `full`：再加**变量更新的中间值**（Historic Details）
+
+**四处与 Camunda 有意不同，全部写进 `WfHistoryLevel` 的类注释**
+
+1. **默认档是 `full`，不是 `audit`。**
+   这不是"对齐"的问题，是**默认档必须等于基线**：本引擎引入本特性之前
+   变量审计就是开着的（`WfVariableService` 每次变更留一条，8 条既有用例盯着它），
+   把默认设成低一档等于「**加上这个配置项本身**就下线了一个功能」——
+   存量用户不改任何配置却发现变量变更查不到了，而且没有任何报错。
+   判据第一次跑就抓到了：按最初那版把默认设成 `audit`，
+   `WfVariableServiceTest` 直接红了 7 条。
+2. **⚠️ 照抄 Camunda 的 `history=audit` 会静默丢掉变量明细。**
+   本引擎没有「变量当前值历史」这一层（`WfProcessInstance.variables` 是运行期数据，
+   实例清理后就没了），唯一的历史形态就是「每次变更一条」——
+   那正是 Camunda 放在 `full` 的东西。照抄会丢。
+   这条写在枚举注释、`describe()` 与管理端自省三处，因为它是最容易被踩的坑。
+3. **评论留痕落在 `audit`，而 Camunda 把用户操作日志放在 `full`。**
+   因为 z-wf 的 `ZWF_COMMENT` 不只装"用户点了什么"，引擎自己也往里写
+   `error` / `event` / `job` / `move` / `terminate` / `compensation` /
+   `external` 七类留痕 —— 「这一步为什么被走了」全靠它。
+   压到 `full` 等于默认档下排障看不到任何线索。
+4. **不做运行期改级别**，与 Camunda 一致（"the history level is stored in the
+   database and cannot be changed later"）。给的理由更强一点：
+   中途改过之后，"上周五那张单子里哪些记录可信"就没有答案了 ——
+   那不是配置问题，是数据里少了一份说法的历史。
+
+**三个写入点各接一个闸门，刻意不合并成一个 `if`**
+
+| 闸门 | 控制什么 | 低于该档位时 |
+|---|---|---|
+| `WfContext#addActivityHistory` | `ZWF_ACTIVITY_INSTANCE` 活动轨迹 | 不进列表 ⇒ 不落库 |
+| `WfRuntimeService#recordComment` | `ZWF_COMMENT` 引擎留痕 | **静默跳过** |
+| `WfRuntimeService#addComment` | `ZWF_COMMENT` 人工评论 | **抛异常** |
+| `WfVariableService#writeAudit` | 变量审计明细 | **静默跳过**（变量本身照常读写） |
+
+**「静默跳过 vs 抛异常」的分野是本轮最要紧的一条设计**
+
+引擎自己写的留痕在低档位下安静跳过是对的 ——
+那些是顺手留的面包屑，为一个性能配置把流程执行搞挂是本末倒置。
+但 `addComment` 是**调用方明确说"把这句话记下来"**，
+回一句成功却什么都没写，属于本仓第一条纪律里最该拒绝的那类。
+⇒ 变异 M5 专门打这一条。
+
+**刻意不受级别控制的两样东西**
+
+`ZWF_INCIDENT_HISTORY`（第 40 轮的历史故障）与当前故障推导。
+判据是同一条：**「某个 job 现在怎么样」是运行期的问题，
+关掉历史不该让排障失去答案**（Camunda 的 JobLog 同样不受 history level 控制）。
+变异 M6 专门打这一条 —— 它把"记不记故障"绑到级别上，测试立刻抓到"某一档查不到它坏过"。
+
+**收敛 15 处评论写入为一处**（`WfRuntimeService` 里原本 15 个
+`persistence.saveComment(new WfComment(...))` 散在流程推进、定时器、
+事件网关、终止、补偿、外部任务各处）。
+理由不是少写几行，是**让「历史级别」这件事只有一个开关**：
+分散判断的症状是某天新加一处留痕忘了判，于是配置宣称不记历史、实际还记了一半。
+
+**判据抓到的两处真缺陷**
+
+1. **档位语义第一版就是错的**（见上"默认档"那条）——
+   按"看起来对齐 Camunda"的直觉把默认设成 `audit`，8 条既有用例直接红。
+   **它抓到的不是我的测试写错了，是我的设计违反了"默认档 = 基线"。**
+2. **`recordActivityComplete` 在"没有 token 可推进"的兜底路径上必定 NPE**
+   （本轮之前就存在，只是没人走到那条路）：那条路径的存在意义就是
+   「任务有 executionId、但那条 token 查不到了」，而方法体里第一件事就是
+   `execution.getId()`。
+   ⇒ NPE 把这条事实连同 `completeTask` 的返回值一起吃掉，
+   现象是"任务已经 COMPLETED 了，调用方却拿到一个异常"，
+   而人会据此以为办结没发生、于是重办一遍。
+   已修（退回任务自己记的那个 executionId）并单独立了一条回归判据。
+
+**反向验证 13 条变异 + core/admin 两层对照**（`/tmp/verify_r42.py`）。
+其中 **M11/M12/M13 只有 admin 层红**：它们打的是「配置项有没有真的接到
+runtime / management / variable 三个 bean 上」，
+而 core 单测是手工 new 服务的、压根不经过 `WfAutoConfiguration`。
+现象会是「单测全绿、真跑起来配置形同虚设」。
+⇒ 与第 40/41 轮同一条纪律的第三次兑现：**判据要两处覆盖，
+且两处覆盖的东西不该是同一批。**
+
+**本轮明确记下的取舍**
+
+- **`WfContext` 的默认级别是 `DEFAULT` 而不是「必须显式设置」**：
+  `WfEngine` 会自己 new 上下文（绕过 service 层），那里拿不到配置。
+  默认成 `none` 的话漏设一次的表现是「所有轨迹凭空消失」，
+  那种现象极难在第一时间联想到配置。
+- **非法值不回落默认**：`parse` 抛异常，且消息里列出全部合法值。
+  回落是最坏的一种失败 —— 配 `ful` 拼错成 `ful` 之后引擎默默按 `audit` 跑，
+  业务方以为变量中间值都留着，直到合规审计那天才发现，而那时没有一条报错可查。
+  首尾空白照 `trim` 处理：配置值带空白是常事，为它报错等于让人去查一个不存在的问题。

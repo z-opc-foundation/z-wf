@@ -54,6 +54,13 @@ public class WfContext {
     private final java.util.List<WfActivityInstance> activityHistory =
             new java.util.ArrayList<>();
 
+    /**
+     * 本次推进的历史级别（第 42 轮）。
+     *
+     * <p><b>默认 {@link WfHistoryLevel#DEFAULT}</b>，也就是本特性引入之前的行为。
+     */
+    private WfHistoryLevel historyLevel = WfHistoryLevel.DEFAULT;
+
     /** 本次推进新建的 job（定时器边界事件）。 */
     private final java.util.List<WfJob> createdJobs =
             new java.util.ArrayList<>();
@@ -593,10 +600,36 @@ public class WfContext {
         }
     }
 
+    /**
+     * 活动历史登记的唯一入口，闸门在这里（第 42 轮）。
+     *
+     * <p>历史级别低于 {@code activity} 时直接不收：返回值照常（调用方可能只是拿去设字段），
+     * 但**不会进 {@code activityHistory}**，于是 {@code persistAll} 不会写库。
+     */
     public void addActivityHistory(WfActivityInstance instance) {
-        if (instance != null) {
-            activityHistory.add(instance);
+        if (instance == null || !historyLevel.recordsActivityHistory()) {
+            return;
         }
+        activityHistory.add(instance);
+    }
+
+    /**
+     * 本次推进使用的历史级别。
+     *
+     * <p><b>默认 {@link WfHistoryLevel#DEFAULT}</b>，也就是本特性引入之前的行为。
+     * 不做成"必须显式设置"是因为 {@code WfEngine} 自己会 new 上下文（绕过 service 层），
+     * 那里拿不到配置 —— 默认成 {@code NONE} 的话，漏设一次的表现是
+     * 「所有轨迹凭空消失」，而那种现象极难在第一时间联想到配置。
+     * 走 setter 的也只有 {@code WfRuntimeService#newContext} 一处，与既有的
+     * {@code setHookDispatcher} 同一套路。
+     */
+    public WfContext setHistoryLevel(WfHistoryLevel historyLevel) {
+        this.historyLevel = historyLevel == null ? WfHistoryLevel.DEFAULT : historyLevel;
+        return this;
+    }
+
+    public WfHistoryLevel getHistoryLevel() {
+        return historyLevel;
     }
 
     /**
@@ -696,7 +729,14 @@ public class WfContext {
     }
 
     /**
-     * 构造一条活动历史并登记。
+     * 登记一条活动历史。
+     *
+     * <p><b>闸门只加在 {@link #addActivityHistory}，不在这里</b>（第 42 轮）：
+     * {@link WfEngine} 有两处用返回值继续设字段（结束节点的 assignee 置空），
+     * 在这里早退就得返回 null，那两处会 NPE。
+     * 而且闸门放在收口处才真正管用 ——
+     * <b>登记之前它只是"多 new 了一个对象"，落库之前才是"真的多了一行"</b>，
+     * 而历史级别要管的是后者。
      */
     public WfActivityInstance recordActivity(String activityId, String activityName,
                                               String activityType, String outcome) {

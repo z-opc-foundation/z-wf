@@ -21,6 +21,7 @@ import com.zifang.z.wf.core.definition.WfTimerSupport;
 import com.zifang.z.wf.core.definition.WfTimerType;
 import com.zifang.z.wf.core.engine.WfContext;
 import com.zifang.z.wf.core.engine.WfEngine;
+import com.zifang.z.wf.core.engine.WfHistoryLevel;
 import com.zifang.z.wf.core.engine.WfIdGenerator;
 import com.zifang.z.wf.core.engine.WfMultiInstance;
 import com.zifang.z.wf.core.engine.WfPendingEvent;
@@ -116,6 +117,14 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      */
     private final WfHistoricIncidentService incidentHistory;
 
+    /**
+     * 历史级别（第 42 轮）。决定「活动轨迹」与「评论留痕」还记不记。
+     *
+     * <p>旧构造器一律给 {@link WfHistoryLevel#DEFAULT} —— 那是本特性引入之前的行为，
+     * 也就是默认档必须等于的基线。生产上由 {@code WfAutoConfiguration} 走 6 参那个。
+     */
+    private final WfHistoryLevel historyLevel;
+
     public WfRuntimeService(WfRepositoryService repositoryService,
                             WfPersistence persistence,
                             WfEngine engine,
@@ -129,12 +138,23 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                             WfEngine engine,
                             WfHookDispatcher hookDispatcher,
                             WfIdGenerator idGenerator) {
+        this(repositoryService, persistence, engine, hookDispatcher, idGenerator,
+                WfHistoryLevel.DEFAULT);
+    }
+
+    public WfRuntimeService(WfRepositoryService repositoryService,
+                            WfPersistence persistence,
+                            WfEngine engine,
+                            WfHookDispatcher hookDispatcher,
+                            WfIdGenerator idGenerator,
+                            WfHistoryLevel historyLevel) {
         this.repositoryService = repositoryService;
         this.persistence = persistence;
         this.engine = engine;
         this.hookDispatcher = hookDispatcher;
         this.idGenerator = idGenerator;
         this.incidentHistory = new WfHistoricIncidentService(persistence);
+        this.historyLevel = historyLevel == null ? WfHistoryLevel.DEFAULT : historyLevel;
     }
 
     // ==================== 发起 ====================
@@ -727,14 +747,46 @@ public class WfRuntimeService implements WfSubProcessLauncher {
 
     /**
      * 加签评论。
+     *
+     * <p><b>这是唯一一个"有人明确要求留痕"的入口，所以它不静默跳过，而是抛异常</b>（第 42 轮）。
+     * 引擎自己写的那些留痕（{@link #recordComment}）在低档位下安静跳过是对的 ——
+     * 那些是引擎顺手留的面包屑，抛异常会让一个性能配置把流程执行搞挂。
+     * 但这里是调用方主动说"把这句话记下来"，回一句"好的"然后什么都没写，
+     * 属于本仓第一条纪律（永远不静默降级）里最该拒绝的那一类。
      */
     public WfComment addComment(String processInstanceId, String taskId, String userId,
                                 String type, String content) {
+        if (!historyLevel.recordsComments()) {
+            throw new WfEngineException("当前历史级别是 " + historyLevel.name().toLowerCase()
+                    + "，" + historyLevel.describe() + "，因此无法记录这条评论。"
+                    + "需要它就别关历史（z.wf.history-level 至少设为 audit）——"
+                    + "宁可让这次调用失败，也不能回一句成功却什么都没留下");
+        }
         WfComment comment = new WfComment(idGenerator.nextCommentId(), processInstanceId, userId,
                 type, content);
         comment.setTaskId(taskId);
         persistence.saveComment(comment);
         return comment;
+    }
+
+    /**
+     * 引擎留痕的统一入口（第 42 轮）。
+     *
+     * <p>收敛成一个方法不是为了少写几行，是为了**让「历史级别」这件事只有一个开关**。
+     * 分散在十几个调用点各判一次的症状是：某天新加了一处留痕忘了判，
+     * 于是 {@code z.wf.history-level=none} 宣称不记历史、实际还记了一半 ——
+     * 而没有一条报错，只是库表比预期大（那个方向不显眼），
+     * 反过来（该记的没记）才会被人发现。
+     *
+     * <p>与 {@link #addComment} 的差别是<b>跳过 vs 抛异常</b>，理由见那边。
+     */
+    private void recordComment(String processInstanceId, String operatorId,
+                               String type, String content) {
+        if (!historyLevel.recordsComments()) {
+            return;
+        }
+        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                processInstanceId, operatorId, type, content));
     }
 
     public List<WfComment> getComments(String processInstanceId) {
@@ -1211,10 +1263,20 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      * <p><b>只在两条路径上调用</b>：会签未收口（那一步不走 leave），
      * 以及没有 token 可推进的兜底。正常路径由 {@code WfEngine#leave} 统一写，
      * 两边都写会让同一步骤在轨迹上出现两条。
+     *
+     * <p>{@code execution} <b>真的会是 null</b>：兜底那条路径的整个存在意义就是
+     * 「任务有 executionId、但那条 token 查不到了」。此前这里无条件
+     * {@code execution.getId()}，于是那条兜底路径一进去就 NPE ——
+     * 而它要记的恰恰是「任务已完成但没有 token 可推进」这件事，
+     * NPE 把这条事实连同 {@code completeTask} 的返回值一起吃掉了，
+     * 现象是"任务已经 COMPLETED 了，调用方却拿到一个异常"。
      */
     private void recordActivityComplete(WfProcessInstance instance, WfDefinition definition,
                                         WfTask task, WfExecution execution, String userId,
                                         String comment) {
+        if (!historyLevel.recordsActivityHistory()) {
+            return;
+        }
         if (definition.node(task.getDefinitionId()) == null) {
             return;
         }
@@ -1225,7 +1287,10 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         history.setActivityId(task.getDefinitionId());
         history.setActivityName(task.getName());
         history.setActivityType(task.getType());
-        history.setExecutionId(execution.getId());
+        // 兜底路径上退回任务自己记的那个 id：它可能已经查不到对应的行了，
+        // 但「当时指向哪里」是这条历史唯一还有价值的信息，不能因为查不到就丢掉
+        history.setExecutionId(execution == null
+                ? task.getExecutionId() : execution.getId());
         history.setAssignee(userId);
         history.setStartTime(task.getCreateTime());
         history.setEndTime(new Date());
@@ -1433,9 +1498,8 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         WfNode boundary = findErrorBoundary(definition, nodeId, errorCode);
 
         // ---- 记录错误：让"为什么失败"在轨迹与日志里都能查到 ----
-        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                instance.getId(), errorOperator(task), "error",
-                "节点 " + nodeId + " 抛出 BPMN 错误 [" + errorCode + "]: " + message));
+        recordComment(instance.getId(), errorOperator(task), "error",
+                "节点 " + nodeId + " 抛出 BPMN 错误 [" + errorCode + "]: " + message);
         log.warn("流程 {} 节点 {} 抛出 BPMN 错误 [{}]: {}",
                 instance.getId(), nodeId, errorCode, message);
 
@@ -1629,13 +1693,12 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                         java.time.ZoneId.systemDefault())
                 .format(java.time.format.DateTimeFormatter
                         .ofPattern("yyyy-MM-dd HH:mm"));
-        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                job.getProcessInstanceId(),
+        recordComment(job.getProcessInstanceId(),
                 userId == null || userId.trim().isEmpty() ? "system" : userId.trim(),
                 "job",
                 "job " + job.getId() + "（" + job.getType().getLabel() + "，节点 "
                         + job.getAttachedToRef() + "）被手动提前触发，原定到期时刻 " + due
-                        + "。轨迹上那条「停留超时」是定时器的措辞，不适用于本次触发"));
+                        + "。轨迹上那条「停留超时」是定时器的措辞，不适用于本次触发");
         log.info("job {} 被 {} 手动提前触发（原定到期 {}）",
                 job.getId(), userId, due);
     }
@@ -1763,11 +1826,10 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         }
         boolean allows = evaluateEventCondition(condition, variables);
         if (!allows) {
-            persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                    instance == null ? null : instance.getId(), "system", "job",
+            recordComment(instance == null ? null : instance.getId(), "system", "job",
                     "事件网关分支 " + catchEvent.getId() + " 的条件不成立（"
                             + condition + "），本次事件不算它赢，继续等待。"
-                            + "触发来源：" + reason));
+                            + "触发来源：" + reason);
             log.info("流程 {} 事件网关分支 {}：条件 [{}] 不成立，本次不算它赢",
                     instance == null ? "?" : instance.getId(), catchEvent.getId(), condition);
         }
@@ -1838,9 +1900,8 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             return null;
         }
 
-        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                instance.getId(), "system", "job",
-                reason + "，触发边界事件 " + boundary.getId()));
+        recordComment(instance.getId(), "system", "job",
+                reason + "，触发边界事件 " + boundary.getId());
 
         // 非中断型：宿主 token 一步都不动，另起一条从边界出发的并行分支
         if (boundary.isNonInterrupting()) {
@@ -1945,11 +2006,10 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         if (destroyed > 0) {
             // 不静默：销毁了几条 token 必须在轨迹上写一句。
             // 排障的人看到「流程不结束」时，得能直接读出是不是这一步干的
-            persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                    context.getProcessInstanceId(), "system", "job",
+            recordComment(context.getProcessInstanceId(), "system", "job",
                     "多实例节点 " + hostNodeId + " 被边界事件 " + boundary.getId()
                             + " 打断，按 parallelMultiple=" + false
-                            + "（整个活动一个边界事件）销毁其余 " + destroyed + " 个实例"));
+                            + "（整个活动一个边界事件）销毁其余 " + destroyed + " 个实例");
         }
         return destroyed;
     }
@@ -2174,10 +2234,9 @@ public class WfRuntimeService implements WfSubProcessLauncher {
 
         int cancelled = gateway == null ? 0 : cancelSiblingBranches(context, definition, gateway,
                 catchEvent.getId());
-        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                instance.getId(), context.getAuthenticatedUserId(), "job",
+        recordComment(instance.getId(), context.getAuthenticatedUserId(), "job",
                 reason + "，走事件网关分支 " + catchEvent.getId()
-                        + (cancelled > 0 ? "，作废其余 " + cancelled + " 条分支" : "")));
+                        + (cancelled > 0 ? "，作废其余 " + cancelled + " 条分支" : ""));
         log.info("流程 {} 事件网关 {}：事件 {} 命中分支 {}，作废其余 {} 条",
                 instance.getId(), gateway == null ? "?" : gateway.getId(),
                 job.getExceptionMessage(), catchEvent.getId(), cancelled);
@@ -2383,10 +2442,9 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         if (variables != null && !variables.isEmpty()) {
             instance.getVariables().putAll(variables);
         }
-        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                instance.getId(), workerId, "external",
+        recordComment(instance.getId(), workerId, "external",
                 "外部任务 [" + job.getTopic() + "] 完成"
-                        + (variables == null || variables.isEmpty() ? "" : "，结果 " + variables)));
+                        + (variables == null || variables.isEmpty() ? "" : "，结果 " + variables));
 
         // 显式删掉，顺序与 WfJobService#fire 一致（先删再推进）。
         //
@@ -2473,10 +2531,9 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         // 第 40 轮挂了两处独立的失败写入点，这里是第三处。漏掉它的症状不是少一行记录，
         // 而是「外部任务带着错误码失败过」这件事在历史里彻底查不到 ——
         // 而那恰恰是最需要事后复盘的一类：谁在什么时候报了哪个码。
-        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                instance.getId(), workerId, "error",
+        recordComment(instance.getId(), workerId, "error",
                 "外部任务 [" + job.getTopic() + "] 在节点 " + nodeId
-                        + " 抛出 BPMN 错误 [" + errorCode + "]: " + message));
+                        + " 抛出 BPMN 错误 [" + errorCode + "]: " + message);
         // 错误码进消息正文而**不进 errorType**：那个字段是"异常类名"，
         // 而 BPMN 错误码不是 Java 类。塞进去会让「按异常类型筛」筛出一堆不相干的行，
         // 而筛出来的行看上去又完全合规 —— 那是更难查的一种错。
@@ -2549,9 +2606,8 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             return false;
         }
 
-        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                instance.getId(), "system", "job",
-                (before ? "异步前置" : "异步后置") + "续跑节点 " + node.getId()));
+        recordComment(instance.getId(), "system", "job",
+                (before ? "异步前置" : "异步后置") + "续跑节点 " + node.getId());
         persistence.deleteJob(job.getId());
 
         WfContext context = contextForError(instance, definition, token, null);
@@ -2637,12 +2693,12 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                     + "。已结束的 token 不参与迁移 —— 拿它去改会造出一条孤儿记录");
         }
 
-        persistence.saveComment(new WfComment(idGenerator.nextCommentId(), processInstanceId,
+        recordComment(processInstanceId,
                 operatorId == null || operatorId.trim().isEmpty() ? "system" : operatorId,
                 "move", "迁移到节点 " + targetActivityId + "：迁走 " + candidates.size()
                 + " 条 token（原位置 "
                 + candidates.get(0).getActivityId() + "）"
-                + (reason == null || reason.trim().isEmpty() ? "" : "。原因: " + reason)));
+                + (reason == null || reason.trim().isEmpty() ? "" : "。原因: " + reason));
 
         // 先把源节点上的待办统一撤掉，再逐条迁移。
         // 顺序有讲究：先撤后迁，中间不存在"待办还挂在已经被迁走的节点上"的窗口。
@@ -2777,6 +2833,9 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                                  WfExecution execution) {
         WfContext context = engine.newContext(definition, instance, execution);
         context.setHookDispatcher(hookDispatcher);
+        // 历史级别随这一次推进走下去（第 42 轮）：活动的登记发生在引擎内部，
+        // 闸门必须在这一层的上下文里，service 层拦不到
+        context.setHistoryLevel(historyLevel);
         return context;
     }
 
@@ -3218,11 +3277,10 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             // 登记的行找不到边界事件（定义被换过版本、或 activityRef 指错了）。
             // 记一条评论而不是静默跳过：静默跳过的后果是「该退的没退」且无人知晓 ——
             // 而终止照样发生、实例照样完成，轨迹上一片正常。
-            persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                    instance.getId(), null, "compensation",
+            recordComment(instance.getId(), null, "compensation",
                     "补偿登记 " + entry.getId() + " 指向的活动 " + targetId
                             + " 在当前版本的定义里没有补偿边界事件，无法补偿。"
-                            + "多半是定义换版本后登记行留了下来"));
+                            + "多半是定义换版本后登记行留了下来");
             log.warn("流程 {} 的补偿登记 {} 找不到活动 {} 的补偿边界事件",
                     instance.getId(), entry.getId(), targetId);
             return;
@@ -3354,11 +3412,10 @@ public class WfRuntimeService implements WfSubProcessLauncher {
         // ---- 4. 留痕 ----
         // 「谁在什么时候把哪一片一起收掉了」是排障时第一个要问的问题，
         // 而终止在业务上通常**看不出是谁触发的**（一条分支自己走完了而已）
-        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                processInstanceId, context.getAuthenticatedUserId(), "terminate",
+        recordComment(processInstanceId, context.getAuthenticatedUserId(), "terminate",
                 "terminateEndEvent 终止了" + scopeLabel
                         + "：结束 token " + endedTokens + " 条、作废待办 " + cancelledTasks
-                        + " 条、撤销 job " + removedJobs + " 条"));
+                        + " 条、撤销 job " + removedJobs + " 条");
         log.info("流程 {} 的 {} 被 terminateEndEvent 终止: token={} 待办={} job={}",
                 processInstanceId, scopeLabel, endedTokens, cancelledTasks, removedJobs);
     }
@@ -3461,9 +3518,8 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             // 免得它变成一次无人知晓的静默。
             log.info("{}：唤醒 {} 个订阅者", comment, advanced.size());
             if (source != null) {
-                persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                        source.getId(), "system", "event", comment
-                                + "（唤醒 " + advanced.size() + " 个订阅者）"));
+                recordComment(source.getId(), "system", "event", comment
+                                + "（唤醒 " + advanced.size() + " 个订阅者）");
             }
             return;
         }
@@ -3476,9 +3532,9 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                 event.getVariables(), comment);
         log.info("{}：{}", comment, hit == null ? "当前没有订阅者" : "已被 " + hit.getId() + " 接走");
         if (source != null) {
-            persistence.saveComment(new WfComment(idGenerator.nextCommentId(), source.getId(),
+            recordComment(source.getId(),
                     "system", "event", comment
-                            + (hit == null ? "（当前没有订阅者）" : "（已被 " + hit.getId() + " 接走）")));
+                            + (hit == null ? "（当前没有订阅者）" : "（已被 " + hit.getId() + " 接走）"));
         }
     }
 
@@ -3525,9 +3581,8 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                 source == null ? "system" : source.getStartUserId(), comment);
         log.info("{}：升级 {} 个流程实例", comment, escalated.size());
         if (source != null) {
-            persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                    source.getId(), "system", "event", comment
-                            + "（升级 " + escalated.size() + " 个流程实例）"));
+            recordComment(source.getId(), "system", "event", comment
+                            + "（升级 " + escalated.size() + " 个流程实例）");
         }
     }
 

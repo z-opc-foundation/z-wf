@@ -19,6 +19,7 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 
 import com.zifang.z.wf.core.engine.WfBehaviorRegistry;
 import com.zifang.z.wf.core.engine.WfEngine;
+import com.zifang.z.wf.core.engine.WfHistoryLevel;
 import com.zifang.z.wf.core.engine.WfIdGenerator;
 import com.zifang.z.wf.core.engine.expression.WfExpressionEvaluator;
 import com.zifang.z.wf.core.hook.WfHookDispatcher;
@@ -196,9 +197,10 @@ public class WfAutoConfiguration {
                                              WfPersistence persistence,
                                              WfEngine engine,
                                              WfHookDispatcher hookDispatcher,
-                                             WfIdGenerator idGenerator) {
+                                             WfIdGenerator idGenerator,
+                                             WfProperties properties) {
         return new WfRuntimeService(repositoryService, persistence, engine, hookDispatcher,
-                idGenerator);
+                idGenerator, historyLevelOf(properties));
     }
 
     @Bean
@@ -219,8 +221,23 @@ public class WfAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public WfVariableService wfVariableService(WfPersistence persistence,
-                                               WfIdGenerator idGenerator) {
-        return new WfVariableService(persistence, idGenerator);
+                                               WfIdGenerator idGenerator,
+                                               WfProperties properties) {
+        return new WfVariableService(persistence, idGenerator, historyLevelOf(properties));
+    }
+
+    /**
+     * 把配置里的历史级别解析成枚举（第 42 轮）。
+     *
+     * <p>单列一个方法是因为<b>两个 bean 都要它</b>，而两处各写一遍
+     * {@code WfHistoryLevel.parse(...)} 的话，迟早有一处会漏掉"解析失败要抛"
+     * 这个决定 —— 漏掉的那处表现为「配置写错了却按默认档跑」。
+     *
+     * <p>走的是 bean 方法的参数注入而不是构造器：解析在 bean 创建时发生，
+     * 配置非法就是**启动失败**，而不是等到第一条流程跑起来才发现。
+     */
+    private WfHistoryLevel historyLevelOf(WfProperties properties) {
+        return WfHistoryLevel.parse(properties == null ? null : properties.getHistoryLevel());
     }
 
     /**
@@ -318,8 +335,9 @@ public class WfAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
-    public WfManagementService wfManagementService(WfPersistence persistence) {
-        return new WfManagementService(persistence);
+    public WfManagementService wfManagementService(WfPersistence persistence,
+                                                   WfProperties properties) {
+        return new WfManagementService(persistence, historyLevelOf(properties));
     }
 
     /**

@@ -9,6 +9,7 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.zifang.z.wf.core.engine.WfHistoryLevel;
 import com.zifang.z.wf.core.engine.WfIdGenerator;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
@@ -56,9 +57,26 @@ public class WfVariableService {
     private final WfPersistence persistence;
     private final WfIdGenerator idGenerator;
 
+    /**
+     * 历史级别（第 42 轮）。低于 {@code full} 时**只停掉审计痕迹，变量本身照常读写**。
+     *
+     * <p>这个不对称是有意的：变量是<b>流程正在用的数据</b>，关掉它流程就跑不动了；
+     * 而「谁在什么时候把 1000 改成 500」是一条<b>事后才有用的痕迹</b>。
+     * 两者被同一个开关绑在一起才是危险的 ——
+     * 有人为了省空间把级别降到 {@code audit}，结果变量读不到了，
+     * 而他完全看不出这两件事有关系。
+     */
+    private final WfHistoryLevel historyLevel;
+
     public WfVariableService(WfPersistence persistence, WfIdGenerator idGenerator) {
+        this(persistence, idGenerator, WfHistoryLevel.DEFAULT);
+    }
+
+    public WfVariableService(WfPersistence persistence, WfIdGenerator idGenerator,
+                             WfHistoryLevel historyLevel) {
         this.persistence = persistence;
         this.idGenerator = idGenerator;
+        this.historyLevel = historyLevel == null ? WfHistoryLevel.DEFAULT : historyLevel;
     }
 
     // ==================== 读取 ====================
@@ -333,10 +351,29 @@ public class WfVariableService {
         return task.getExecutionId();
     }
 
-    private void recordExecutionAudit(WfExecution execution, String operatorId, String trace) {
+    /**
+     * 变量变更审计的唯一入口（第 42 轮）。
+     *
+     * <p>三处写入（流程级 / token 局部 / 任务级）都走它，于是
+     * 「{@code z.wf.history-level} 低于 full 时一条审计都不留」只由一个谓词决定。
+     * 分三处各判一次的话，少判一处得到的是**部分审计** ——
+     * 而「谁把金额从 1000 改成 500」这个问题，答一半比不答更坏。
+     *
+     * <p>闸门关掉的是痕迹，<b>不是变量本身</b>：{@code log.info} 照打，
+     * 所以关掉审计之后「有谁动过」在日志里还在，
+     * 「什么时候、谁、改成多少」则只剩运行期日志能回答。
+     */
+    private void writeAudit(String processInstanceId, String operatorId, String trace) {
+        if (!historyLevel.recordsVariableAudit()) {
+            return;
+        }
         persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                execution.getProcessInstanceId(), operatorId, COMMENT_TYPE_VARIABLE,
-                "token " + execution.getActivityId() + "(" + execution.getId() + ") " + trace));
+                processInstanceId, operatorId, COMMENT_TYPE_VARIABLE, trace));
+    }
+
+    private void recordExecutionAudit(WfExecution execution, String operatorId, String trace) {
+        writeAudit(execution.getProcessInstanceId(), operatorId,
+                "token " + execution.getActivityId() + "(" + execution.getId() + ") " + trace);
         log.info("token {} 变量变更 by {}: {}", execution.getId(), operatorId, trace);
     }
 
@@ -373,17 +410,15 @@ public class WfVariableService {
         persistence.saveProcessInstance(instance);
         if (traces != null) {
             for (String trace : traces) {
-                persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                        instance.getId(), operatorId, COMMENT_TYPE_VARIABLE, trace));
+                writeAudit(instance.getId(), operatorId, trace);
             }
         }
         log.info("流程 {} 变量变更 by {}: {}", instance.getId(), operatorId, traces);
     }
 
     private void recordTaskAudit(WfTask task, String operatorId, String trace) {
-        persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
-                task.getProcessInstanceId(), operatorId, COMMENT_TYPE_VARIABLE,
-                "任务 " + task.getName() + "(" + task.getId() + ") " + trace));
+        writeAudit(task.getProcessInstanceId(), operatorId,
+                "任务 " + task.getName() + "(" + task.getId() + ") " + trace);
         log.info("任务 {} 变量变更 by {}: {}", task.getId(), operatorId, trace);
     }
 

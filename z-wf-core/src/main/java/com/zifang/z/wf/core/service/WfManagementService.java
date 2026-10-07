@@ -8,6 +8,7 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.zifang.z.wf.core.engine.WfHistoryLevel;
 import com.zifang.z.wf.core.persistence.JdbcWorkflowPersistence;
 import com.zifang.z.wf.core.persistence.WfPersistence;
 import com.zifang.z.wf.core.view.WfTableInfo;
@@ -56,8 +57,20 @@ public class WfManagementService {
 
     private final WfPersistence persistence;
 
+    /**
+     * 当前历史级别（第 42 轮）。自省接口要能回答「这个引擎到底记不记历史」——
+     * 否则运维看到轨迹是空的，唯一能做的事是去翻配置文件，
+     * 而空轨迹的第一个原因永远是"配错了"。
+     */
+    private final WfHistoryLevel historyLevel;
+
     public WfManagementService(WfPersistence persistence) {
+        this(persistence, WfHistoryLevel.DEFAULT);
+    }
+
+    public WfManagementService(WfPersistence persistence, WfHistoryLevel historyLevel) {
         this.persistence = persistence;
+        this.historyLevel = historyLevel == null ? WfHistoryLevel.DEFAULT : historyLevel;
     }
 
     /**
@@ -74,6 +87,10 @@ public class WfManagementService {
         properties.put("schemaVersion", SCHEMA_VERSION);
         properties.put("persistence", persistenceKind());
         properties.put("storage", storageHint());
+        // 级别与它「会少记什么」一起给：只给一个 "audit"，
+        // 看到轨迹里没有变量中间值的人仍然不知道为什么
+        properties.put("historyLevel", historyLevel.name().toLowerCase());
+        properties.put("historyLevelDetail", historyLevel.describe());
         List<String> names = persistence.getTableNames();
         properties.put("storageCount", names.size());
         return properties;

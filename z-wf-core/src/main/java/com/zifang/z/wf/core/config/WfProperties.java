@@ -13,6 +13,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * z.wf.process-path=classpath*:processes/
  * z.wf.fail-open=false           # 条件求值失败时是否放行（默认 false = 卡住）
  * z.wf.auto-initialize-schema=true
+ * z.wf.history-level=audit       # none | activity | audit | full
  * </pre>
  *
  * @author zifang
@@ -45,6 +46,18 @@ public class WfProperties {
 
     /** 流程实例结果为该值时视为"通过"（供 SPI / 业务方判定 approved）。 */
     private String approvedResult = "approved";
+
+    /**
+     * 历史级别（第 42 轮）：{@code none} / {@code activity} / {@code audit} / {@code full}。
+     *
+     * <p>默认 {@code audit}，与 Camunda 一致，也等于本特性引入之前的行为 ——
+     * <b>默认档必须是无差别的那一档</b>，否则「加上这个配置项」本身就是一次行为变更。
+     *
+     * <p>刻意用 String 而不是直接绑定枚举：绑定失败时 Spring 抛的是
+     * 转换器自己的异常，说的是"无法把 X 转成 Y"，不告诉运维合法值有哪些。
+     * 这里由 {@link com.zifang.z.wf.core.engine.WfHistoryLevel#parse} 自己解析并报错。
+     */
+    private String historyLevel = "full";
 
     public boolean isEnabled() {
         return enabled;
@@ -100,5 +113,13 @@ public class WfProperties {
 
     public void setApprovedResult(String approvedResult) {
         this.approvedResult = approvedResult;
+    }
+
+    public String getHistoryLevel() {
+        return historyLevel;
+    }
+
+    public void setHistoryLevel(String historyLevel) {
+        this.historyLevel = historyLevel;
     }
 }
