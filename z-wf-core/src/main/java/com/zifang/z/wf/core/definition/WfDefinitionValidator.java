@@ -2270,21 +2270,34 @@ public class WfDefinitionValidator {
      *
      * <p><b>这里只列还真的会走到的元素</b>。原名单里的 {@code intermediateThrowEvent}
      * 与 {@code intermediateCatchEvent} 已分别在第 18 / 7 轮有了原生实现，
-     * {@code linkThrowEvent} / {@code linkCatchEvent} 也在第 22 轮有了原生实现 ——
+     * {@code linkThrowEvent} / {@code linkCatchEvent} 也在第 22 轮有了原生实现，
+     * {@code transaction} 在第 38 轮有了原生实现 ——
      * 原生类型不会再被标记成退化元素，于是这几个分支永远不会被调用。
      * 留着它们不是"以防万一"，而是一条<b>走不到、但一旦被改回标记就会给出错误建议</b>的路径：
      * 对已经原生支持的元素说"请改用 sendTask"，作者照着改就把一份能跑的流程改坏了。
+     *
+     * <p><b>第 47 轮：{@code adHocSubProcess} 的这条建议被删了。</b>
+     * 它原先与 {@code transaction} 共用"请改用 &lt;subProcess&gt;"，
+     * 理由是「Camunda 把它当普通 subProcess 处理」——<b>这句话经查证是错的</b>：
+     * Camunda 7 根本不支持该元素；Camunda 8 有一整套独立语义
+     * （{@code activeElementsCollection} 驱动，内层元素可任意顺序 / 跳过 / 重复），
+     * 且其结构约束是<b>内部不得有 start/end event</b>。
+     * 而本仓内联 {@code subProcess} 要求<b>恰好一个内联结束节点</b>。
+     * ⇒ 照这条建议改写，作者会撞上「结束点必须唯一」，
+     * 把一条看得懂的拒绝换成一条更费解的拒绝。
+     * ⇒ 该元素走"暂无等价节点"分支，并直接说清为什么不等价。
      */
     private static String substitutionHint(String elementName) {
         String key = elementName == null ? "" : elementName.trim();
-        String replacement;
-        if ("transaction".equals(key) || "adHocSubProcess".equals(key)) {
-            replacement = "subProcess";
-        } else {
-            return " 本引擎暂无等价节点，请改写流程或等待该元素被支持。";
+        if ("adHocSubProcess".equals(key)) {
+            return " 本引擎暂无等价节点：ad-hoc 子流程要求内部元素可任意顺序、可跳过、可重复"
+                    + "（Camunda 8 用 activeElementsCollection 驱动），且内部不得有开始/结束事件，"
+                    + "而内联 <subProcess> 要求恰好一个内联结束节点 —— "
+                    + "**把元素名改成 subProcess 不会让它跑起来**，只会换成另一条部署期报错。"
+                    + "请把这段流程按固定顺序重画成普通 <subProcess>，"
+                    + "或用 <userTask> 加条件网关显式表达跳过规则。";
         }
-        return " 请改用 <" + replacement
-                + ">，或在元素上显式写 zifang:type 声明你真正想要的类型。";
+        return " 本引擎暂无等价节点，请改写流程或等待该元素被支持。";
     }
 
     private static boolean isBlank(String s) {

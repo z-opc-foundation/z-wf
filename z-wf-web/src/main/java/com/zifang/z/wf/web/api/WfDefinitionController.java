@@ -17,6 +17,10 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.zifang.util.core.meta.Result;
 import com.zifang.z.wf.core.definition.WfDefinition;
+import com.zifang.z.wf.core.service.WfDeploymentEntry;
+import com.zifang.z.wf.core.service.WfDeploymentOrder;
+import com.zifang.z.wf.core.service.WfDeploymentQuery;
+import com.zifang.z.wf.core.service.WfEngineException;
 import com.zifang.z.wf.core.service.WfRepositoryService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -65,6 +69,115 @@ public class WfDefinitionController {
             rows.add(toView(definition));
         }
         return Result.success(rows);
+    }
+
+    /**
+     * 部署历史：<b>跨所有 key 的全部版本</b>（第 47 轮）。
+     *
+     * <p><b>与 {@link #versions} 的分工</b>：那个要先知道 key，且只答那一个 key；
+     * 这个不预设任何 key，答的是「这段时间里 / 这个分类下 / 这批 key 上，
+     * 到底部署过什么」。存量界面上没有第二种能力。
+     *
+     * <p>返回<b>分页信封</b>（{@code records} / {@code total} / {@code pageNum} / {@code pageSize}）而不是裸列表 ——
+     * 部署历史天然会越积越多，而裸列表只能靠"截断"来限流，
+     * 截断的那一份<b>看起来就是全部</b>。
+     */
+    @GetMapping("/history")
+    @Operation(summary = "009_查部署历史（跨 key 全部版本，可按分类/时间窗/有无原始 XML 筛）")
+    public Result<Map<String, Object>> history(
+            @RequestParam(required = false) String key,
+            @RequestParam(required = false) String keyLike,
+            @RequestParam(required = false) String nameLike,
+            @RequestParam(required = false) String category,
+            @RequestParam(required = false) Boolean suspended,
+            @RequestParam(required = false) Boolean defaultDefinition,
+            @RequestParam(required = false) Boolean hasSourceXml,
+            @RequestParam(required = false) Long deployedFrom,
+            @RequestParam(required = false) Long deployedTo,
+            @RequestParam(required = false) String orderBy,
+            @RequestParam(required = false, defaultValue = "1") Integer pageNum,
+            @RequestParam(required = false, defaultValue = "50") Integer pageSize) {
+
+        WfDeploymentQuery query = new WfDeploymentQuery()
+                .setKey(key)
+                .setKeyLike(keyLike)
+                .setNameLike(nameLike)
+                .setCategory(category)
+                .setSuspended(suspended)
+                .setDefaultDefinition(defaultDefinition)
+                .setHasSourceXml(hasSourceXml)
+                .setDeployedFrom(toDate(deployedFrom))
+                .setDeployedTo(toDate(deployedTo))
+                .setOrderBy(parseOrder(orderBy))
+                .setPageNum(pageNum == null ? 1 : pageNum)
+                .setPageSize(pageSize == null ? 50 : pageSize);
+
+        List<WfDeploymentEntry> records = repositoryService.queryDeployments(query);
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("records", deploymentEntryViews(records));
+        view.put("total", repositoryService.countDeployments(query));
+        view.put("pageNum", query.normalizedPageNum());
+        view.put("pageSize", query.normalizedPageSize());
+        return Result.success(view);
+    }
+
+    /**
+     * 排序参数解析，<b>不认识的直接报错并列出可选值</b>。
+     *
+     * <p>不静默回落成默认排序：那一栏会真的按另一个次序出数据，
+     * 而调用方以为是自己选错了顺序 —— 症状是"排序功能时灵时不灵"。
+     */
+    private WfDeploymentOrder parseOrder(String raw) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return WfDeploymentOrder.DEPLOY_TIME_DESC;
+        }
+        String normalized = raw.trim().replace('-', '_').toUpperCase(java.util.Locale.ROOT);
+        for (WfDeploymentOrder candidate : WfDeploymentOrder.values()) {
+            if (candidate.name().equals(normalized)) {
+                return candidate;
+            }
+        }
+        StringBuilder options = new StringBuilder();
+        for (WfDeploymentOrder candidate : WfDeploymentOrder.values()) {
+            if (options.length() > 0) {
+                options.append(", ");
+            }
+            options.append(candidate.name());
+        }
+        throw new WfEngineException("不支持的部署历史排序: " + raw + "，可选值: " + options);
+    }
+
+    /**
+     * 毫秒时间戳 → {@link java.util.Date}；{@code null} 透传。
+     *
+     * <p>入参用毫秒时间戳而不是日期字符串，与本仓其它所有视图与筛选器条件同一口径 ——
+     * 存字符串的日期在不同机器上会按本地时区解释，
+     * 症状是「按时间窗查部署，边界上少了几条」且换个时区就复现不了。
+     */
+    private java.util.Date toDate(Long epochMillis) {
+        return epochMillis == null ? null : new java.util.Date(epochMillis);
+    }
+
+    private List<Map<String, Object>> deploymentEntryViews(List<WfDeploymentEntry> entries) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (WfDeploymentEntry entry : entries) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("key", entry.getKey());
+            row.put("version", entry.getVersion());
+            row.put("name", entry.getName());
+            row.put("category", entry.getCategory());
+            row.put("description", entry.getDescription());
+            row.put("suspended", entry.isSuspended());
+            row.put("defaultDefinition", entry.isDefaultDefinition());
+            // 毫秒时间戳：与本仓其它视图同一口径，调用方不用再猜时区
+            row.put("deployTime", entry.getDeployTime() == null
+                    ? null : entry.getDeployTime().getTime());
+            // hasSourceXml 是这一层最有信息量的一列：
+            // JSON 部署的定义恒为 false，而 getProcessModel 遇到它们会直接抛错
+            row.put("hasSourceXml", entry.isHasSourceXml());
+            rows.add(row);
+        }
+        return rows;
     }
 
     /**

@@ -25,6 +25,7 @@ import com.zifang.util.json.model.JsonArray;
 import com.zifang.util.json.model.JsonObject;
 import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
+import com.zifang.z.wf.core.service.WfDeploymentEntry;
 import com.zifang.z.wf.core.definition.WfFlow;
 import com.zifang.z.wf.core.definition.WfNode;
 import com.zifang.z.wf.core.definition.WfNodeType;
@@ -899,6 +900,51 @@ public class JdbcWorkflowPersistence implements WfPersistence {
     private static final String DEF_SELECT_ALL =
             "SELECT DEF_KEY, DEF_VERSION, DEF_GRAPH, SOURCE_XML, DEPLOY_TIME, SUSPENDED, IS_DEFAULT "
                     + "FROM ZWF_DEFINITION ";
+
+    /**
+     * 部署元数据投影：<b>不取 {@code DEF_GRAPH}，也不取 {@code SOURCE_XML} 本体</b>。
+     *
+     * <p>不取 DEF_GRAPH 是这张表最值钱的一处优化：
+     * 它存的是整张流程图的 JSON，而部署历史要回答的只是
+     * 「哪个 key、哪一版、什么时候、能不能回读」。
+     *
+     * <p>{@code hasSourceXml} 用 {@code CASE WHEN} 在库里算完再取回，
+     * 而不是把 CLOB 拉进内存再判空 ——
+     * {@code SOURCE_XML} 是一整段 BPMN，为回答"有没有"把它全读一遍，
+     * 在部署记录上千条时是数量级的浪费。
+     * 判据与 {@code WfDefinitionController} 的 {@code hasSourceXml} 一致（空白也算没有），
+     * 两处各写一遍会漂，所以口径写在这里。
+     */
+    private static final String DEF_SELECT_ENTRY =
+            "SELECT DEF_KEY, DEF_VERSION, DEF_NAME, DEF_CATEGORY, DEF_DESCRIPTION, "
+                    + "DEPLOY_TIME, SUSPENDED, IS_DEFAULT, "
+                    + "CASE WHEN SOURCE_XML IS NULL OR TRIM(SOURCE_XML) = '' THEN 0 ELSE 1 END "
+                    + "AS HAS_SOURCE_XML "
+                    + "FROM ZWF_DEFINITION ";
+
+    @Override
+    public List<WfDeploymentEntry> findDeploymentEntries() {
+        // 刻意不加 ORDER BY：本方法只负责"读出行"，
+        // 排序在 WfDeploymentQueryService 里只有一份实现（理由见 WfPersistence 的注释）。
+        // 这里的返回值不保证任何顺序，那不是它的契约。
+        return queryList(DEF_SELECT_ENTRY, new Object[0], new RowMapper<WfDeploymentEntry>() {
+            @Override
+            public WfDeploymentEntry map(ResultSet rs) throws SQLException {
+                WfDeploymentEntry entry = new WfDeploymentEntry();
+                entry.setKey(rs.getString("DEF_KEY"));
+                entry.setVersion(rs.getInt("DEF_VERSION"));
+                entry.setName(rs.getString("DEF_NAME"));
+                entry.setCategory(rs.getString("DEF_CATEGORY"));
+                entry.setDescription(rs.getString("DEF_DESCRIPTION"));
+                Timestamp deployTime = rs.getTimestamp("DEPLOY_TIME");
+                entry.setDeployTime(deployTime == null ? null : new Date(deployTime.getTime()));
+                entry.setSuspended(rs.getInt("SUSPENDED") != 0);
+                entry.setDefaultDefinition(rs.getInt("IS_DEFAULT") != 0);
+                entry.setHasSourceXml(rs.getInt("HAS_SOURCE_XML") != 0);
+                return entry;
+            }
+        });
+    }
 
     @Override
     public WfDefinition findLatestDefinition(String key) {

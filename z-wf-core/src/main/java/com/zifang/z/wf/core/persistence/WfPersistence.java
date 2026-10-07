@@ -79,6 +79,22 @@ public interface WfPersistence {
     List<WfDefinition> findDefinitionsByCategory(String category);
 
     /**
+     * <b>全部</b>定义版本（每个 key 的每一版），投影成部署元数据（第 47 轮）。
+     *
+     * <p><b>与 {@link #findAllDefinitions()} 的唯一区别是不做"每个 key 只出最新一版"的收敛</b> ——
+     * 而这正是部署历史唯一需要的东西。
+     *
+     * <p><b>返回投影而不是 {@link WfDefinition}</b>：{@code DEF_GRAPH} 是整张图的 JSON、
+     * {@code SOURCE_XML} 是原始 BPMN，逐行反序列化只为回答"哪个 key 哪一版什么时候"是纯浪费。
+     *
+     * <p><b>实现里不允许有任何过滤或排序</b> ——
+     * 全部由 {@code WfDeploymentQueryService} 一份实现负责。
+     * 理由见那个类的注释：条件在两个实现里各写一遍时，漏一边的症状是
+     * 「开发期内存全绿、换 JDBC 之后查不到」，而内存模式下完全不可见。
+     */
+    List<com.zifang.z.wf.core.service.WfDeploymentEntry> findDeploymentEntries();
+
+    /**
      * 物理删除某个版本的定义。
      *
      * <p><b>调用方必须先确认没有在跑的实例</b>：本引擎每次推进都按

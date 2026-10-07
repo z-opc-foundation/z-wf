@@ -19,6 +19,7 @@ import org.slf4j.LoggerFactory;
 
 import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
+import com.zifang.z.wf.core.service.WfDeploymentEntry;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfBatch;
 import com.zifang.z.wf.core.model.WfBatchElement;
@@ -333,6 +334,46 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
                 continue;
             }
             result.add(definition);
+        }
+        return result;
+    }
+
+    /**
+     * 部署元数据投影：<b>遍历全部 key 的全部版本</b>。
+     *
+     * <p>与 {@link #findAllDefinitions()} 的唯一区别是不做"每个 key 只出最新一版"的收敛 ——
+     * 这正是部署历史唯一需要的东西。
+     *
+     * <p><b>刻意不打任何过滤条件、不排序</b>：那些全部在
+     * {@code WfDeploymentQueryService} 里，只有一份实现。
+     * 条件在这边也写一份的话，漏改时症状是
+     * 「开发期（内存）查得到、线上（JDBC）查不到」，而内存模式下完全不可见。
+     */
+    @Override
+    public synchronized List<WfDeploymentEntry> findDeploymentEntries() {
+        List<WfDeploymentEntry> result = new ArrayList<>();
+        for (Map.Entry<String, Map<Integer, WfDefinition>> byKey : definitions.entrySet()) {
+            for (WfDefinition definition : byKey.getValue().values()) {
+                if (definition == null) {
+                    continue;
+                }
+                WfDeploymentEntry entry = new WfDeploymentEntry();
+                entry.setKey(definition.getKey());
+                entry.setVersion(definition.getVersion());
+                entry.setName(definition.getName());
+                entry.setCategory(definition.getCategory());
+                entry.setDescription(definition.getDescription());
+                // 不给 copy()：本方法只读元数据，copy 是为"防调用方改内存里的对象"准备的，
+                // 而这里返回的每个字段都是刚 set 上去的不可变视图之外的东西
+                entry.setDeployTime(definition.getStartTime() == null
+                        ? null : new Date(definition.getStartTime().getTime()));
+                entry.setSuspended(definition.isSuspended());
+                entry.setDefaultDefinition(definition.isDefaultDefinition());
+                // 口径与 JDBC 的 CASE WHEN 一致：空白 XML 同样算"没有"
+                String xml = definition.getSourceXml();
+                entry.setHasSourceXml(xml != null && !xml.trim().isEmpty());
+                result.add(entry);
+            }
         }
         return result;
     }

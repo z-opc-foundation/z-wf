@@ -150,19 +150,30 @@ class UnsupportedBpmnElementTest {
     }
 
     @Test
-    @DisplayName("adHocSubProcess 仍给出替代建议 subProcess")
-    void unsupportedSubProcessLikeStillSuggestsSubProcess() {
-        // 退化名单原先是 {transaction, adHocSubProcess}；第 38 轮 transaction
-        // 有了原生实现，名单只剩 adHocSubProcess。
-        // 它与 subProcess 的等价关系成立（Camunda 把 ad-hoc 当普通 subProcess 处理），
-        // 所以仍要给建议 —— 别把这条一起删掉。
+    @DisplayName("adHocSubProcess **不得**再建议改写成 subProcess（那条建议经查证是错的）")
+    void adHocSubProcessMustNotSuggestSubProcess() {
+        // 第 38 轮曾让它与 transaction 共用「请改用 <subProcess>」，理由是
+        // 「Camunda 把它当普通 subProcess 处理」。**那句话经查证是错的**：
+        //   ① Camunda 7 根本不支持该元素；
+        //   ② Camunda 8 有独立语义（activeElementsCollection 驱动，
+        //      内层元素可任意顺序 / 跳过 / 重复），且内部**不得有开始/结束事件**；
+        //   ③ 本仓内联 subProcess 要求**恰好一个内联结束节点**。
+        // ⇒ 照建议改写，作者会撞上「结束点必须唯一」，
+        //   把一条看得懂的拒绝换成一条更费解的拒绝。
+        // 这条判据的作用是**钉住"别把那条错误建议加回来"**。
         WfDefinition definition = new WfXmlParser().parse(bpmnWith("adHocSubProcess"));
         assertEquals("adHocSubProcess", nodeOf(definition, "x1").unsupportedBpmnElement(),
                 "adHocSubProcess 仍是退化节点");
         String rendered = WfDefinitionValidator.render(
                 new WfDefinitionValidator().validate(definition));
-        assertTrue(rendered.contains("subProcess"),
-                "adHocSubProcess 与 subProcess 等价，应给出替代建议：" + rendered);
+        assertTrue(rendered.contains("暂无等价节点"),
+                "应明确说「暂无等价节点」。实际: " + rendered);
+        assertTrue(!rendered.contains("请改用 <subProcess>"),
+                "**不得再建议改写成 subProcess** —— 那会让作者从一个看得懂的报错"
+                        + "换到一个更难解的报错。实际: " + rendered);
+        // 但要说清"为什么不等价"，否则用户会自己想到那个错误处方
+        assertTrue(rendered.contains("activeElementsCollection"),
+                "错消息要给出不等的价的真正理由。实际: " + rendered);
     }
 
     @Test
@@ -256,6 +267,12 @@ class UnsupportedBpmnElementTest {
         @Override
         public List<WfDefinition> findAllDefinitions() {
             return null;
+        }
+
+        @Override
+        public List<com.zifang.z.wf.core.service.WfDeploymentEntry> findDeploymentEntries() {
+            // 这个桩只服务 deploy 的校验路径，部署历史查询在这里永远走不到
+            throw new AssertionError("校验没过就不该走到部署历史查询");
         }
 
         @Override

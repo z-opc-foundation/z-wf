@@ -270,6 +270,27 @@ public class WfRepositoryService {
     }
 
     /**
+     * 查部署历史（跨<b>所有 key</b> 的全部版本，第 47 轮）。
+     *
+     * <p><b>对标 Camunda 的 {@code createDeploymentQuery}</b>，但本引擎没有 deployment 实体 ——
+     * 一次 deploy 就是一条 {@code (key, version)}，本方法查的是 {@code ZWF_DEFINITION} 的全部行。
+     * <b>刻意不为此建第二张表</b>：要存的每一列都已经在那张表上，
+     * 复制一份就多出一个必然与原表漂移的真源
+     * （这个坑本仓在 {@code suspended} / {@code isDefault} 上各踩过一次）。
+     *
+     * <p>过滤、排序、分页全部委派 {@link WfDeploymentQueryService}，
+     * 那边是<b>唯一一份实现</b>，存储层一行过滤逻辑都没有。
+     */
+    public List<WfDeploymentEntry> queryDeployments(WfDeploymentQuery query) {
+        return new WfDeploymentQueryService(persistence).query(query);
+    }
+
+    /** 部署历史命中总条数（不分页），给列表页显示「共 n 条」。 */
+    public int countDeployments(WfDeploymentQuery query) {
+        return new WfDeploymentQueryService(persistence).count(query);
+    }
+
+    /**
      * 按名称模糊 + 停用状态查定义（最新版本）。
      *
      * @param suspended {@code null} 不限

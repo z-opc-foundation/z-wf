@@ -95,11 +95,9 @@
              （本仓原本就是 z-util-core 1.0.14 + z-util-wf-kernel 1.0.18 混用），
              而 kernel 是协议层，必须与 parser 同一版本，否则同一套 BPMN 语义出现两份实现。 -->
         <z-util.version>1.0.18</z-util.version>
-
         <!-- z-util-wf-kernel 未被 fleet 按坐标管（fleet 1.0.1 里 z-util-wf 命中 0），
              版本键与上面这组保持一致。 -->
         <z-util-wf.version>1.0.18</z-util-wf.version>
-
         <log4j2-impl.version>2.25.4</log4j2-impl.version>
 
         <!-- swagger-annotations 未被 z-boot-parent / z-boot-dependencies 按坐标管（两侧命中 0），
@@ -179,11 +177,7 @@
                 <artifactId>z-util-http</artifactId>
                 <version>${z-util.version}</version>
             </dependency>
-            <dependency>
-                <groupId>io.swagger.core.v3</groupId>
-                <artifactId>swagger-annotations</artifactId>
-                <version>${swagger-annotations.version}</version>
-            </dependency>
+
             <dependency>
                 <groupId>io.github.yuku123</groupId>
                 <artifactId>z-wf-core</artifactId>
@@ -199,6 +193,13 @@
                 <artifactId>z-wf-starter</artifactId>
                 <version>${revision}</version>
             </dependency>
+
+            <dependency>
+                <groupId>io.swagger.core.v3</groupId>
+                <artifactId>swagger-annotations</artifactId>
+                <version>${swagger-annotations.version}</version>
+            </dependency>
+            
         </dependencies>
     </dependencyManagement>
 
