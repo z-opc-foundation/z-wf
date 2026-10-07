@@ -163,6 +163,10 @@ public class WfDefinitionValidator {
             if (node.getType() == WfNodeType.TERMINATE_END_EVENT) {
                 validateTerminateEndEvent(definition, node);
             }
+            // ---- 取消结束事件（第 38 轮）----
+            if (node.getType() == WfNodeType.CANCEL_END_EVENT) {
+                validateCancelEndEvent(node, definition);
+            }
             // ---- 退化出来的节点：语义已被换掉，必须挡住部署 ----
             // 这里报 ERROR 而不是 WARN：WARN 只进日志，部署照过，
             // 于是作者拿到的运行行为（人工任务）与他写的流程（自动分支）永久不一致。
@@ -1716,13 +1720,26 @@ public class WfDefinitionValidator {
      * 共同点是症状都不带任何报错。
      */
     private void validateSubProcess(WfDefinition definition, WfNode node) {
-        if (node.getType() != WfNodeType.SUB_PROCESS) {
+        boolean isTransaction = node.getType() == WfNodeType.TRANSACTION;
+        if (!isTransaction && node.getType() != WfNodeType.SUB_PROCESS) {
             return;
         }
         List<WfNode> children = definition.inlineChildrenOf(node.getId());
         if (children.isEmpty()) {
+            if (isTransaction) {
+                // 与 subProcess 不同：空 transaction **没有**「等价于 callActivity」
+                // 这种解读（BPMN 里 transaction 必须画内容才有意义），
+                // 所以「空 transaction」不是「等价于调用外部流程」，而是「什么都不会发生」。
+                add(WfValidationIssue.Severity.ERROR, node.getId(),
+                        "transaction " + node.getId() + " 里没有画任何节点。"
+                                + "事务必须有内容才有意义：空的事务什么都不会执行，"
+                                + "而 token 经过它会照常往下走 —— 看上去这一步做完了，"
+                                + "实际什么都没做");
+            }
             return;
         }
+        // 后面几条规则的措辞统一叫「内联容器」，两种元素共用
+        String label = isTransaction ? "transaction" : "嵌入式 subProcess";
 
         // ---- 恰好一个内联起始节点 ----
         // 引擎靠"容器内无入线的节点"识别入口。有两个时选谁是猜，猜错的表现是
@@ -1730,32 +1747,50 @@ public class WfDefinitionValidator {
         List<String> entries = inlineEntryIds(definition, children);
         if (entries.size() != 1) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
-                    "嵌入式 subProcess " + node.getId() + " 需要恰好一个内联起始节点"
+                    label + " " + node.getId() + " 需要恰好一个内联起始节点"
                             + "（容器内没有入线的那一个），实际找到 " + entries.size() + " 个: " + entries
-                            + "。内联子流程的进入点由「容器内无入线的节点」唯一确定，"
+                            + "。内联容器的进入点由「容器内无入线的节点」唯一确定，"
                             + "多于一个时引擎无法判断该从哪进入");
         }
 
         // ---- 至多一个内联结束节点 ----
-        // 有两个时 token 会在第一个"结束"处跳出子流程，后半段永远跑不到；
+        // 有两个时 token 会在第一个"结束"处跳出容器，后半段永远跑不到；
         // 一个都没有说明容器内是个环（每个节点都有出线），token 会在里面打转。
         //
-        // 终止结束事件（第 36 轮）不参与这个计数，但参与"有没有出口"的判定：
-        // 一个只有 terminateEndEvent、没有普通结束节点的子流程是合法的
-        // （进入即被终止，永远走不到正常出口），而两个都没有才是环。
+        // 终止结束事件（第 36 轮）与取消结束事件（第 38 轮）都不参与这个计数，
+        // 但参与"有没有出口"的判定：一个只有 terminate/cancel、没有普通结束节点的
+        // 容器是合法的（进入即被收掉，永远走不到正常出口），而三个都没有才是环。
         List<String> exits = inlineExitIds(children);
         List<String> terminates = inlineTerminateExitIds(children);
+        List<String> cancels = inlineCancelExitIds(children);
         if (exits.size() > 1) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
-                    "嵌入式 subProcess " + node.getId() + " 有 " + exits.size()
+                    label + " " + node.getId() + " 有 " + exits.size()
                             + " 个内联结束节点（容器内的 endEvent）: " + exits
-                            + "。子流程的结束点必须唯一，否则 token 会在第一个结束处跳出，"
+                            + "。容器的结束点必须唯一，否则 token 会在第一个结束处跳出，"
                             + "后面的内联内容永远跑不到");
-        } else if (exits.isEmpty() && terminates.isEmpty()) {
+        } else if (exits.isEmpty() && terminates.isEmpty() && cancels.isEmpty()) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
-                    "嵌入式 subProcess " + node.getId() + " 没有任何内联结束节点"
-                            + "（容器内没有 endEvent，也没有 terminateEndEvent）。"
-                            + "这意味着子流程内部成环，token 会在里面一直转下去");
+                    label + " " + node.getId() + " 没有任何内联结束节点"
+                            + "（容器内没有 endEvent，也没有 terminateEndEvent / cancelEndEvent）。"
+                            + "这意味着容器内部成环，token 会在里面一直转下去");
+        }
+
+        // ---- 事务的取消出口（第 38 轮）----
+        // cancelEndEvent 是 transaction 取消路径的**终点**：它触发补偿后
+        // token 沿 transaction 自己的出线继续，流程并没有结束。
+        // 挂在 transaction 外面就完全没有意义 —— 外面没有任何东西可以取消。
+        if (isTransaction) {
+            for (String cancelId : cancels) {
+                String parent = definition.node(cancelId) == null
+                        ? null : definition.node(cancelId).nestedIn();
+                if (parent == null || !node.getId().equals(parent)) {
+                    add(WfValidationIssue.Severity.ERROR, cancelId,
+                            "cancelEndEvent " + cancelId + " 必须在 transaction 内部。"
+                                    + "它表示「这个事务被取消」，而 transaction 外部没有"
+                                    + "可以被取消的事务");
+                }
+            }
         }
 
         // ---- 内联子图里的死胡同 ----
@@ -1764,12 +1799,13 @@ public class WfDefinitionValidator {
         // 症状是"单子被正常办掉了，之后什么也没发生"，全程没有任何报错。
         //
         // 这些节点<b>不算出口</b>，出口是 endEvent 的特权。把它们混进 inlineExitIds
-        // 的话，一条真正只有一个结束点的子流程会被报成"有 2 个内联结束节点" ——
+        // 的话，一条真正只有一个结束点的容器会被报成"有 N 个内联结束节点" ——
         // 而作者照着提示去找第二个结束节点，根本找不到一个。
         List<String> deadEnds = new ArrayList<>();
         for (WfNode child : children) {
             WfNodeType type = child.getType();
-            if (type == WfNodeType.END_EVENT || type == WfNodeType.TERMINATE_END_EVENT) {
+            if (type == WfNodeType.END_EVENT || type == WfNodeType.TERMINATE_END_EVENT
+                    || type == WfNodeType.CANCEL_END_EVENT) {
                 continue;
             }
             if (!definition.incomingFlows(child.getId()).isEmpty()
@@ -1792,14 +1828,15 @@ public class WfDefinitionValidator {
         // 猜错的后果是内联内容被静默跳过或流程死循环，两者都不报错。
         List<String> nested = new ArrayList<>();
         for (WfNode child : children) {
-            if (child.getType() == WfNodeType.SUB_PROCESS) {
+            if (child.getType() == WfNodeType.SUB_PROCESS
+                    || child.getType() == WfNodeType.TRANSACTION) {
                 nested.add(child.getId());
             }
         }
         if (!nested.isEmpty()) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
-                    "嵌入式 subProcess 里又嵌了 subProcess: " + nested
-                            + "。本引擎不支持嵌套的内联子流程：内层子流程的结束点"
+                    label + " " + node.getId() + " 里又嵌了 subProcess / transaction: " + nested
+                            + "。本引擎不支持嵌套的内联容器：内层容器的结束点"
                             + "在 BPMN 里没有结构标记能与其他结束事件区分开，"
                             + "引擎无法判断该在哪一层跳出。请改用 callActivity 指向独立流程定义");
         }
@@ -1828,16 +1865,20 @@ public class WfDefinitionValidator {
         }
         if (!boundaries.isEmpty()) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
-                    "嵌入式 subProcess 上不能挂边界事件: " + boundaries
-                            + "。token 进入 subProcess 后立即被推进到内联起始节点，"
+                    label + " 上不能挂边界事件: " + boundaries
+                            + "。token 进入容器后立即被推进到内联起始节点，"
                             + "此后不再停留在容器上，而边界事件要求 token 仍停在宿主节点才触发。"
                             + "放到内联的某个具体活动上即可；超时/异常的处理请放到该活动上");
         }
 
         // ---- 画了内联内容又配 calledElementKey ----
-        // 两者语义互斥：内联子流程执行的是本图里的节点，calledElementKey 指向另一份定义。
+        // 两者语义互斥：内联容器执行的是本图里的节点，calledElementKey 指向另一份定义。
         // 引擎优先走内联（isInlineSubProcess 先判），配了 calledElementKey 的效果是
         // "看着像会调外部流程，实际一次都没调"。
+        //
+        // transaction 另有一条：它<b>根本没有</b> calledElementKey 这个概念
+        // （BPMN 里 transaction 不是引用型容器），配了同样一律拒绝 ——
+        // 与其「配了但没报错」，不如直接说这个属性在这里没有意义。
         if (!isBlank(node.getCalledElementKey())) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
                     "subProcess " + node.getId() + " 既画了内联内容，又配了 calledElementKey="
@@ -1847,15 +1888,37 @@ public class WfDefinitionValidator {
         }
     }
 
-    /** 容器内"无入线"的节点 id —— 内联起始节点候选。 */
+    /**
+     * 容器内"无入线"的节点 id —— 内联起始节点候选。
+     *
+     * <p><b>排除三类结束事件</b>（第 37/38 轮）。它们<b>天然</b>无入线 ——
+     * 不是「没人走到它」，而是「走到它就是终点」，而终点没有入线是常态。
+     * 不排除的话，一个「成功出口的线被改成指回 endEvent」的图会被报成
+     * 「找到 2 个内联起始节点」，而作者图上明明只有一个 startEvent：
+     * 症状是部署期报一个他改过、却与这条提示毫无关系的地方。
+     *
+     * <p>与 {@link #inlineExitIds} 那次是同一个形状的错误：**按结构特征
+     * （有无入线/出线）去代理语义（是不是入口/出口）**，而对结束事件而言
+     * 结构特征与语义恰好不相关。
+     */
     private static List<String> inlineEntryIds(WfDefinition definition, List<WfNode> children) {
         List<String> ids = new ArrayList<>();
         for (WfNode node : children) {
+            if (isInlineEndKind(node)) {
+                continue;
+            }
             if (definition.incomingFlows(node.getId()).isEmpty()) {
                 ids.add(node.getId());
             }
         }
         return ids;
+    }
+
+    /** 这三类是容器的出口，不参与入口判定（见 {@link #inlineEntryIds}）。 */
+    private static boolean isInlineEndKind(WfNode node) {
+        WfNodeType type = node.getType();
+        return type == WfNodeType.END_EVENT || type == WfNodeType.TERMINATE_END_EVENT
+                || type == WfNodeType.CANCEL_END_EVENT;
     }
 
     /**
@@ -1897,6 +1960,43 @@ public class WfDefinitionValidator {
             }
         }
         return ids;
+    }
+
+    /** 容器内的 {@code cancelEndEvent}（第 38 轮）。 */
+    private static List<String> inlineCancelExitIds(List<WfNode> children) {
+        List<String> ids = new ArrayList<>();
+        for (WfNode node : children) {
+            if (node.getType() == WfNodeType.CANCEL_END_EVENT) {
+                ids.add(node.getId());
+            }
+        }
+        return ids;
+    }
+
+    /**
+     * 取消结束事件校验（第 38 轮）。
+     *
+     * <p>一条 ERROR：<b>它不许有出线</b>，理由与终止结束事件同源 ——
+     * 取消不可撤销，它要退的事已经退了，流程接着沿<b>容器</b>的出线走，
+     * 而事件自己的出线永远走不到。
+     */
+    private void validateCancelEndEvent(WfNode node, WfDefinition definition) {
+        if (node.getType() != WfNodeType.CANCEL_END_EVENT) {
+            return;
+        }
+        if (!definition.outgoingFlows(node.getId()).isEmpty()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "cancelEndEvent " + node.getId() + " 不能有出线。"
+                            + "取消结束事件触发补偿之后，token 沿**容器**的出线继续"
+                            + "（流程并没有结束），而它自己的出线永远走不到 —— "
+                            + "留一条走不到的线，流程会卡在半路且不报错");
+        }
+        if (node.getType() == WfNodeType.CANCEL_END_EVENT
+                && definition.incomingFlows(node.getId()).isEmpty()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "cancelEndEvent " + node.getId() + " 没有任何入线，"
+                            + "token 永远到不了它 —— 那个被写的取消分支一次都不会发生");
+        }
     }
 
     /**

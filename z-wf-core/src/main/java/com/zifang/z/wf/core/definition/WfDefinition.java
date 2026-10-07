@@ -534,12 +534,46 @@ public class WfDefinition implements Serializable {
      */
     public boolean isInline(WfNode node) {
         return node != null && node.nestedIn() != null
-                && isSubProcessContainer(node.nestedIn());
+                && isInlineContainer(node.nestedIn());
     }
 
-    private boolean isSubProcessContainer(String containerId) {
+    /**
+     * 这个 id 是不是<b>内联容器</b> —— 即能装下内联子图的那种节点。
+     *
+     * <p>两种：{@code subProcess}（第 14 轮）与 {@code transaction}（第 38 轮）。
+     * 它们在**执行路径上完全相同**（token 进入后跑内联子图，抵达内联结束事件时回到容器、
+     * 沿容器出线继续），差别只在结束时的语义与出口规则。
+     *
+     * <p>把两者放在同一个判定里，是因为一旦分开，`inlineChildrenOf` /
+     * {@link #inlineScopeOf} / {@code inlineStartNode} / {@code inlineEndNode}
+     * 各处都要写一遍「或者 transaction」的二选一 —— 漏一处，事务里的节点
+     * 就既不属于内联子图也不属于主图，症状是**token 进了事务却一步都跑不了**，
+     * 而流程看上去只是停在那儿。
+     */
+    private boolean isInlineContainer(String containerId) {
         WfNode container = node(containerId);
-        return container != null && container.getType() == WfNodeType.SUB_PROCESS;
+        return container != null
+                && (container.getType() == WfNodeType.SUB_PROCESS
+                        || container.getType() == WfNodeType.TRANSACTION);
+    }
+
+    /** 容器 id（{@code subProcess} / {@code transaction}），不是 {@code null}。 */
+    public boolean isInlineContainerNode(WfNode node) {
+        return node != null
+                && (node.getType() == WfNodeType.SUB_PROCESS
+                        || node.getType() == WfNodeType.TRANSACTION);
+    }
+
+    /**
+     * 这三类是容器的<b>出口</b>，不参与入口判定。
+     *
+     * <p>与 {@code WfDefinitionValidator#isInlineEndKind} 是同一把尺子，
+     * 同样不能只改一处 —— 详见 {@link #inlineStartNode}。
+     */
+    private static boolean isInlineEndKind(WfNode node) {
+        WfNodeType type = node.getType();
+        return type == WfNodeType.END_EVENT || type == WfNodeType.TERMINATE_END_EVENT
+                || type == WfNodeType.CANCEL_END_EVENT;
     }
 
     /**
@@ -566,19 +600,30 @@ public class WfDefinition implements Serializable {
     }
 
     /**
-     * 嵌入式子流程的<b>内联起始节点</b> —— 该容器内无入线的那个节点。
+     * 内联容器的<b>内联起始节点</b>（{@code subProcess} / {@code transaction}）。
      *
-     * <p>内联子流程没有连线把它接到容器上（BPMN 里 {@code <sequenceFlow>} 不跨容器），
+     * <p>内联容器没有连线把它接到主图上（BPMN 里 {@code <sequenceFlow>} 不跨容器），
      * 引擎靠"容器内无入线的节点"来认出该从哪进入。这与 {@link #unconditionalStartNodes()}
      * 判定"流程从哪进入"用的是同一条规则，区别只在于本方法按<b>容器</b>限定范围。
      *
-     * <p>刻意不返回"第一个"而返回 {@code null}：容器内出现两个无入线节点时
-     * （= 两个并排的子流程入口）选哪一个都是猜，而猜错的表现是流程跑完了
+     * <p><b>必须排除结束事件</b>（第 38 轮）。结束事件<b>天然</b>无入线 ——
+     * 走到它就是终点。把它算进入口候选的话，容器里画了一个备用成功出口
+     * （画了 {@code endEvent} 但暂时没接线）就会凑出两个"入口"而返回 {@code null}，
+     * 运行期报「找不到唯一的内联起始节点」，**token 进得去出不来**。
+     *
+     * <p>这个方法与 {@code WfDefinitionValidator#inlineEntryIds} 是<b>同一把尺子</b>：
+     * 只改其中一处的话，校验器放行、运行期失败，而作者看到的图是合法的。
+     *
+     * <p>刻意不返回"第一个"而返回 {@code null}：容器内出现两个真入口时
+     * （= 两个并排的内联子流程）选哪一个都是猜，而猜错的表现是流程跑完了
      * 另一半内联节点一次都没跑。由校验器在部署期报 ERROR 挡掉。
      */
     public WfNode inlineStartNode(String containerId) {
         WfNode found = null;
         for (WfNode node : inlineChildrenOf(containerId)) {
+            if (isInlineEndKind(node)) {
+                continue;
+            }
             if (!incomingFlows(node.getId()).isEmpty()) {
                 continue;
             }
@@ -618,16 +663,22 @@ public class WfDefinition implements Serializable {
     }
 
     /**
-     * 这个节点是不是一个<b>承载内联内容</b>的嵌入式子流程。
+     * 这个节点是不是一个<b>承载内联内容</b>的内联容器（{@code subProcess} 或
+     * {@code transaction}，第 38 轮）。
      *
      * <p>与"类型是 SUB_PROCESS"分开：解析器把两种东西都归成 subProcess ——
      * 一种是内联的（{@code <subProcess>} 里真画了节点），另一种是空的容器配
      * {@code calledElementKey}，按 Camunda 语义等价于 callActivity。
      * 引擎只在有内联内容时改走内联执行路径，另一种继续交给
      * {@link WfNodeType#CALL_ACTIVITY} 那套行为。
+     *
+     * <p><b>{@code transaction} 没有「空容器」那种形态</b>：BPMN 里 transaction
+     * 必须画内容才有意义，所以判定只看类型，不看 {@code calledElementKey}。
      */
     public boolean isInlineSubProcess(WfNode node) {
-        return node != null && node.getType() == WfNodeType.SUB_PROCESS
+        return node != null
+                && (node.getType() == WfNodeType.SUB_PROCESS
+                        || node.getType() == WfNodeType.TRANSACTION)
                 && !inlineChildrenOf(node.getId()).isEmpty();
     }
 
@@ -658,10 +709,10 @@ public class WfDefinition implements Serializable {
             // 不能默认它属于主图（那会让它与主图上所有 token 混成同一批）
             return null;
         }
-        if (container.getType() == WfNodeType.SUB_PROCESS) {
+        if (isInlineContainerNode(container)) {
             return nested;
         }
-        // 容器不是 subProcess ⇒ 这是挂在某个活动上的 boundaryEvent，归属按<b>宿主</b>算。
+        // 容器不是内联容器 ⇒ 这是挂在某个活动上的 boundaryEvent，归属按<b>宿主</b>算。
         //
         // 必须递归问宿主本人落在哪一段，而不能直接判成主图：宿主同样可能嵌在
         // 另一个 subProcess 里（"内联子流程内的活动上挂超时边界"是完全正常的写法）。

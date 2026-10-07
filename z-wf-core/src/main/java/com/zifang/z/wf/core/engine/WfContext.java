@@ -106,6 +106,39 @@ public class WfContext {
         return terminateScope;
     }
 
+    /**
+     * 本次推进<b>要求补偿</b>的作用域（第 38 轮 {@code cancelEndEvent}）：
+     * 内联容器 id，空串表示进程级。
+     *
+     * <p><b>与 {@link #terminateScope} 分开而不是合并</b>：终止要「结束作用域内的
+     * token」，取消不要 —— 取消之后流程要沿容器的出线继续走。
+     * 合成一个槽位的话，运行期就没法区分「拆掉整个作用域」与
+     * 「只退已做的部分」，而这两种在图上的后果完全相反。
+     */
+    private String compensateScope;
+
+    /**
+     * 登记一次作用域取消。
+     *
+     * @param scope 内联容器 id；<b>空串</b>表示进程级
+     */
+    public void requestCompensate(String scope) {
+        this.compensateScope = scope == null ? "" : scope;
+    }
+
+    /** 本次推进是否要求补偿。 */
+    public boolean isCompensateRequested() {
+        return compensateScope != null;
+    }
+
+    /**
+     * 本次推进要求补偿的作用域；未请求时返回 {@code null}，
+     * 不要与空串混为一谈。
+     */
+    public String getCompensateScope() {
+        return compensateScope;
+    }
+
     // ==================== 补偿登记（第 37 轮） ====================
 
     /**

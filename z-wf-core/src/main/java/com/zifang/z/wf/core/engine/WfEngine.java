@@ -298,14 +298,21 @@ public class WfEngine {
 
         // ---- 结束事件 ----
         if (node.getType() == WfNodeType.END_EVENT
-                || node.getType() == WfNodeType.TERMINATE_END_EVENT) {
-            // 内联在 subProcess 里的 endEvent 不是"流程结束"，而是"子流程到此为止"：
-            // token 要回到那个 subProcess 节点上，由它沿自己的出线继续走主图。
-            // 少这一道分派，内联子流程的 token 就会在子流程内部直接结束，
-            // 现象是"subProcess 之后的节点一个都没跑，而实例状态是 COMPLETED"。
+                || node.getType() == WfNodeType.TERMINATE_END_EVENT
+                || node.getType() == WfNodeType.CANCEL_END_EVENT) {
+            // 内联在 subProcess / transaction 里的 endEvent 不是"流程结束"，
+            // 而是"容器到此为止"：token 要回到那个容器节点上，由它沿自己的出线继续走主图。
+            // 少这一道分派，内联容器的 token 就会在容器内部直接结束，
+            // 现象是"容器之后的节点一个都没跑，而实例状态是 COMPLETED"。
             if (definition.isInline(node)) {
                 if (node.getType() == WfNodeType.TERMINATE_END_EVENT) {
                     terminateScope(context, node);
+                }
+                // 取消结束事件（第 38 轮）：先退后收，**不结束作用域**。
+                // 与终止的差别就在这里 —— 终止是把作用域拆掉，取消是把作用域里
+                // 已做的部分退掉然后沿容器出线继续。
+                if (node.getType() == WfNodeType.CANCEL_END_EVENT) {
+                    cancelScope(context, node);
                 }
                 leaveSubProcess(context, node, token, depth);
                 return;
@@ -326,15 +333,27 @@ public class WfEngine {
             if (node.getType() == WfNodeType.TERMINATE_END_EVENT) {
                 terminateScope(context, node);
             }
+            // 进程级的取消结束事件（第 38 轮）：Camunda 的 process level cancel
+            // 是「退掉整个实例已做的部分，然后结束实例」——
+            // 容器那条走完了，这里没有出线可沿，只能以终止收尾。
+            //
+            // 退与结束都要有，所以**两个都登记**，而且顺序固定：先退后收。
+            // 只登记退的话 token 会在这一步直接 ENDED（上面已置），
+            // 而实例上仍有别的 token，resolveCompletion 判不出完成 ⇒ 永久停在 ACTIVE。
+            if (node.getType() == WfNodeType.CANCEL_END_EVENT) {
+                cancelScope(context, node);
+                terminateScope(context, node);
+            }
             return;
         }
 
-        // ---- 嵌入式子流程：把 token 推进内联起始节点 ----
-        // 排在 END_EVENT 之后、网关之前：subProcess 既不是结束也不是网关。
+        // ---- 内联容器（subProcess / transaction）：把 token 推进内联起始节点 ----
+        // 排在 END_EVENT 之后、网关之前：容器既不是结束也不是网关。
         //
-        // 只对"真的画了内联内容"的 subProcess 生效（isInlineSubProcess）。空容器配
+        // 只对"真的画了内联内容"的容器生效（isInlineSubProcess）。空 subProcess 配
         // calledElementKey 的那种在 BPMN 里等价于 callActivity，仍走
         // WfCallActivityBehavior —— 两者共用同一个枚举值，靠"容器里有没有节点"区分。
+        // transaction 没有「空容器」这种形态，校验器直接报错（见 validateSubProcess）。
         if (definition.isInlineSubProcess(node)) {
             enterSubProcess(context, node, token, depth);
             return;
@@ -1073,13 +1092,17 @@ public class WfEngine {
         WfDefinition definition = context.getDefinition();
         String containerId = endNode.nestedIn();
         WfNode container = definition.node(containerId);
-        if (container == null || container.getType() != WfNodeType.SUB_PROCESS) {
-            // nestedIn 是解析期写死的字符串，理论上恒指向一个 subProcess 节点；
-            // 这里仍要炸：容器 id 对不上时若继续走，token 会被塞到一个不是子流程的
+        // 容器判定放宽到「内联容器」（subProcess 与 transaction 都算，第 38 轮）：
+        // 两者在**离开**这件事上完全一样 —— 回到容器节点、沿容器的出线继续走主图。
+        // 差别全在离开**之前**做了什么（终止登记 / 取消登记），那已经分派完了。
+        if (container == null || !definition.isInlineContainerNode(container)) {
+            // nestedIn 是解析期写死的字符串，理论上恒指向一个内联容器节点；
+            // 这里仍要炸：容器 id 对不上时若继续走，token 会被塞到一个不是容器的
             // 节点上沿出线跳掉，流程"看起来跑通了"而内联内容被整段跳过。
             fail(context, "内联结束事件 " + endNode.getId() + " 声称嵌在 " + containerId
-                    + " 里，但该 id 在流程定义 " + definition.getKey() + " 中不是 subProcess 节点"
-                    + "（找到的是: " + (container == null ? "null" : container.getType()) + "）");
+                    + " 里，但该 id 在流程定义 " + definition.getKey() + " 中不是内联容器节点"
+                    + "（subProcess / transaction）（找到的是: "
+                    + (container == null ? "null" : container.getType()) + "）");
             return;
         }
 
@@ -1117,6 +1140,26 @@ public class WfEngine {
         // 不另造一个"PROCESS_SCOPE"常量 —— 那个常量一旦与空串不等价，
         // 运行期就会把两种表示混着用，而两边都"看起来对"。
         context.requestTerminate(node.nestedIn());
+    }
+
+    /**
+     * 登记一次<b>作用域取消</b>（{@code cancelEndEvent}，第 38 轮）。
+     *
+     * <p>与 {@link #terminateScope} 的差别是<b>只登记、不结束</b>：
+     * 取消退掉作用域里已做的部分，然后流程沿容器出线继续；
+     * 终止把整个作用域连同其中的 token 一起收掉。
+     *
+     * <p>同样是「引擎登记意图、运行期服务执行」：真正的逆序补偿要落库
+     * （{@code WfPersistence#saveCompensation}），而 {@code WfEngine} 没有持久化。
+     *
+     * <p><b>与终止共用同一个执行入口</b>是有意的 ——
+     * {@code WfRuntimeService#applyCompensation} 判的是「本次推进有没有要求补偿」，
+     * 终止也会触发补偿（第 37 轮已确认的语义：撤销时先退后收）。
+     * 分成两个入口的话，「触发补偿」这件事就有两份实现，
+     * 改一处忘另一处的症状是「事务取消不退款、终止却退款」。
+     */
+    private void cancelScope(WfContext context, WfNode node) {
+        context.requestCompensate(node.nestedIn());
     }
 
     /** 节点 id 列表（诊断信息用）。 */

@@ -152,6 +152,7 @@ public class WfXmlParser {
             {"adHocSubProcess", "adHocSubProcess"},
             {"callActivity", "callActivity"},
             {"boundaryEvent", "boundaryEvent"},
+            {"cancelEndEvent", "cancelEndEvent"},
     };
 
     /**

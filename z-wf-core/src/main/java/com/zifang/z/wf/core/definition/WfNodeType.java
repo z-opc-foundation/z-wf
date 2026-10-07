@@ -54,6 +54,44 @@ public enum WfNodeType {
      */
     TERMINATE_END_EVENT("terminateEndEvent"),
 
+    /**
+     * 取消结束事件 {@code cancelEndEvent}（第 38 轮）。
+     *
+     * <p>它与 {@link #TERMINATE_END_EVENT} 的差别只有一条，但那条是本质的：
+     * <b>先补偿，再结束</b>。
+     *
+     * <p>Camunda 7（{@code manual/7.9/reference/bpmn20/events/cancel-and-compensation-events/}）：
+     * 「A cancel end event ends the transaction … compensation is triggered …
+     * the token continues along the outgoing sequence flow of the transaction.」
+     *
+     * <p>所以它<b>不</b>像终止结束事件那样把整个作用域拆掉：
+     * 在容器内，它只退掉这个作用域里已经做完的事，然后照常沿容器的出线往下走 ——
+     * 这正是「事务失败 ⇒ 撤销已做的部分 ⇒ 流程继续」这条语义的落点。
+     *
+     * <p>放在主图上（没有容器）时它没有出线可沿，按 Camunda 的
+     * 「process level」语义处理：退掉整个实例已做的部分，然后实例结束。
+     */
+    CANCEL_END_EVENT("cancelEndEvent"),
+
+    /**
+     * 事务 {@code transaction}（第 38 轮）。
+     *
+     * <p>执行路径与内联 {@link #SUB_PROCESS} <b>完全相同</b>（token 进入后跑内联子图，
+     * 到达内联结束事件时回到容器、沿容器出线继续），差别全在「结束时的语义」：
+     * <ul>
+     *   <li>走到 {@link #CANCEL_END_EVENT} ⇒ 触发该作用域的补偿，再沿出线继续</li>
+     *   <li>内部未被捕获的 error ⇒ Camunda 走 <b>hazard</b>（事务挂起等人处理，<b>不补偿</b>）。
+     *       本引擎当前没有 hazard 状态机，这类 error 走既有路径把实例停成
+     *       {@code INTERNALLY_TERMINATED} 并记错误码 —— <b>这一条与 Camunda 不一致</b>，
+     *       已记进 {@code docs/capability-gap.md} 的缺口清单，不是遗漏而是取舍。</li>
+     * </ul>
+     *
+     * <p>刻意<b>不</b>做成 {@link #SUB_PROCESS} 上的标志位：容器的出口规则不一样
+     * （subProcess 要求恰好一个内联结束节点，transaction 允许「只有 cancel 出口」），
+     * 而一处 {@code type == SUB_PROCESS} 的判断会把它当普通子流程放行。
+     */
+    TRANSACTION("transaction"),
+
     /** 用户任务：创建 {@link com.zifang.z.wf.core.model.WfTask} 并挂起等待人工处理。 */
     USER_TASK("userTask"),
 
@@ -243,7 +281,8 @@ public enum WfNodeType {
      * 将来第一个用它做分支的人会漏掉终止结束事件。
      */
     public boolean isBoundary() {
-        return this == START_EVENT || this == END_EVENT || this == TERMINATE_END_EVENT;
+        return this == START_EVENT || this == END_EVENT || this == TERMINATE_END_EVENT
+                || this == CANCEL_END_EVENT;
     }
 
     /**
@@ -334,6 +373,7 @@ public enum WfNodeType {
     public static java.util.List<String> names() {
         return Collections.unmodifiableList(Arrays.asList(
                 START_EVENT.bpmnName, END_EVENT.bpmnName, TERMINATE_END_EVENT.bpmnName,
+                CANCEL_END_EVENT.bpmnName, TRANSACTION.bpmnName,
                 USER_TASK.bpmnName,
                 SERVICE_TASK.bpmnName, SCRIPT_TASK.bpmnName, MANUAL_TASK.bpmnName,
                 SEND_TASK.bpmnName, RECEIVE_TASK.bpmnName, EXCLUSIVE_GATEWAY.bpmnName,

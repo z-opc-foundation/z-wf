@@ -2990,7 +2990,16 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      * 那些步骤在流程层面仍然是有效的。
      */
     private void applyCompensation(WfContext context) {
-        if (!context.isTerminateRequested()) {
+        // 两个触发源共用这一个执行入口（第 37/38 轮）：
+        // ① cancelEndEvent —— 取消，先退后继续
+        // ② terminateEndEvent —— 终止，先退后收（Camunda：撤销时同样先退）
+        //
+        // 刻意不分成两个方法：补偿的逆序、退过的登记、临时 token、
+        // 退不动的留痕 —— 这些逻辑一份就够，而两份实现里改一处忘另一处，
+        // 症状是「事务取消不退款、终止却退款」。
+        boolean byCancel = context.isCompensateRequested();
+        boolean byTerminate = context.isTerminateRequested();
+        if (!byCancel && !byTerminate) {
             return;
         }
         WfProcessInstance instance = context.getProcessInstance();
@@ -2998,7 +3007,9 @@ public class WfRuntimeService implements WfSubProcessLauncher {
             return;
         }
         String processInstanceId = instance.getId();
-        String scope = context.getTerminateScope();
+        // 优先取「取消」登记的那个作用域：进程级取消会同时登记退与终止，
+        // 两者作用域都是空串，取谁都一样；容器级取消则根本不会登记终止。
+        String scope = byCancel ? context.getCompensateScope() : context.getTerminateScope();
         List<WfCompensationEntry> entries = persistence.findCompensations(processInstanceId);
         if (entries == null || entries.isEmpty()) {
             return;

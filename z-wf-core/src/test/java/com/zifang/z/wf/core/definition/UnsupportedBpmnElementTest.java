@@ -57,13 +57,18 @@ class UnsupportedBpmnElementTest {
     }
 
     @Test
-    @DisplayName("transaction 退化后必须留下原名，并被校验器判为 ERROR")
-    void transactionIsMarkedAndRejected() {
-        WfDefinition definition = new WfXmlParser().parse(bpmnWith("transaction"));
+    @DisplayName("adHocSubProcess 退化后必须留下原名，并被校验器判为 ERROR")
+    void adHocSubProcessIsMarkedAndRejected() {
+        // 样本原先是 transaction —— 第 38 轮把 transaction 实现成原生类型后
+        // 换成了 adHocSubProcess。留着 transaction 当样本的话，
+        // 这条判据会在元素**被正确支持**之后变红，
+        // 而它要守的其实是「退化元素必须留名并被挡住」这条规则本身，
+        // 与具体是哪个元素无关。
+        WfDefinition definition = new WfXmlParser().parse(bpmnWith("adHocSubProcess"));
         WfNode node = nodeOf(definition, "x1");
-        assertNotNull(node, "transaction 应当被解析出来（解析期要宽松）");
+        assertNotNull(node, "adHocSubProcess 应当被解析出来（解析期要宽松）");
         assertEquals(WfNodeType.TASK, node.getType(), "退化后落成人工任务");
-        assertEquals("transaction", node.unsupportedBpmnElement(),
+        assertEquals("adHocSubProcess", node.unsupportedBpmnElement(),
                 "必须记录原始元素名，否则 type=TASK 无法与真正的 task 区分");
 
         List<WfValidationIssue> issues = new WfDefinitionValidator().validate(definition);
@@ -76,8 +81,21 @@ class UnsupportedBpmnElementTest {
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("未针对 x1 报出问题: " + issues));
         assertEquals(WfValidationIssue.Severity.ERROR, issue.getSeverity());
-        assertTrue(issue.getMessage().contains("transaction"),
+        assertTrue(issue.getMessage().contains("adHocSubProcess"),
                 "报错信息必须点名是哪个元素： " + issue.getMessage());
+    }
+
+    @Test
+    @DisplayName("transaction 第 38 轮已原生支持，不再被当成退化节点")
+    void transactionIsNowNative() {
+        // 与 eventBasedGatewayIsNowNative 同理：守着「支持列表不许悄悄缩回去」。
+        // transaction 此前是被挡掉的（第 36 轮立项调查确认过它硬依赖补偿，
+        // 补偿在第 37 轮就位），所以在这之前一份真实的事务流程在本引擎里部署不了。
+        WfDefinition definition = new WfXmlParser().parse(bpmnWith("transaction"));
+        WfNode node = nodeOf(definition, "x1");
+        assertEquals(WfNodeType.TRANSACTION, node.getType());
+        assertNull(node.unsupportedBpmnElement(),
+                "事务已是原生类型，不能再被当成退化节点拦下来");
     }
 
     @Test
@@ -132,19 +150,19 @@ class UnsupportedBpmnElementTest {
     }
 
     @Test
-    @DisplayName("transaction / adHocSubProcess 仍给出替代建议 subProcess")
+    @DisplayName("adHocSubProcess 仍给出替代建议 subProcess")
     void unsupportedSubProcessLikeStillSuggestsSubProcess() {
-        // 抛事件被实现之后，退化名单只剩 transaction / adHocSubProcess。
-        // 它们与 subProcess 的等价关系成立，所以仍要给建议 —— 别把这条一起删掉。
-        for (String elementTag : new String[]{"transaction", "adHocSubProcess"}) {
-            WfDefinition definition = new WfXmlParser().parse(bpmnWith(elementTag));
-            assertEquals(elementTag, nodeOf(definition, "x1").unsupportedBpmnElement(),
-                    elementTag + " 仍是退化节点");
-            String rendered = WfDefinitionValidator.render(
-                    new WfDefinitionValidator().validate(definition));
-            assertTrue(rendered.contains("subProcess"),
-                    elementTag + " 与 subProcess 等价，应给出替代建议：" + rendered);
-        }
+        // 退化名单原先是 {transaction, adHocSubProcess}；第 38 轮 transaction
+        // 有了原生实现，名单只剩 adHocSubProcess。
+        // 它与 subProcess 的等价关系成立（Camunda 把 ad-hoc 当普通 subProcess 处理），
+        // 所以仍要给建议 —— 别把这条一起删掉。
+        WfDefinition definition = new WfXmlParser().parse(bpmnWith("adHocSubProcess"));
+        assertEquals("adHocSubProcess", nodeOf(definition, "x1").unsupportedBpmnElement(),
+                "adHocSubProcess 仍是退化节点");
+        String rendered = WfDefinitionValidator.render(
+                new WfDefinitionValidator().validate(definition));
+        assertTrue(rendered.contains("subProcess"),
+                "adHocSubProcess 与 subProcess 等价，应给出替代建议：" + rendered);
     }
 
     @Test
@@ -185,13 +203,13 @@ class UnsupportedBpmnElementTest {
     void jsonEntryIsEquallyStrict() {
         String json = "{\"key\":\"p1\",\"startEventId\":\"s1\",\"nodes\":["
                 + "{\"id\":\"s1\",\"type\":\"startEvent\"},"
-                + "{\"id\":\"g1\",\"type\":\"transaction\"},"
+                + "{\"id\":\"g1\",\"type\":\"adHocSubProcess\"},"
                 + "{\"id\":\"e1\",\"type\":\"endEvent\"}],"
                 + "\"flows\":[{\"from\":\"s1\",\"to\":\"g1\"},{\"from\":\"g1\",\"to\":\"e1\"}]}";
         WfDefinition definition = new WfJsonParser().parse(json);
         WfNode node = nodeOf(definition, "g1");
         assertNotNull(node);
-        assertEquals("transaction", node.unsupportedBpmnElement(),
+        assertEquals("adHocSubProcess", node.unsupportedBpmnElement(),
                 "JSON 定义走的是另一个解析器，必须打同样的标记");
         assertTrue(WfDefinitionValidator.hasError(
                         new WfDefinitionValidator().validate(definition)),
