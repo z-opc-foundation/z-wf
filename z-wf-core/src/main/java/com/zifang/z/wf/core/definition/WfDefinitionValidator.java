@@ -206,9 +206,243 @@ public class WfDefinitionValidator {
         // ---- 关联线（第 37 轮）----
         validateAssociations(definition, ids);
 
+        // ---- 数据声明（第 46 轮）----
+        validateDataDeclarations(definition, ids);
+
         validateGraphShape(definition, ids);
 
         return result();
+    }
+
+    /**
+     * 数据声明的引用完整性（第 46 轮）。
+     *
+     * <p><b>这一组规则挡掉的是本轮改动前的「一个错都不报」</b>：
+     * {@code dataObject} / {@code dataStore} / {@code dataObjectReference} /
+     * {@code ioSpecification} / 数据关联，改动前<b>全部被静默丢弃</b> ——
+     * 解析器里一处都没有，它们也不在「不支持元素」清单里。
+     * 于是模型里写一条 {@code targetRef="不存在"} 的数据关联，
+     * 部署照过、流程照跑，而作者以为数据在流，<b>全程没有任何提示</b>。
+     *
+     * <p><b>只校验引用，不校验语义。</b> 本引擎不执行数据关联、不对 dataStore 做存取
+     * （{@link WfDataObject} / {@link WfDataStore} 类注释），
+     * 所以这里没有"值对不对"可查 —— 可查的只有<b>"你写的那个名字在不在"</b>，
+     * 而这恰恰是静默失效的唯一来源。
+     *
+     * <p><b>类型校验比 Camunda 7 严，这是有意的。</b>
+     * Camunda 的解析器对 {@code sourceRef}/{@code targetRef} 不做 dataObject 与
+     * dataObjectReference 的区分，两种都能部署；本仓区分，报 ERROR。
+     * 理由是本引擎的取舍就写在那一行：既然不执行数据关联，
+     * 那条关联<b>唯一的用处就是声明</b> —— 一条写反了方向的关联
+     * 在这里不产生任何行为，区别只在于它是一句错误的声明。
+     * 既然唯一的用处就是声明，就没有理由让错误的声明悄悄部署成功。
+     */
+    private void validateDataDeclarations(WfDefinition definition, Set<String> nodeIds) {
+        List<WfDataObject> dataObjects = definition.getDataObjects();
+        if (dataObjects != null) {
+            for (WfDataObject dataObject : dataObjects) {
+                if (dataObject == null) {
+                    add(WfValidationIssue.Severity.ERROR, null, "存在 null 数据声明（<dataObject>）");
+                    continue;
+                }
+                if (isBlank(dataObject.getId())) {
+                    add(WfValidationIssue.Severity.ERROR, null, "存在没有 id 的 <dataObject>");
+                    continue;
+                }
+                if (nodeIds.contains(dataObject.getId())) {
+                    // BPMN 要求 id 文档级唯一。撞了车不会立刻出错（本仓的端点查表只看数据声明），
+                    // 但它让"这个名字指的是谁"依赖查表顺序 —— 那正是本轮要消灭的东西
+                    add(WfValidationIssue.Severity.ERROR, dataObject.getId(),
+                            "<dataObject> 的 id 与某个流程节点重名: " + dataObject.getId()
+                                    + "。BPMN 要求 id 在整份定义里唯一，节点与数据声明不能共用同一个 id");
+                }
+            }
+        }
+
+        List<WfDataObjectReference> references = definition.getDataObjectReferences();
+        if (references != null) {
+            for (WfDataObjectReference reference : references) {
+                if (reference == null) {
+                    add(WfValidationIssue.Severity.ERROR, null, "存在 null 数据引用（<dataObjectReference>）");
+                    continue;
+                }
+                if (isBlank(reference.getId())) {
+                    add(WfValidationIssue.Severity.ERROR, null,
+                            "存在没有 id 的数据引用（" + tagOf(reference) + "）");
+                    continue;
+                }
+                if (nodeIds.contains(reference.getId())) {
+                    add(WfValidationIssue.Severity.ERROR, reference.getId(),
+                            tagOf(reference) + " 的 id 与某个流程节点重名: " + reference.getId());
+                }
+                String dataObjectRef = reference.getDataObjectRef();
+                if (isBlank(dataObjectRef)) {
+                    // BPMN 里 dataObjectRef 是必填项。缺了它，这句声明指向哪份数据就没有答案
+                    add(WfValidationIssue.Severity.ERROR, reference.getId(),
+                            tagOf(reference) + " " + reference.getId()
+                                    + " 缺少 dataObjectRef：BPMN 规定它必填，缺了这份引用就不知道指向哪份数据");
+                } else if (definition.dataObject(dataObjectRef) == null) {
+                    add(WfValidationIssue.Severity.ERROR, dataObjectRef,
+                            tagOf(reference) + " " + reference.getId()
+                                    + " 的 dataObjectRef 指向不存在的 <dataObject>: " + dataObjectRef
+                                    + "。本定义里已声明的数据是: " + dataObjectIds(definition));
+                }
+            }
+        }
+
+        List<WfDataStore> dataStores = definition.getDataStores();
+        if (dataStores != null) {
+            for (WfDataStore store : dataStores) {
+                if (store == null) {
+                    add(WfValidationIssue.Severity.ERROR, null, "存在 null 数据存储声明（<dataStore>）");
+                    continue;
+                }
+                if (isBlank(store.getId())) {
+                    add(WfValidationIssue.Severity.ERROR, null, "存在没有 id 的 <dataStore>");
+                    continue;
+                }
+                if (nodeIds.contains(store.getId())) {
+                    add(WfValidationIssue.Severity.ERROR, store.getId(),
+                            "<dataStore> 的 id 与某个流程节点重名: " + store.getId());
+                }
+            }
+        }
+
+        List<WfDataAssociation> dataAssociations = definition.getDataAssociations();
+        if (dataAssociations == null) {
+            return;
+        }
+        for (WfDataAssociation association : dataAssociations) {
+            if (association == null) {
+                add(WfValidationIssue.Severity.ERROR, null, "存在 null 数据关联");
+                continue;
+            }
+            String name = nameOfData(association);
+            if (isBlank(association.getId())) {
+                add(WfValidationIssue.Severity.ERROR, null, "存在没有 id 的 " + dataTag(association));
+            }
+            if (association.getOwnerId() != null && !nodeIds.contains(association.getOwnerId())) {
+                // ownerId 写错了：这条关联会挂在一个人类节点上，而"这个活动的数据输入输出"
+                // 这个问题的答案里就永远少了它
+                add(WfValidationIssue.Severity.ERROR, association.getOwnerId(),
+                        dataTag(association) + " " + name + " 声明在不存在的元素上: "
+                                + association.getOwnerId());
+            }
+            validateDataAssociationEnd(definition, association, name,
+                    association.getSourceRef(), "sourceRef");
+            validateDataAssociationEnd(definition, association, name,
+                    association.getTargetRef(), "targetRef");
+        }
+    }
+
+    /**
+     * 数据关联某一端的三种判据（第 46 轮），缺一不可。
+     *
+     * <p>判定顺序刻意是「缺失 → 悬空 → 类型不符」三段，<b>每段只报一条</b>：
+     * 悬空引用报「类型不符」是废话（它压根不是任何数据声明），
+     * 而同一端报两条错会让作者以为要改两处。
+     */
+    private void validateDataAssociationEnd(WfDefinition definition,
+                                            WfDataAssociation association,
+                                            String name, String ref, String attribute) {
+        if (isBlank(ref)) {
+            // BPMN 允许 dataAssociation@sourceRef 有 0 个，但本仓要求两端都写：
+            // 少一端的关联没有可校验的语义，丢掉它又正是本轮要消灭的静默
+            add(WfValidationIssue.Severity.ERROR, null,
+                    dataTag(association) + " " + name + " 缺少 " + attribute
+                            + "：数据关联的两端必须写全，否则不知道数据从哪来、到哪去");
+            return;
+        }
+        Object found = definition.dataDeclaration(ref);
+        if (found == null) {
+            add(WfValidationIssue.Severity.ERROR, ref,
+                    dataTag(association) + " " + name + " 的 " + attribute
+                            + " 指向不存在的数据声明: " + ref
+                            + "。本定义里已声明的数据是: " + dataObjectIds(definition)
+                            + "；可用作端点的引用是: " + dataReferenceIds(definition));
+            return;
+        }
+        WfDataDirection direction = association.getDirection();
+        if (direction == null) {
+            add(WfValidationIssue.Severity.ERROR, ref,
+                    dataTag(association) + " " + name + " 没有方向，无法判断 " + attribute
+                            + " 该指向什么（BPMN 里方向由元素名决定：dataInputAssociation 或 dataOutputAssociation）");
+            return;
+        }
+        if (direction == WfDataDirection.INPUT && "targetRef".equals(attribute)) {
+            // input 的落点必须是 data object reference（"这个活动要读哪一份数据"）
+            if (!(found instanceof WfDataObjectReference)) {
+                add(WfValidationIssue.Severity.ERROR, ref,
+                        dataTag(association) + " " + name + " 的 targetRef " + ref
+                                + " 指向的是 <dataObject>，但 dataInputAssociation 的 targetRef 必须是"
+                                + "数据引用（<dataObjectReference> 或 ioSpecification 里的 <dataInput>）");
+            }
+            return;
+        }
+        if (direction == WfDataDirection.OUTPUT && "sourceRef".equals(attribute)) {
+            // output 的来源必须是 dataObject（BPMN 规定 output 的 sourceRef 是 DataObject）
+            if (!(found instanceof WfDataObject)) {
+                add(WfValidationIssue.Severity.ERROR, ref,
+                        dataTag(association) + " " + name + " 的 sourceRef " + ref
+                                + " 指向的是数据引用，但 dataOutputAssociation 的 sourceRef 必须是"
+                                + " <dataObject>（产出的是数据本身，不是对数据的引用）");
+            }
+        }
+    }
+
+    /** 报出实际声明的 id 集合，让「该改成什么」不用作者自己去数。 */
+    private String dataObjectIds(WfDefinition definition) {
+        List<WfDataObject> dataObjects = definition.getDataObjects();
+        if (dataObjects == null || dataObjects.isEmpty()) {
+            return "（无）";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (WfDataObject dataObject : dataObjects) {
+            if (dataObject == null || isBlank(dataObject.getId())) {
+                continue;
+            }
+            if (sb.length() > 0) {
+                sb.append(", ");
+            }
+            sb.append(dataObject.getId()).append('(').append(dataObject.getScope()).append(')');
+        }
+        return sb.length() == 0 ? "（无）" : sb.toString();
+    }
+
+    private String dataReferenceIds(WfDefinition definition) {
+        StringBuilder sb = new StringBuilder();
+        if (definition.getDataObjectReferences() == null) {
+            return "（无）";
+        }
+        for (WfDataObjectReference reference : definition.getDataObjectReferences()) {
+            if (reference == null || isBlank(reference.getId())) {
+                continue;
+            }
+            if (sb.length() > 0) {
+                sb.append(", ");
+            }
+            sb.append(reference.getId()).append('(').append(tagOf(reference)).append(')');
+        }
+        return sb.length() == 0 ? "（无）" : sb.toString();
+    }
+
+    private String tagOf(WfDataObjectReference reference) {
+        if (reference.getKind() == WfDataObjectReference.Kind.INPUT) {
+            return "<dataInput>";
+        }
+        if (reference.getKind() == WfDataObjectReference.Kind.OUTPUT) {
+            return "<dataOutput>";
+        }
+        return "<dataObjectReference>";
+    }
+
+    private String dataTag(WfDataAssociation association) {
+        return association.getDirection() == WfDataDirection.OUTPUT
+                ? "<dataOutputAssociation>" : "<dataInputAssociation>";
+    }
+
+    private String nameOfData(WfDataAssociation association) {
+        return association.getId() == null ? "(无 id)" : association.getId();
     }
 
     /**

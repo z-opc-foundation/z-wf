@@ -67,6 +67,119 @@ public class WfDefinitionController {
         return Result.success(rows);
     }
 
+    /**
+     * 某定义某一版的<b>数据声明清单</b>（第 46 轮）。
+     *
+     * <p><b>为什么单独一个端点而不是并进 {@link #list}</b>：数据声明是
+     * 「走查一份流程到底在用哪些数据」的答案，而走查是低频动作；
+     * 列表端点每个定义都要多带四段结构，日常打开流程列表的人一个都用不上。
+     *
+     * <p><b>返回体里刻意带上 {@code engineReadsData=false}</b>：
+     * 本引擎<b>不执行数据关联、不对 dataStore 做存取</b>
+     * （见 {@code WfDataObject} / {@code WfDataStore} 的类注释，与 Camunda 7 一致）。
+     * 只列声明不说这一点，调用方会以为"列出来的就是引擎在管的"——
+     * 而那正是第 46 轮改动前最坏的一类静默：写了等于没写，且没有任何提示。
+     * 让这条事实出现在<b>响应体里</b>而不是只写在文档里，是为了它跟着接口一起被看见。
+     */
+    @GetMapping("/data")
+    @Operation(summary = "008_查某定义某一版的数据声明（dataObject/dataStore/数据关联，本引擎只读不执行）")
+    public Result<Map<String, Object>> dataDeclarations(
+            @RequestParam String key,
+            @RequestParam(required = false) Integer version) {
+        // 刻意<b>不用</b> getDefinitionOrLatest：那个方法在版本不存在时会回落到最新版本。
+        // 查数据声明时静默换一版，等于回答了另一个模型的问题，而响应里的
+        // version 字段会把版本号照实写出来，调用方更难发现。
+        //
+        // 两个分支都<b>不判 null</b>：getLatestDefinition / getDefinition 找不到就抛，
+        // 由异常 advice 翻成 4xx。这与同控制器的 /model、/diagram 一致 ——
+        // 「问一个从没部署过的 key」是真问错了，而 {@link #getDefault()} 回 null
+        // 是因为「还没配默认」本身是正常状态。两者不是一回事，
+        // 在这里判一个永远不成立的 null 分支，等于写下一条
+        // 「查不到是正常状态」的注释，而代码里没有任何一条路径会走到它。
+        WfDefinition definition = version == null
+                ? repositoryService.getLatestDefinition(key)
+                : repositoryService.getDefinition(key, version);
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("key", definition.getKey());
+        view.put("version", definition.getVersion());
+        view.put("engineReadsData", false);
+        view.put("engineReadsDataReason",
+                "本引擎不执行 dataInputAssociation/dataOutputAssociation，也不对 dataStore 做存取；"
+                        + "业务数据一律走流程变量（WorkflowService#setVariable）。"
+                        + "这里的清单是建模声明，供走查与设计器回显用。");
+        view.put("dataObjects", dataObjectViews(definition));
+        view.put("dataObjectReferences", dataReferenceViews(definition));
+        view.put("dataStores", dataStoreViews(definition));
+        view.put("dataAssociations", dataAssociationViews(definition));
+        return Result.success(view);
+    }
+
+    private List<Map<String, Object>> dataObjectViews(WfDefinition definition) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (com.zifang.z.wf.core.definition.WfDataObject dataObject : definition.getDataObjects()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", dataObject.getId());
+            row.put("name", dataObject.getName());
+            row.put("itemSubjectRef", dataObject.getItemSubjectRef());
+            // 作用域随响应给出（不让人靠"嵌了几层"自己数）
+            row.put("scope", dataObject.getScope() == null ? null : dataObject.getScope().name());
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    private List<Map<String, Object>> dataReferenceViews(WfDefinition definition) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (com.zifang.z.wf.core.definition.WfDataObjectReference reference
+                : definition.getDataObjectReferences()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", reference.getId());
+            row.put("name", reference.getName());
+            row.put("dataObjectRef", reference.getDataObjectRef());
+            row.put("itemSubjectRef", reference.getItemSubjectRef());
+            // kind 必须一起给：这份列表里混着 <dataObjectReference> 与 ioSpecification 的
+            // dataInput/dataOutput，不给就得靠 id 猜它长什么样
+            row.put("kind", reference.getKind() == null ? null : reference.getKind().name());
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    private List<Map<String, Object>> dataStoreViews(WfDefinition definition) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (com.zifang.z.wf.core.definition.WfDataStore store : definition.getDataStores()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", store.getId());
+            row.put("name", store.getName());
+            // capacity 是 Integer：没配就是 null，不能显示成 0（那是"容量为零"）
+            row.put("capacity", store.getCapacity());
+            row.put("unlimited", store.isUnlimited());
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    private List<Map<String, Object>> dataAssociationViews(WfDefinition definition) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (com.zifang.z.wf.core.definition.WfDataAssociation association
+                : definition.getDataAssociations()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", association.getId());
+            row.put("direction", association.getDirection() == null
+                    ? null : association.getDirection().name());
+            row.put("ownerId", association.getOwnerId());
+            // ownerId 为 null 表示写在 <process> 上。给出显式布尔位而不是
+            // "靠 ownerId 是不是 null 去判断"：后者是让调用方猜
+            row.put("processLevel", association.getOwnerId() == null);
+            row.put("sourceRef", association.getSourceRef());
+            row.put("targetRef", association.getTargetRef());
+            row.put("transformation", association.getTransformation());
+            row.put("assignments", association.getAssignments());
+            rows.add(row);
+        }
+        return rows;
+    }
+
     @GetMapping("/model")
     @Operation(summary = "003_回读原始 BPMN XML（模型编辑器集成用）")
     public Result<String> model(@RequestParam String key, @RequestParam Integer version) {

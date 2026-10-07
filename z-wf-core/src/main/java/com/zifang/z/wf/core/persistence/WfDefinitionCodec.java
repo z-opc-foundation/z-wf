@@ -8,6 +8,12 @@ import java.util.Map;
 
 import com.zifang.util.json.JsonUtil;
 import com.zifang.z.wf.core.definition.WfAssociation;
+import com.zifang.z.wf.core.definition.WfDataAssociation;
+import com.zifang.z.wf.core.definition.WfDataDirection;
+import com.zifang.z.wf.core.definition.WfDataObject;
+import com.zifang.z.wf.core.definition.WfDataObjectReference;
+import com.zifang.z.wf.core.definition.WfDataScope;
+import com.zifang.z.wf.core.definition.WfDataStore;
 import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.WfFlow;
 import com.zifang.z.wf.core.definition.WfNode;
@@ -52,12 +58,56 @@ public final class WfDefinitionCodec {
         /** 关联线（第 37 轮）：补偿边界事件 ↔ 补偿处理器。 */
         private List<GraphAssociation> associations = new ArrayList<>();
 
+        // ---- 数据声明（第 46 轮）----
+        // 四个列表都必须落：只落其中三个，重启后数据关联的端点就会解析不到，
+        // 而症状是「同一个模型重启前后表现不同」——重启是所有偶发问题的经典替罪羊。
+        // 存量定义里这四个键是缺的，读回来按空列表处理（老定义照常可用）。
+        private List<GraphDataObject> dataObjects = new ArrayList<>();
+
+        private List<GraphDataObjectReference> dataObjectReferences = new ArrayList<>();
+
+        private List<GraphDataStore> dataStores = new ArrayList<>();
+
+        private List<GraphDataAssociation> dataAssociations = new ArrayList<>();
+
         public List<GraphAssociation> getAssociations() {
             return associations;
         }
 
         public void setAssociations(List<GraphAssociation> associations) {
             this.associations = associations;
+        }
+
+        public List<GraphDataObject> getDataObjects() {
+            return dataObjects;
+        }
+
+        public void setDataObjects(List<GraphDataObject> dataObjects) {
+            this.dataObjects = dataObjects;
+        }
+
+        public List<GraphDataObjectReference> getDataObjectReferences() {
+            return dataObjectReferences;
+        }
+
+        public void setDataObjectReferences(List<GraphDataObjectReference> dataObjectReferences) {
+            this.dataObjectReferences = dataObjectReferences;
+        }
+
+        public List<GraphDataStore> getDataStores() {
+            return dataStores;
+        }
+
+        public void setDataStores(List<GraphDataStore> dataStores) {
+            this.dataStores = dataStores;
+        }
+
+        public List<GraphDataAssociation> getDataAssociations() {
+            return dataAssociations;
+        }
+
+        public void setDataAssociations(List<GraphDataAssociation> dataAssociations) {
+            this.dataAssociations = dataAssociations;
         }
 
         public String getKey() {
@@ -155,6 +205,231 @@ public final class WfDefinitionCodec {
 
         public void setTargetRef(String targetRef) {
             this.targetRef = targetRef;
+        }
+    }
+
+    // ==================== 数据声明快照（第 46 轮） ====================
+
+    /**
+     * {@code <dataObject>} 快照。
+     *
+     * <p>{@code scope} 存成<b>枚举名</b>（{@code PROCESS} / {@code STAGE}）而不是小写：
+     * 枚举名是它在本仓的权威写法，读回来直接 {@code valueOf} 即可，
+     * 换成小写就得再写一张对照表，而那张表迟早与枚举脱节。
+     * 读不认识的枚举名按 {@code PROCESS} 兜底（存量的、别处手写的）而不是抛 ——
+     * 数据声明不参与任何执行判断，为一个显示字段挡住整份定义的加载不划算。
+     */
+    public static class GraphDataObject implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private String id;
+        private String name;
+        private String itemSubjectRef;
+        private String scope;
+
+        public String getId() {
+            return id;
+        }
+
+        public void setId(String id) {
+            this.id = id;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public String getItemSubjectRef() {
+            return itemSubjectRef;
+        }
+
+        public void setItemSubjectRef(String itemSubjectRef) {
+            this.itemSubjectRef = itemSubjectRef;
+        }
+
+        public String getScope() {
+            return scope;
+        }
+
+        public void setScope(String scope) {
+            this.scope = scope;
+        }
+    }
+
+    /** 数据引用快照（含 ioSpecification 的 dataInput / dataOutput）。 */
+    public static class GraphDataObjectReference implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private String id;
+        private String name;
+        private String dataObjectRef;
+        private String itemSubjectRef;
+        private String kind;
+
+        public String getId() {
+            return id;
+        }
+
+        public void setId(String id) {
+            this.id = id;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public String getDataObjectRef() {
+            return dataObjectRef;
+        }
+
+        public void setDataObjectRef(String dataObjectRef) {
+            this.dataObjectRef = dataObjectRef;
+        }
+
+        public String getItemSubjectRef() {
+            return itemSubjectRef;
+        }
+
+        public void setItemSubjectRef(String itemSubjectRef) {
+            this.itemSubjectRef = itemSubjectRef;
+        }
+
+        public String getKind() {
+            return kind;
+        }
+
+        public void setKind(String kind) {
+            this.kind = kind;
+        }
+    }
+
+    /** {@code <dataStore>} 快照。 */
+    public static class GraphDataStore implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private String id;
+        private String name;
+        private Integer capacity;
+        private boolean unlimited;
+
+        public String getId() {
+            return id;
+        }
+
+        public void setId(String id) {
+            this.id = id;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public Integer getCapacity() {
+            return capacity;
+        }
+
+        public void setCapacity(Integer capacity) {
+            this.capacity = capacity;
+        }
+
+        public boolean isUnlimited() {
+            return unlimited;
+        }
+
+        public void setUnlimited(boolean unlimited) {
+            this.unlimited = unlimited;
+        }
+    }
+
+    /**
+     * 数据关联快照。
+     *
+     * <p>{@code direction} 与 {@code kind} 一样存枚举名。
+     *
+     * <p>{@code assignments} 存成 {@link List}：BPMN 允许一条关联带多个
+     * {@code <assignment>}，拼成一段文本就分不出"两条"与"一条里的两个 to"。
+     */
+    public static class GraphDataAssociation implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private String id;
+        private String direction;
+        private String ownerId;
+        private String sourceRef;
+        private String targetRef;
+        private String transformation;
+        private List<String> assignments = new ArrayList<>();
+
+        public String getId() {
+            return id;
+        }
+
+        public void setId(String id) {
+            this.id = id;
+        }
+
+        public String getDirection() {
+            return direction;
+        }
+
+        public void setDirection(String direction) {
+            this.direction = direction;
+        }
+
+        public String getOwnerId() {
+            return ownerId;
+        }
+
+        public void setOwnerId(String ownerId) {
+            this.ownerId = ownerId;
+        }
+
+        public String getSourceRef() {
+            return sourceRef;
+        }
+
+        public void setSourceRef(String sourceRef) {
+            this.sourceRef = sourceRef;
+        }
+
+        public String getTargetRef() {
+            return targetRef;
+        }
+
+        public void setTargetRef(String targetRef) {
+            this.targetRef = targetRef;
+        }
+
+        public String getTransformation() {
+            return transformation;
+        }
+
+        public void setTransformation(String transformation) {
+            this.transformation = transformation;
+        }
+
+        public List<String> getAssignments() {
+            return assignments;
+        }
+
+        public void setAssignments(List<String> assignments) {
+            this.assignments = assignments == null ? new ArrayList<String>() : assignments;
         }
     }
 
@@ -784,6 +1059,69 @@ public final class WfDefinitionCodec {
         }
         graph.setAssociations(associations);
 
+        // ---- 数据声明（第 46 轮）----
+        // 与 associations 同一取舍：必须落库。少落任何一份，重启后
+        // 「同一个模型表现不同」，而重启是所有偶发问题的经典替罪羊。
+        List<GraphDataObject> dataObjects = new ArrayList<>();
+        for (WfDataObject dataObject : definition.getDataObjects()) {
+            if (dataObject == null || dataObject.getId() == null) {
+                continue;
+            }
+            GraphDataObject gdo = new GraphDataObject();
+            gdo.setId(dataObject.getId());
+            gdo.setName(dataObject.getName());
+            gdo.setItemSubjectRef(dataObject.getItemSubjectRef());
+            gdo.setScope(dataObject.getScope() == null ? null : dataObject.getScope().name());
+            dataObjects.add(gdo);
+        }
+        graph.setDataObjects(dataObjects);
+
+        List<GraphDataObjectReference> dataReferences = new ArrayList<>();
+        for (WfDataObjectReference reference : definition.getDataObjectReferences()) {
+            if (reference == null || reference.getId() == null) {
+                continue;
+            }
+            GraphDataObjectReference gdr = new GraphDataObjectReference();
+            gdr.setId(reference.getId());
+            gdr.setName(reference.getName());
+            gdr.setDataObjectRef(reference.getDataObjectRef());
+            gdr.setItemSubjectRef(reference.getItemSubjectRef());
+            gdr.setKind(reference.getKind() == null ? null : reference.getKind().name());
+            dataReferences.add(gdr);
+        }
+        graph.setDataObjectReferences(dataReferences);
+
+        List<GraphDataStore> dataStores = new ArrayList<>();
+        for (WfDataStore store : definition.getDataStores()) {
+            if (store == null || store.getId() == null) {
+                continue;
+            }
+            GraphDataStore gds = new GraphDataStore();
+            gds.setId(store.getId());
+            gds.setName(store.getName());
+            gds.setCapacity(store.getCapacity());
+            gds.setUnlimited(store.isUnlimited());
+            dataStores.add(gds);
+        }
+        graph.setDataStores(dataStores);
+
+        List<GraphDataAssociation> dataAssociations = new ArrayList<>();
+        for (WfDataAssociation association : definition.getDataAssociations()) {
+            if (association == null || association.getId() == null) {
+                continue;
+            }
+            GraphDataAssociation gda = new GraphDataAssociation();
+            gda.setId(association.getId());
+            gda.setDirection(association.getDirection() == null ? null : association.getDirection().name());
+            gda.setOwnerId(association.getOwnerId());
+            gda.setSourceRef(association.getSourceRef());
+            gda.setTargetRef(association.getTargetRef());
+            gda.setTransformation(association.getTransformation());
+            gda.setAssignments(new ArrayList<>(association.getAssignments()));
+            dataAssociations.add(gda);
+        }
+        graph.setDataAssociations(dataAssociations);
+
         return JsonUtil.toJson(graph);
     }
 
@@ -911,7 +1249,119 @@ public final class WfDefinitionCodec {
         }
         definition.setAssociations(associations);
 
+        // ---- 数据声明（第 46 轮）----
+        // 老库里没有这四个键 ⇒ 读回来是 null ⇒ 全部按空处理，不抛：
+        // 与上面 associations / timerType 同一条取舍，升级不能让整批存量定义读不出来。
+        List<WfDataObject> dataObjects = new ArrayList<>();
+        if (graph.getDataObjects() != null) {
+            for (GraphDataObject gdo : graph.getDataObjects()) {
+                if (gdo == null || gdo.getId() == null) {
+                    continue;
+                }
+                WfDataObject dataObject = new WfDataObject();
+                dataObject.setId(gdo.getId());
+                dataObject.setName(gdo.getName());
+                dataObject.setItemSubjectRef(gdo.getItemSubjectRef());
+                dataObject.setScope(parseDataScope(gdo.getScope()));
+                dataObjects.add(dataObject);
+            }
+        }
+        definition.setDataObjects(dataObjects);
+
+        List<WfDataObjectReference> dataReferences = new ArrayList<>();
+        if (graph.getDataObjectReferences() != null) {
+            for (GraphDataObjectReference gdr : graph.getDataObjectReferences()) {
+                if (gdr == null || gdr.getId() == null) {
+                    continue;
+                }
+                WfDataObjectReference reference = new WfDataObjectReference();
+                reference.setId(gdr.getId());
+                reference.setName(gdr.getName());
+                reference.setDataObjectRef(gdr.getDataObjectRef());
+                reference.setItemSubjectRef(gdr.getItemSubjectRef());
+                reference.setKind(parseReferenceKind(gdr.getKind()));
+                dataReferences.add(reference);
+            }
+        }
+        definition.setDataObjectReferences(dataReferences);
+
+        List<WfDataStore> dataStores = new ArrayList<>();
+        if (graph.getDataStores() != null) {
+            for (GraphDataStore gds : graph.getDataStores()) {
+                if (gds == null || gds.getId() == null) {
+                    continue;
+                }
+                WfDataStore store = new WfDataStore();
+                store.setId(gds.getId());
+                store.setName(gds.getName());
+                store.setCapacity(gds.getCapacity());
+                store.setUnlimited(gds.isUnlimited());
+                dataStores.add(store);
+            }
+        }
+        definition.setDataStores(dataStores);
+
+        List<WfDataAssociation> dataAssociations = new ArrayList<>();
+        if (graph.getDataAssociations() != null) {
+            for (GraphDataAssociation gda : graph.getDataAssociations()) {
+                if (gda == null || gda.getId() == null) {
+                    continue;
+                }
+                WfDataAssociation association = new WfDataAssociation();
+                association.setId(gda.getId());
+                association.setDirection(parseDataDirection(gda.getDirection()));
+                association.setOwnerId(gda.getOwnerId());
+                association.setSourceRef(gda.getSourceRef());
+                association.setTargetRef(gda.getTargetRef());
+                association.setTransformation(gda.getTransformation());
+                association.setAssignments(new ArrayList<>(gda.getAssignments()));
+                dataAssociations.add(association);
+            }
+        }
+        definition.setDataAssociations(dataAssociations);
+
         definition.buildIndex();
         return definition;
+    }
+
+    /**
+     * 枚举名 → 枚举，读不认识的按给定兜底值返回，<b>不抛</b>。
+     *
+     * <p>这三个枚举都不参与任何执行判断（数据声明在本仓不执行），
+     * 为一个显示/分类字段挡住整份定义的加载不划算。
+     * 兜底值都取<b>语义上最"普通"的那一个</b>：{@code PROCESS}（进程级）、
+     * {@code REFERENCE}（流程级引用）、{@code INPUT}。
+     */
+    private static WfDataScope parseDataScope(String name) {
+        if (name == null) {
+            return WfDataScope.PROCESS;
+        }
+        try {
+            return WfDataScope.valueOf(name.trim());
+        } catch (IllegalArgumentException e) {
+            return WfDataScope.PROCESS;
+        }
+    }
+
+    private static WfDataObjectReference.Kind parseReferenceKind(String name) {
+        if (name == null) {
+            return WfDataObjectReference.Kind.REFERENCE;
+        }
+        try {
+            return WfDataObjectReference.Kind.valueOf(name.trim());
+        } catch (IllegalArgumentException e) {
+            return WfDataObjectReference.Kind.REFERENCE;
+        }
+    }
+
+    private static WfDataDirection parseDataDirection(String name) {
+        if (name == null) {
+            return WfDataDirection.INPUT;
+        }
+        try {
+            return WfDataDirection.valueOf(name.trim());
+        } catch (IllegalArgumentException e) {
+            return WfDataDirection.INPUT;
+        }
     }
 }

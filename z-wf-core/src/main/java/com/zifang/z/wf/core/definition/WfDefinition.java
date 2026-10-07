@@ -57,6 +57,30 @@ public class WfDefinition implements Serializable {
      */
     private List<WfAssociation> associations = new ArrayList<>();
 
+    /**
+     * 数据声明 {@code <dataObject>}（第 46 轮）。
+     *
+     * <p><b>本引擎不搬运这些数据</b>，见 {@link WfDataObject} 类注释 ——
+     * 这条列表的作用是「读得进来、看得见」，以及给数据关联的端点校验当底表。
+     *
+     * <p><b>必须落库。</b> 不落的话重启后数据声明就没了，症状是
+     * 「部署期报的悬空引用，重启后变成一个看起来正常的空定义」——
+     * 同一个模型在重启前后表现不一致，而重启是所有偶发问题的经典替罪羊。
+     */
+    private List<WfDataObject> dataObjects = new ArrayList<>();
+
+    /**
+     * 数据对象引用（含 {@code <ioSpecification>} 里的 {@code dataInput}/{@code dataOutput}），
+     * 见 {@link WfDataObjectReference} 类注释里"为什么合成一个类"。
+     */
+    private List<WfDataObjectReference> dataObjectReferences = new ArrayList<>();
+
+    /** 数据存储声明 {@code <dataStore>}（第 46 轮）。本引擎不对它做存取，见 {@link WfDataStore}。 */
+    private List<WfDataStore> dataStores = new ArrayList<>();
+
+    /** 数据关联 {@code <dataInputAssociation>} / {@code <dataOutputAssociation>}（第 46 轮）。 */
+    private List<WfDataAssociation> dataAssociations = new ArrayList<>();
+
     /** 原始 XML（部署时留存，供导出与审计）。 */
     private String sourceXml;
 
@@ -791,6 +815,140 @@ public class WfDefinition implements Serializable {
 
     public void setAssociations(List<WfAssociation> associations) {
         this.associations = associations == null ? new ArrayList<WfAssociation>() : associations;
+    }
+
+    // ==================== 数据声明（第 46 轮） ====================
+
+    public List<WfDataObject> getDataObjects() {
+        return dataObjects;
+    }
+
+    public void setDataObjects(List<WfDataObject> dataObjects) {
+        this.dataObjects = dataObjects == null ? new ArrayList<WfDataObject>() : dataObjects;
+    }
+
+    public List<WfDataObjectReference> getDataObjectReferences() {
+        return dataObjectReferences;
+    }
+
+    public void setDataObjectReferences(List<WfDataObjectReference> dataObjectReferences) {
+        this.dataObjectReferences = dataObjectReferences == null
+                ? new ArrayList<WfDataObjectReference>() : dataObjectReferences;
+    }
+
+    public List<WfDataStore> getDataStores() {
+        return dataStores;
+    }
+
+    public void setDataStores(List<WfDataStore> dataStores) {
+        this.dataStores = dataStores == null ? new ArrayList<WfDataStore>() : dataStores;
+    }
+
+    public List<WfDataAssociation> getDataAssociations() {
+        return dataAssociations;
+    }
+
+    public void setDataAssociations(List<WfDataAssociation> dataAssociations) {
+        this.dataAssociations = dataAssociations == null
+                ? new ArrayList<WfDataAssociation>() : dataAssociations;
+    }
+
+    /**
+     * 按 id 取数据声明 —— {@code <dataObject>} 与数据引用<b>共用一张表</b>。
+     *
+     * <p>合成一张表而不是两张：BPMN 里 {@code id} 是文档级唯一的，
+     * 而数据关联的 {@code sourceRef} / {@code targetRef} 本来就可能指向两者之一。
+     * 分两张查，判定就得写成"先查 A 再查 B"，
+     * 而 <b>"查不到" 与 "查到了但是另一种声明"</b> 得报出不同的错 ——
+     * 前者是悬空引用，后者是类型写错，处方不一样。
+     *
+     * @return 命中的数据声明；没有命中返回 {@code null}（不抛 ——
+     *         调用方要区分"没有这种数据"与"名字写错了"，前者是合法状态）
+     */
+    public Object dataDeclaration(String id) {
+        if (id == null) {
+            return null;
+        }
+        for (WfDataObject dataObject : nodeDataObjects()) {
+            if (id.equals(dataObject.getId())) {
+                return dataObject;
+            }
+        }
+        for (WfDataObjectReference reference : nodeDataReferences()) {
+            if (id.equals(reference.getId())) {
+                return reference;
+            }
+        }
+        return null;
+    }
+
+    /** 查数据声明并断言它是 {@link WfDataObject}；不是则返回 {@code null}。 */
+    public WfDataObject dataObject(String id) {
+        Object found = dataDeclaration(id);
+        return found instanceof WfDataObject ? (WfDataObject) found : null;
+    }
+
+    /** 查数据声明并断言它是 {@link WfDataObjectReference}；不是则返回 {@code null}。 */
+    public WfDataObjectReference dataObjectReference(String id) {
+        Object found = dataDeclaration(id);
+        return found instanceof WfDataObjectReference ? (WfDataObjectReference) found : null;
+    }
+
+    /** 按 id 取数据存储声明。 */
+    public WfDataStore dataStore(String id) {
+        if (id == null || dataStores == null) {
+            return null;
+        }
+        for (WfDataStore store : dataStores) {
+            if (store != null && id.equals(store.getId())) {
+                return store;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 挂在某个元素上的数据关联。
+     *
+     * <p>返回列表：同一个活动上可以有多条（多输入 / 多输出），
+     * 流程级（{@code ownerId} 为 {@code null}）的关联<b>不</b>包含在内 ——
+     * 它们不属于任何活动，混进来会让"这个活动的输入输出是什么"这个问题的答案
+     * 随流程里别处写了什么而变。
+     */
+    public List<WfDataAssociation> dataAssociationsOf(String ownerId) {
+        List<WfDataAssociation> result = new ArrayList<>();
+        if (ownerId == null || dataAssociations == null) {
+            return result;
+        }
+        for (WfDataAssociation association : dataAssociations) {
+            if (association != null && ownerId.equals(association.getOwnerId())) {
+                result.add(association);
+            }
+        }
+        return result;
+    }
+
+    /** 流程级数据关联（{@code ownerId} 为 {@code null} 的那些）。 */
+    public List<WfDataAssociation> processLevelDataAssociations() {
+        List<WfDataAssociation> result = new ArrayList<>();
+        if (dataAssociations == null) {
+            return result;
+        }
+        for (WfDataAssociation association : dataAssociations) {
+            if (association != null && association.getOwnerId() == null) {
+                result.add(association);
+            }
+        }
+        return result;
+    }
+
+    private List<WfDataObject> nodeDataObjects() {
+        return dataObjects == null ? Collections.<WfDataObject>emptyList() : dataObjects;
+    }
+
+    private List<WfDataObjectReference> nodeDataReferences() {
+        return dataObjectReferences == null
+                ? Collections.<WfDataObjectReference>emptyList() : dataObjectReferences;
     }
 
     // ==================== 补偿查询（第 37 轮） ====================

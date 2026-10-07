@@ -158,8 +158,134 @@ public class WfJsonParser {
         }
         definition.setAssociations(associations);
 
+        // ---- 数据声明（第 46 轮）----
+        // LogicFlow 没有对应物（它的画布上不画数据声明），所以只认这四个键名，
+        // 缺失按空处理（老定义照常解析）。端点写一半的在这里报解析期错误 ——
+        // 与 associations、XML 入口同一条纪律：半条数据关联丢掉不会有任何兜底消息。
+        List<WfDataObject> dataObjects = new ArrayList<>();
+        for (Object item : listOf(graph.get("dataObjects"))) {
+            Map<String, Object> raw = asMap(item);
+            if (raw == null) {
+                continue;
+            }
+            WfDataObject dataObject = new WfDataObject();
+            dataObject.setId(str(raw.get("id"), null));
+            dataObject.setName(str(raw.get("name"), null));
+            dataObject.setItemSubjectRef(str(raw.get("itemSubjectRef"), null));
+            dataObject.setScope(parseDataScope(str(raw.get("scope"), null)));
+            dataObjects.add(dataObject);
+        }
+        List<WfDataObjectReference> dataReferences = new ArrayList<>();
+        for (Object item : listOf(graph.get("dataObjectReferences"))) {
+            Map<String, Object> raw = asMap(item);
+            if (raw == null) {
+                continue;
+            }
+            WfDataObjectReference reference = new WfDataObjectReference();
+            reference.setId(str(raw.get("id"), null));
+            reference.setName(str(raw.get("name"), null));
+            reference.setDataObjectRef(str(raw.get("dataObjectRef"), null));
+            reference.setItemSubjectRef(str(raw.get("itemSubjectRef"), null));
+            reference.setKind(parseReferenceKind(str(raw.get("kind"), null)));
+            dataReferences.add(reference);
+        }
+        List<WfDataStore> dataStores = new ArrayList<>();
+        for (Object item : listOf(graph.get("dataStores"))) {
+            Map<String, Object> raw = asMap(item);
+            if (raw == null) {
+                continue;
+            }
+            WfDataStore store = new WfDataStore();
+            store.setId(str(raw.get("id"), null));
+            store.setName(str(raw.get("name"), null));
+            Object capacity = raw.get("capacity");
+            if (capacity != null && !String.valueOf(capacity).trim().isEmpty()) {
+                try {
+                    store.setCapacity(Integer.valueOf(String.valueOf(capacity).trim()));
+                } catch (NumberFormatException e) {
+                    throw new WfDefinitionException("流程定义 JSON 中 dataStore "
+                            + str(raw.get("id"), "(无 id)") + " 的 capacity 不是整数: " + capacity);
+                }
+            }
+            store.setUnlimited("true".equalsIgnoreCase(str(raw.get("unlimited"), null)));
+            dataStores.add(store);
+        }
+        List<WfDataAssociation> dataAssociations = new ArrayList<>();
+        for (Object item : listOf(graph.get("dataAssociations"))) {
+            Map<String, Object> raw = asMap(item);
+            if (raw == null) {
+                continue;
+            }
+            String source = str(raw.get("sourceRef"), null);
+            String target = str(raw.get("targetRef"), null);
+            if (source == null || target == null) {
+                throw new WfDefinitionException("流程定义 JSON 中数据关联 "
+                        + str(raw.get("id"), "(无 id)")
+                        + " 缺少 " + (source == null ? "sourceRef" : "targetRef")
+                        + "：数据关联的两端必须写全，否则不知道数据从哪来、到哪去");
+            }
+            WfDataAssociation association = new WfDataAssociation();
+            association.setId(str(raw.get("id"), null));
+            association.setDirection(parseDataDirection(str(raw.get("direction"), null)));
+            association.setOwnerId(str(raw.get("ownerId"), null));
+            association.setSourceRef(source);
+            association.setTargetRef(target);
+            association.setTransformation(str(raw.get("transformation"), null));
+            for (Object assignment : listOf(raw.get("assignments"))) {
+                if (assignment != null && !String.valueOf(assignment).trim().isEmpty()) {
+                    association.getAssignments().add(String.valueOf(assignment).trim());
+                }
+            }
+            dataAssociations.add(association);
+        }
+        definition.setDataObjects(dataObjects);
+        definition.setDataObjectReferences(dataReferences);
+        definition.setDataStores(dataStores);
+        definition.setDataAssociations(dataAssociations);
+
         definition.buildIndex();
         return definition;
+    }
+
+    /**
+     * 枚举名 → 枚举，读不认识的按兜底值返回，<b>不抛</b>。
+     *
+     * <p>与 {@code WfDefinitionCodec} 里的同名三个方法刻意保持一致：
+     * 同一个值在两个入口必须落成同一个枚举，否则「XML 部署的定义」与
+     * 「JSON 部署的定义」在同一个库里会显出不同的作用域/方向 ——
+     * 而数据声明本就不参与执行判断，为它显出差异只可能是读错了。
+     */
+    private static WfDataScope parseDataScope(String name) {
+        if (name == null) {
+            return WfDataScope.PROCESS;
+        }
+        try {
+            return WfDataScope.valueOf(name);
+        } catch (IllegalArgumentException e) {
+            return WfDataScope.PROCESS;
+        }
+    }
+
+    private static WfDataObjectReference.Kind parseReferenceKind(String name) {
+        if (name == null) {
+            return WfDataObjectReference.Kind.REFERENCE;
+        }
+        try {
+            return WfDataObjectReference.Kind.valueOf(name);
+        } catch (IllegalArgumentException e) {
+            return WfDataObjectReference.Kind.REFERENCE;
+        }
+    }
+
+    private static WfDataDirection parseDataDirection(String name) {
+        if (name == null) {
+            return WfDataDirection.INPUT;
+        }
+        try {
+            return WfDataDirection.valueOf(name);
+        } catch (IllegalArgumentException e) {
+            return WfDataDirection.INPUT;
+        }
     }
 
     private WfNode parseNode(Map<String, Object> raw) {

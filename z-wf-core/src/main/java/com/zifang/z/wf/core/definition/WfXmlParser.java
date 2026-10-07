@@ -293,8 +293,188 @@ public class WfXmlParser {
         definition.setNodes(nodes);
         definition.setFlows(flows);
         definition.setAssociations(associations);
+        parseDataElements(process, definition);
         definition.buildIndex();
         return definition;
+    }
+
+    // ==================== 数据声明（第 46 轮） ====================
+
+    /** BPMN 里会出现的、承载数据声明的四类元素名。 */
+    private static final String TAG_DATA_OBJECT = "dataObject";
+
+    private static final String TAG_DATA_STORE = "dataStore";
+
+    private static final String TAG_DATA_OBJECT_REFERENCE = "dataObjectReference";
+
+    private static final String TAG_IO_SPECIFICATION = "ioSpecification";
+
+    /**
+     * 解析数据声明：{@code <dataObject>} / {@code <dataStore>} /
+     * {@code <dataObjectReference>} / {@code <ioSpecification>} 里的 data 引用 /
+     * {@code <dataInputAssociation>} 与 {@code <dataOutputAssociation>}。
+     *
+     * <p><b>本引擎不执行数据关联、不对 dataStore 做存取</b>（见 {@link WfDataObject} /
+     * {@link WfDataStore} 的类注释，与 Camunda 7 的取舍一致）。
+     * 这里的全部价值是：<b>把改动前的「静默丢弃」变成「读得进来 + 引用断了部署期报错」</b>。
+     *
+     * <p><b>用 elements() 的全后代匹配而不是只取 process 的直接子元素</b>：
+     * 声明可以写在 {@code <subProcess>} 内部（那是 {@link WfDataScope#STAGE}），
+     * 活动级的 {@code ioSpecification} 与数据关联也一律嵌在节点内部而不是 process 上。
+     * 「谁声明的」靠 {@link #parentElement} 回溯确定，
+     * 一次遍历就能把散在不同深度的声明收齐。
+     *
+     * <p><b>id 冲突在这里直接抛</b>，与「节点 id 重复」的处置一致：
+     * 冲突之后 {@link WfDefinition#dataDeclaration(String)} 只能任选一个返回，
+     * 而"端点解析到哪一个"没有理由可讲 —— 那正是本轮要消灭的静默。
+     * 端点<b>引用</b>是否解析得到则交给校验器：那是建模问题，
+     * 该在「一次报完」的问题清单里出现，而不是在解析期就崩掉整份部署。
+     */
+    private void parseDataElements(Element process, WfDefinition definition) {
+        List<WfDataObject> dataObjects = new ArrayList<>();
+        List<WfDataObjectReference> references = new ArrayList<>();
+        List<WfDataStore> dataStores = new ArrayList<>();
+        List<WfDataAssociation> dataAssociations = new ArrayList<>();
+        Set<String> seenDataIds = new HashSet<>();
+
+        for (Element element : elements(process, TAG_DATA_OBJECT)) {
+            Element parent = parentElement(element);
+            WfDataObject dataObject = new WfDataObject(
+                    attr(element, "id"),
+                    attr(element, "name"),
+                    attr(element, "itemSubjectRef"),
+                    // 作用域由声明位置决定：BPMN 里它没有 scope 属性（第 46 轮 WfDataScope）
+                    parent == process ? WfDataScope.PROCESS : WfDataScope.STAGE);
+            claimDataId(seenDataIds, dataObject.getId(), TAG_DATA_OBJECT);
+            dataObjects.add(dataObject);
+        }
+
+        for (Element element : elements(process, TAG_DATA_STORE)) {
+            WfDataStore store = new WfDataStore();
+            store.setId(attr(element, "id"));
+            store.setName(attr(element, "name"));
+            store.setUnlimited(Boolean.parseBoolean(attr(element, "isUnlimited")));
+            store.setCapacity(parseCapacity(element));
+            claimDataId(seenDataIds, store.getId(), TAG_DATA_STORE);
+            dataStores.add(store);
+        }
+
+        for (Element element : elements(process, TAG_DATA_OBJECT_REFERENCE)) {
+            WfDataObjectReference reference = new WfDataObjectReference(
+                    attr(element, "id"),
+                    attr(element, "name"),
+                    attr(element, "dataObjectRef"),
+                    WfDataObjectReference.Kind.REFERENCE);
+            reference.setItemSubjectRef(attr(element, "itemSubjectRef"));
+            claimDataId(seenDataIds, reference.getId(), TAG_DATA_OBJECT_REFERENCE);
+            references.add(reference);
+        }
+
+        // ioSpecification 里的 dataInput / dataOutput：XSD 上它们就是 dataObjectReference
+        // 的特化，所以落进同一个列表，只用 kind 区分出处（见 WfDataObjectReference 类注释）
+        for (Element ioSpec : elements(process, TAG_IO_SPECIFICATION)) {
+            for (Element element : elements(ioSpec, "dataInput")) {
+                references.add(dataIoReference(element, "dataInput",
+                        WfDataObjectReference.Kind.INPUT, seenDataIds));
+            }
+            for (Element element : elements(ioSpec, "dataOutput")) {
+                references.add(dataIoReference(element, "dataOutput",
+                        WfDataObjectReference.Kind.OUTPUT, seenDataIds));
+            }
+        }
+
+        for (Element element : elements(process, "dataInputAssociation")) {
+            dataAssociations.add(parseDataAssociation(element, WfDataDirection.INPUT));
+        }
+        for (Element element : elements(process, "dataOutputAssociation")) {
+            dataAssociations.add(parseDataAssociation(element, WfDataDirection.OUTPUT));
+        }
+
+        definition.setDataObjects(dataObjects);
+        definition.setDataObjectReferences(references);
+        definition.setDataStores(dataStores);
+        definition.setDataAssociations(dataAssociations);
+    }
+
+    private WfDataObjectReference dataIoReference(Element element, String tag,
+                                                   WfDataObjectReference.Kind kind,
+                                                   Set<String> seenDataIds) {
+        WfDataObjectReference reference = new WfDataObjectReference(
+                attr(element, "id"),
+                attr(element, "name"),
+                attr(element, "dataObjectRef"),
+                kind);
+        reference.setItemSubjectRef(attr(element, "itemSubjectRef"));
+        claimDataId(seenDataIds, reference.getId(), tag);
+        return reference;
+    }
+
+    private WfDataAssociation parseDataAssociation(Element element, WfDataDirection direction) {
+        WfDataAssociation association = new WfDataAssociation();
+        association.setId(attr(element, "id"));
+        association.setDirection(direction);
+        // ownerId 为 null 表示流程级（BPMN 允许把数据关联写在 <process> 下），
+        // 判定靠"直接父元素是不是 <process>"，不靠"有没有 id" ——
+        // 容器元素允许不写 id，那样判出来会是一个指向空气的 ownerId
+        Element owner = parentElement(element);
+        if (owner != null && !"process".equals(owner.getLocalName())) {
+            association.setOwnerId(attr(owner, "id"));
+        }
+        association.setSourceRef(attr(element, "sourceRef"));
+        association.setTargetRef(attr(element, "targetRef"));
+        association.setTransformation(childText(element, "transformation"));
+        List<String> assignments = new ArrayList<>();
+        for (Element assignment : elements(element, "assignment")) {
+            // 存原文不求值（BPMN formal expression 与本仓表达式语法不同，见类注释）
+            String text = assignment.getTextContent();
+            if (text != null && !text.trim().isEmpty()) {
+                assignments.add(text.trim());
+            }
+        }
+        association.setAssignments(assignments);
+        return association;
+    }
+
+    /**
+     * 声明 id 入表并挡重复。
+     *
+     * <p>与「节点 id 重复」同样在解析期抛：id 冲突时端点解析只能任选一个，
+     * 而选哪一个没有理由 —— 那正是本轮要消灭的静默。
+     */
+    private void claimDataId(Set<String> seenDataIds, String id, String tag) {
+        if (id == null) {
+            // 缺 id 的由校验器报「缺少 id」：报错时能一次列出所有缺 id 的声明，
+            // 而在这里抛会让作者改一个提交一次
+            return;
+        }
+        if (!seenDataIds.add(id)) {
+            throw new WfDefinitionException("BPMN XML 中数据声明 id 重复: " + id
+                    + "（<" + tag + ">）。dataObject / dataObjectReference / dataStore / ioSpecification"
+                    + "里的 dataInput-dataOutput 共用一个 id 空间（BPMN 要求 id 文档级唯一）");
+        }
+    }
+
+    /**
+     * 读 {@code dataStore@capacity}。
+     *
+     * <p><b>非整数直接抛，而不像 priority 那样"保留默认值继续"</b>：
+     * 那条宽容是给 {@code priority} 开的，因为它有真实业务默认值（50）且真的会被执行。
+     * {@code capacity} 在本仓<b>只被读一次、从不用于任何判断</b>，
+     * 静默丢成一个 {@code null} 只会在走查时让人以为"没配容量"，
+     * 而作者明明配了一个写错的值。纯声明元素上，写错就该当场说。
+     */
+    private Integer parseCapacity(Element element) {
+        String raw = attr(element, "capacity");
+        if (raw == null) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(raw.trim());
+        } catch (NumberFormatException e) {
+            throw new WfDefinitionException("BPMN XML 中 dataStore "
+                    + (attr(element, "id") == null ? "(无 id)" : attr(element, "id"))
+                    + " 的 capacity 不是整数: " + raw);
+        }
     }
 
     /**

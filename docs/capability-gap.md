@@ -162,7 +162,7 @@
 | **`escalationCode`** / `escalationEventDefinition` | ✅ | **第 26 轮原生实现**：抛升级事件 + 升级边界事件（中断型与非中断型都走通了）。匹配键是 `escalationRef` 本身，**不解析 `<escalation>` 元素**（那一层目前没有任何语义需要它）。**单独一个 `WfJobType.ESCALATION` 而不是并进 SIGNAL** —— 投递方式一样（广播），但可被投的人不同，猜错的后果是「把一条升级当成普通信号处理」：分支醒了、待办还挂着，而作者以为已经升级过。**升级实际做的事是打断宿主**（待办作废、token 搬到边界上），**"换给谁办"取决于边界的出线节点上写了谁**，引擎不替作者决定（Camunda 那层 `escalationConfig` 本实现没有，不假装有）。`WfRuntimeService#escalate(code, user, comment)` 是与 `broadcastSignal` 并列的公共入口，**零订阅返回空列表而不是报错**，但要写评论留痕。**互斥三条**：与消息/信号/定时器同时配一律部署期 ERROR —— 其中**与定时器互斥是最要紧的一条**：`isTimerBoundary()` 只看 `timerType` 有没有被设，而运行期升级走的是订阅型分支（`duedate` 留空），两边对同一个节点给出两套判定，于是「超时 3 天自动升级」会变成一个**既不报错、也不到期的哑定时器**。**不支持 Camunda 的 `escalationTimer`（到期自动升级）**，要它得在同一个 job 上同时表达"按名字触发"与"到期触发"，触发方就必须去猜「这条是不是已经到期了」（与 `EVENT_TIMER` 那条同源）。**升级捕获事件（中间捕获）明确报 ERROR**：捕获时 token 已经停在那个节点上，而 BPMN 要求的是"在原地再长出一条 token 沿出线走下去"，原 token 留在原地；现有三种捕获全是"把停着的 token 搬走"，硬套会得到「原 token 被搬走且没有第二条」的**看起来能跑的错语义** |
 | `compensation` / `compensationEventDefinition` | 🟡 | **第 37 轮补上登记与执行**。`<association>` 已解析（此前 **0 次**）、`isForCompensation` / `compensateEventDefinition` / `activityRef` 已读、`ZWF_COMPENSATION` 表已落库。活动**完成时**登记一条（时机是「做完」不是「打算做」），撤销时按登记次序**逆序**执行 handler，handler 用一条临时 token 跑（`WfJavaDelegate#execute` 要 execution，直接反射调会让它与同名 serviceTask 行为不一致）。**三条边界要写清**（不是「暂不支持」，是设计上的选择 + 理由）：① **触发点是作用域终止与取消**（`terminateEndEvent` / `cancelEndEvent`，第 38 轮起两者**共用同一个补偿执行入口** —— 分成两个入口的话改一处忘另一处，症状是「事务取消不退款、终止却退款」）；② **handler 限能一次跑完的活动**（`serviceTask` / `scriptTask` / `sendTask` / `businessRuleTask`）—— 人工补偿任务需要「实例挂起等人办结补偿后再恢复」的状态机，本仓没有，放行只会让撤销停在半路；③ **对尚未完成的子流程不传播**是天然满足的（登记只发生在「完成」时）。**与 Camunda 的显式差异**：不支持 `<compensateEventDefinition>` 作为中间抛出事件显式抛（只支持终止/取消触发） |
 | **`linkEvent`**（`linkThrowEvent` / `linkCatchEvent`） | ✅ | **第 22 轮原生实现** `WfNodeType.LINK_THROW` / `LINK_CATCH` + `WfLinkCatchBehavior`。此前两者都不在解析器的元素表里，会退化成人工任务并在部署期报「不支持」。它补的是别的东西都替代不了的事：**跳过一整段图** —— `move` 是运行期外部 API（调用方得自己知道位置），排他网关是**分支**（在若干出线里选一条），两者都不等于"从图上某处直接落到另一处"。配对键是元素自己的 `@name`（`WfNode#linkName`，**不复用显示名 `name`**：两者恰好都来自 `@name`，但一个是给人看的、一个是给引擎配对的，共用一个槽位的话将来补个显示名就会把配对关系改掉）。**改道后 token 沿 catch 自己的出线走，throw 自己的出线不会被走过** —— 特判点放在 `leave` 的「取出线」**之前**（放之后会让「跳过一整段」变成「跑完整段再跳一遍」，而图上看不出异常）。**这一条与 escalation 恰好相反**（Camunda 的 escalation 文档明写 "if the throwing event has any outgoing sequence flows, they will be taken"），所以两处**不能互相参照着写**；throw 上画了线不报错，但报 WARN 说清那是摆设。**作用域限定在同一流程定义内**，不照抄 Camunda 的引擎级全局匹配 —— 全局匹配下"跳去哪里"取决于部署里还有哪些别的流程，删掉那个流程这条就断了，而图上没有任何东西能提示。**catch 是穿透的**：不建待办也不建任何事件订阅（它等的是"图上另一个节点"，而跳转在引擎内部同步完成）。**不用 `INTERMEDIATE_CATCH_EVENT` 实现** —— 那个会建 `EVENT_*` 订阅等外部事件，得到的是一个永远等不到、也不报错的哑订阅。部署期八条：缺 name / 同名 catch 多个 / throw 找不到落点（三个 ERROR），catch 有人跳过来（入线）、无出线（两个 ERROR），catch 没人跳、throw 有出线（两个 WARN），加上 link 事件不许挂边界事件（ERROR，两个方向都是穿透的）。其中 **catch 有入线报 ERROR 而不是 WARN**：token 只由 link 改道进入，那条连线永远不会被走过，它上游的整段流程静默失效 —— 这比"出线是摆设"严重得多，后者至少不隐藏一整段流程。`LINK_THROW` 刻意**不注册**行为（它的语义全在 `leave` 的改道里，进入阶段本就不该有动作），`LINK_CATCH` 显式注册而非落兜底 —— 两者运行结果相同，但排障时含义不同 |
-| `dataObject` / `dataStore` / 数据关联 | ❌ | |
+| `dataObject` / `dataStore` / 数据关联 | 🟡 | **第 46 轮从「静默丢弃」补成「读得进来 + 引用断了部署失败」**。此前 `WfXmlParser` 里对 `dataObject` / `dataStore` / `dataObjectReference` / `ioSpecification` / `dataInputAssociation` / `dataOutputAssociation` **一处处理都没有**，它们也不在 `UnsupportedBpmnElementTest` 的被拒清单里 ⇒ **写了等于没写，一个错都不报**（实测：连 `targetRef="不存在"` 的悬空关联也验不出来，0 条问题）。这是台账上**最坏的一类缺口**：不是"不支持"而是"假装支持"。本轮**不执行数据关联、不碰 dataStore**（**Camunda 7 同样不执行** —— 引擎侧只把声明读进模型，搬数据的是 delegate，而那条路本仓走流程变量是通的；硬做要回答"存哪儿、怎么序列化、怎么加锁"一串 BPMN 一个字都没规定的问题，会造出一套与流程变量重复的私有数据层）。真正的落点是**部署期把建模错误从静默变成失败** + 暴露给走查工具：`GET /api/wf/definitions/data` 返回四类声明且**响应体里带 `engineReadsData=false`**（只列声明不说这点，调用方会以为"列出来的就是引擎在管的"）。部署期 ERROR 十条：数据声明缺 id / 三类声明 id 互相重复（**解析期就抛** —— 冲突后端点只能任选一个，选哪个没有理由）/ `dataObjectRef` 缺失或悬空 / 关联缺任一端（少一端丢掉不会有任何兜底）/ 端点解析不到数据声明 / **端点类型写反**（input 的 `targetRef` 必须是引用、output 的 `sourceRef` 必须是 `dataObject` —— **这一条比 Camunda 7 严，是有意的**：本引擎的取舍就写在那一行） / 数据声明 id 与流程节点撞车 / 关联挂在不存在的元素上。**`transformation` 与 `assignment` 存原文不求值**（BPMN formal expression 与本仓表达式语法不同，两种语言的变量作用域规则并不相同）。**未解析**：`<property>`、`capability`、`ioSpecification#operation` |
 
 **关于 `multiInstance`**：会签是审批场景的默认需求，并行与串行都已实现。
 三处需要讲清的设计：
@@ -3518,3 +3518,110 @@ core 侧的主轴不是「条件语义对不对」而是「**同一批数据、�
      ⇒ 与第 42–43 轮的「边界判据必须成对写」同族，但这条更隐蔽：
      **成对写解决的是「两个判据各自的边界」，这条解决的是「数据里有没有边界值」。两者都要。**
      补了一条 `endTime == 窗口端点` 的任务（T6）才咬住。
+
+### 第 46 轮：`dataObject` / `dataStore` / 数据关联 —— 从「静默丢弃」到「部署期报错」
+
+台账第 165 行是全表**唯一连评估都没有**的缺口（❌ 且说明完全空白）。补之前先查了一件事，
+结果是这一轮全部工作的由来：
+
+**`WfXmlParser` 里对 `dataObject` / `dataStore` / `dataObjectReference` / `ioSpecification` /
+`dataInputAssociation` / `dataOutputAssociation` 一处处理都没有，
+它们也不在 `UnsupportedBpmnElementTest` 的被拒清单里。**
+
+⇒ **BPMN 里写了这些元素，与没写完全一样。** 写一条 `targetRef="不存在"` 的数据关联，
+`WfDefinitionValidator` 报 **0 条问题**，部署照过、流程照跑，而作者以为数据在流。
+这不是"不支持"，是**"假装支持"** —— 台账上最坏的一类。
+
+**先评估再决定为什么不执行**（与第 38 轮 adHoc 那条教训同源：照抄 BPMN 元素名做的拒绝是误判）：
+
+1. **Camunda 7 同样不执行。** 引擎侧只把声明读进 BPMN 模型供校验与展示，
+   普通活动上的数据关联不产生任何搬运。搬数据的是 delegate，而那条路本仓走流程变量是通的。
+2. **硬做会比不做更坏。** 要真存，就得回答"存哪儿、谁建表、怎么序列化、并发怎么锁、失败怎么回滚"
+   —— BPMN 里**一个都没有**。任填一种都会造出一套与流程变量重复的私有数据层，
+   且换个场景就坏，症状是"看着能用"。
+3. **所以落点是"把建模错误从静默变成部署失败"**，而不是补一套执行。
+
+**六条设计取舍**
+
+- **三个 BPMN 元素合成一个 `WfDataObjectReference` 类**
+  （`<dataObjectReference>` / `ioSpecification` 的 `dataInput` / `dataOutput`），
+  用 `kind` 区分出处。XSD 上后两者就是前者的特化，字段完全一样；
+  而 `dataInputAssociation@targetRef` 恰恰指向 `dataInput` 那个 id。
+  分三个列表 ⇒ 校验器查"这个端点指向谁"要挨个找，找到后还得再判断它出现在哪个列表才谈得上类型合法性。
+  平铺 + 判别位让**引用查表与类型判定落在同一处**。代价是 REST 视图必须把 `kind` 一起吐出。
+- **`scope` 不是 BPMN 属性，是声明位置**（BPMN 里 `tDataObject` 没有 `scope` 字段）：
+  直接写在 `<process>` 下是流程级，嵌在 `<subProcess>` 下是阶段级。
+  显式建模出来是因为它决定这份数据的**有效期**，而走查工具要判断
+  "这个变量在子流程外还存不存在"时，XML 里只能靠数嵌套层数得到。
+- **id 重复在解析期抛，引用悬空在校验期报。** 前者会污染端点查表
+  （冲突后 `dataDeclaration(id)` 只能任选一个返回，而"选哪个"没有理由可讲）；
+  后者是建模问题，该进"一次报完"的问题清单，而不是解析期就崩掉整份部署。
+- **端点类型写反报 ERROR，比 Camunda 7 严 —— 有意的。**
+  Camunda 的解析器不区分 `dataObject` 与 `dataObjectReference`，两种都能部署；
+  本仓区分。理由是本引擎的取舍就写在那一行：既然不执行数据关联，
+  那条关联**唯一的用处就是声明** —— 一条写反了方向的关联在这里不产生任何行为，
+  区别只在于它是一句错误的声明。既然唯一的用处就是声明，
+  就没有理由让错误的声明悄悄部署成功。
+  ⚠️ **代价要写明**：一份此前能部署（虽然数据关联从未生效）的模型，
+  现在会因为端点类型写反而部署失败。这是**可见拒绝换成静默之外的第三个选项**，
+  而不是新增的静默 —— 但迁移别人的模型时确实会多一批要改的地方。
+- **`capacity` 写错当场抛，而不像 `priority` 那样"保留默认值继续"。**
+  那条宽容是给 `priority` 开的：它有真实业务默认值（50）且真的会被执行。
+  `capacity` 在本仓**只被读一次、从不用于任何判断**，
+  静默丢成 `null` 只会在走查时让人以为"没配容量"，而作者明明配了一个写错的值。
+  纯声明元素上，写错就该当场说。
+- **`transformation` / `assignment` 存原文不求值。** BPMN 的 formal expression
+  与本仓表达式语法不同，两者的变量作用域规则并不相同；
+  存原文而不是丢掉，走查工具才能回显"作者到底写了什么"。
+
+**REST 端点：`GET /api/wf/definitions/data`（`@Operation` 编号 008）**
+
+四类声明逐字段吐出，另有三处刻意设计：
+
+- **响应体里带 `engineReadsData=false` 与一句人可读的原因。**
+  只列声明不说这一点，调用方会以为"列出来的就是引擎在管的" ——
+  而那正是本轮改动前最坏的那类静默。**让这条事实出现在响应体里而不是只写在文档里**，
+  是为了它跟着接口一起被看见，而不是在某次改版后与实现脱节。
+- **`processLevel` 显式给布尔位，而不是让调用方靠「`ownerId` 是不是 null」推断。**
+  `ownerId == null` 在本仓确实只有一个含义（流程级），但把语义压在"是不是 null"上，
+  就是把一次约定变成一次猜。
+- **刻意不用 `getDefinitionOrLatest`**：那个方法在版本不存在时会回落到最新版本。
+  查数据声明时静默换一版 = 回答了另一个模型的问题，而响应里的 `version` 还会照实写出来，
+  调用方更难发现。版本不存在一律 4xx，与同控制器的 `/model` `/diagram` 一致。
+
+**判据两处覆盖，且两处覆盖的不是同一批**（第 40–45 轮同一条纪律的第七次兑现）：
+
+| | core `WfDataDefinitionTest`（17 条） | admin 真 JDBC `WfDataDeclarationJdbcTest`（9 条） |
+|---|---|---|
+| 独有 | 解析逐字段、STAGE 作用域、三处 `kind`、**编解码往返**、存量图读回、老模型零影响 | **部署后重新从库里读一遍**（不复用部署返回对象）、HTTP 暴露逐字段、悬空引用经 HTTP 拿不到 2xx、`engineReadsData` 这条事实 |
+
+core 侧的往返走 `WfDefinitionCodec` 的内存序列化，验不到
+**"HTTP 部署 → 序列化进库 → 从库里读回"** 这条链 ——
+少写一个列表的症状恰恰只出现在这两步之间，而"部署时看得到、重启后查不到"是本轮要消灭的那类静默换了个位置出现。
+⇒ admin 侧的 `dataDeclarationsSurviveRealDatabase` 部署完之后**重新从库里把定义读一遍**。
+
+**本轮自己踩的两个坑**
+
+1. **7 条判据首跑全红，而全红的原因是夹具**：我图省事写了裸 `<serviceTask id="t1"/>`，
+   被**既有**的「serviceTask 需要 delegateClass 或 delegateExpression」规则挡下，
+   于是每条断言都多出一条与本轮无关的 ERROR。
+   ⇒ **判据里混进噪声之后，"恰好 N 条"这种断言就失去了意义**。
+   修法是把 `SERVICE_OPEN` / `SERVICE_SELF_CLOSING` 提成常量，
+   并在常量上写明"为什么必须带 delegate" —— 否则下一轮还会忘。
+2. **控制器里写了一段永远走不到的死代码。** 我照着 `getDefault()` 的注释写了
+   "查不到是正常状态（回 `data=null`）"，但 `getLatestDefinition` 找不到就抛 ——
+   那条 null 分支**没有任何一条路径会走到它**。
+   ⇒ 与已记的「注释写『为什么』且描述的属性必须数据真具备」同族，
+   这次的形态是**注释描述的代码路径不存在**。
+   处置不是加注释解释，而是**先查同级端点怎么做的再定行为**：
+   `/model` 与 `/diagram` 对不存在的 key 都抛 4xx，
+   只有 `/default` 回 null（因为"还没配默认"本身是正常状态）。
+   "这个 key 从没部署过"属前者 ⇒ 删掉死分支，判据改为断言 4xx。
+
+**本轮未做的**（如实列出）
+
+- `<property>`（数据结构的字段声明）、`capability`、`ioSpecification#operation` 仍未解析 ——
+  它们与本轮这六类一样是"写了没反应"，但本轮的收益已经在"端点引用能查得出来"上了，
+  再往上堆会让这一轮变成三件半。
+- **数据关联仍不执行**（与 Camunda 7 一致，理由见上）。真正需要数据搬运的场景，
+  本仓的做法是 delegate 里读写流程变量。
