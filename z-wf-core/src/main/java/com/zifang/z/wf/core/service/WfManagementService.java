@@ -135,6 +135,37 @@ public class WfManagementService {
     }
 
     /**
+     * 引擎指标（第 44 轮）。
+     *
+     * <p>对应 Camunda 的 {@code ManagementService#createMetricsQuery} ——
+     * metrics 本来就属于"运维自诊断"这一面，放进自省服务而不是新开一个入口，
+     * 调用方也少一次依赖。
+     *
+     * <p><b>刻意委派而不是把实现搬进来</b>：指标有扫描闸门、分桶与跨库时长处理，
+     * 混进这个只做"报数"的类会让它长到五百行，而两者的变化节奏完全不同
+     * （自省接口的形状很稳定，指标口径会随业务反复调）。
+     *
+     * <p>与 {@link WfHistoryService#getProcessStatusCounts()} 的分工：
+     * 那一个只按状态分组、<b>不带时间窗口</b>；这一个带窗口与定义过滤，
+     * 是"上周办了多少"。两者数据同源、口径不同，<b>刻意不合并</b> ——
+     * 合并会让看板上「现在的在途分布」与「上周的完成情况」挤进同一个接口。
+     */
+    public List<WfMetricRow> queryMetrics(WfMetricsQuery query) {
+        return metricsService().query(query);
+    }
+
+    /**
+     * 指标服务。
+     *
+     * <p><b>刻意就地 new 而不是构造注入</b>：它只有一条出参路径、
+     * 不持有任何可变状态、也不需要按历史级别分档，
+     * 为此给本类的构造加参数会波及既有调用点，而收益为零。
+     */
+    private WfMetricsService metricsService() {
+        return new WfMetricsService(persistence);
+    }
+
+    /**
      * 人能看懂的一句说明。
      *
      * <p>内存实现下刻意写"进程内集合，<b>不落库</b>"——

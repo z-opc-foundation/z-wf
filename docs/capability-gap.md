@@ -112,7 +112,7 @@
 |---|---|---|
 | **Job / 定时器** `createJobQuery` / `executeJob` / `setJobRetries` | 🟡 | **本轮补上 job 机制**：`WfJob` + `ZWF_JOB` 表 + `WfJobService#executeDueJobs`（重试计数、耗尽可查）。**本轮再补外部任务**（`externalTask`）：`WfExternalTaskService` + `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制领活、`fail` 解锁+退避、重试耗尽留档不删。**异步执行也已补上**（`asyncBefore`/`asyncAfter`，`camunda:` 前缀同样识别）。**第 28 轮补上 job 优先级**：`zifang:priority` 有了第二个出口 —— 原来它只决定"待办列表里谁排前面"（给人看），现在同时决定"队列里谁先被取走执行"（给执行器看）。**第 29 轮补上手动触发入口**：`POST /api/wf/jobs/{jobId}/trigger`，没到期也能催（超时提醒还差两小时而人等不及了），另有 `GET /api/wf/jobs`、`/count`、`/exhausted` 三个排障端点。**只放行时间触发型（`TIMER`/`EVENT_TIMER`）与异步型**：订阅型等的是"某件事发生了"，手动触发等于替引擎伪造一件没发生的事 —— 流程会以为它发生了，而真的那件事随后还会再来一次，于是同一步走两遍；事件网关的分支更糟，它是**竞速**，手动触发会作废其余兄弟分支，不可逆；外部任务是 worker 领的活，绕过租约触发会让 worker 正在做的活同时被引擎推进。**三类被拒的理由必须分别说清**，合成一条统一文案时恰恰是最危险的那类被稀释掉。**剩余**：异步 job 的 exclusive（跨 job 互斥，需要新的持久化状态）。~~循环定时器 / `jobPriority`~~ —— 已实现，见上一行与下一行 |
 | `createIncidentQuery` | 🟡 | **本轮补上** `WfIncidentService` + `WfIncidentView` + `WfIncidentQuery`，REST `GET /api/wf/incidents` 与 `/incidents/count`，并进 `GET /api/wf/process/overview`。回答的是订阅回答不了的那一半：「在等什么」与「已经没干成」必须一起给 —— 只有订阅时，"单子不动了"分不清是在耐心等还是已经炸了，而这两者处置完全不同。**故障从 job 派生，不建 Camunda 那张独立 incident 表**：故障的定义完全由 job 的 `retries` + `lastFailureTime` 决定，另存一份就多一处可能与 job 对不上，而排障时最不能容忍的就是对不上。代价见 `createHistoricIncidentQuery` 那行 |
-| `createMetricQuery`（引擎指标） | 🟡 | 只有 `getProcessStatusCounts` 一个自定义统计 |
+| `createMetricQuery`（引擎指标） | ✅ | **第 44 轮补上** `WfMetricsService` + `WfMetric` 四类（`PROCESS_INSTANCES` 按定义分组 / `PROCESS_INSTANCE_DURATION` 端到端时长直方图 / `TASK_DURATION` 任务办理时长 / `TASK_USERS` 按**实际办理人**的工作量），`WfManagementService#queryMetrics` 委派，REST `GET /api/wf/management/metrics`。带 `startDate`/`endDate` 闭区间窗口与 `definitionKey` 过滤，返回**末尾固定一行 `__ALL__`**（总数/平均/最值），8 个按审批真实卡点切的分桶。**刻意不做异步指标日志** —— 不要第二个真源（详见本轮小节）。**剩余**：Camunda 的 `job-executions`（按 job 类型与结果分组）与 `unique-task-users`（本仓刻意让调用方对 `TASK_USERS` 去重，存下的去重结果会与实时数据漂移） |
 | `getTableCount` / `getTableNames` / `getProperties` | ✅ | **第 19 轮补上**。自省挂在 `WfPersistence` SPI 上（`getTableNames` / `getTableCount`），`WfManagementService` 负责视图与措辞，REST `GET /api/wf/management/properties` / `/tables` / `/tables/count?name=`。三条硬规矩：① **未知名抛异常不返回 0** —— 拼错表名得到"这里是空的"会把排障方向从「我拼错了」带偏到「谁把它清空了」；② JDBC 侧 `getTableNames()` **从 `DatabaseMetaData` 真查**而不是报常量 —— 常量回答"打算建哪些"，这里要回答"这个库现在真有哪些"，两者在迁移没跑时会分家；③ 视图**显式带 `kind`（table / collection）** —— 内存实现里根本没有表，不标出来运维看到 `ZWF_TASK` 会跑去数据库里找一圈。属性**刻意不含连接串/账号/口令** |
 | 诊断 / 历史级别调整 | ✅ | **第 42 轮补上 `z.wf.history-level`**（`none` / `activity` / `audit` / `full`），对齐 Camunda 的四档命名与次序。档位带进 `GET /api/wf/management/properties`（连同「这一档会少记什么」的说明）。**默认档是 `full` 而不是 Camunda 的 `audit`** —— 因为本引擎引入本特性之前<b>变量审计就是开着的</b>，把默认设成低一档等于「加了配置项本身就在下线一个功能」。⚠️ **从 Camunda 迁配置要注意**：Camunda 的 `audit` 保留变量历史，本引擎的 `audit` 不保留（见本轮小节）。**刻意不做运行期改级别**，理由同 Camunda："history level is stored in the database and cannot be changed later"。**「剩余」指的是自诊断报告**（内存快照 / 线程转储那类），不是历史级别 |
 
@@ -3321,5 +3321,105 @@ admin 那条 `memoryAndJdbcAgreeOnTheSameBatch` 是本轮最值钱的判据：
 
 **还加了一道交叉验证**：光看正则抓到的方法名是不够的 ——
 「测试真绿」与「报告格式变了、正则一个都没抓到」在屏幕上都是空列表，
-于是整批变异会被读成"判据全不敏感"。现在用 `testsuite` 的 `failures`/`errors`
+于是整批变异会被读成「判据全不敏感」。现在用 `testsuite` 的 `failures`/`errors`
 属性与正则结果对照，对不上就报 `PARSE-MISS` 且**不计入结论**。
+
+### 第 44 轮：引擎指标（`createMetricsQuery`）
+
+台账上只剩一句话的格子：**`createMetricQuery` 之前只有 `getProcessStatusCounts`
+一个自定义统计**。这一轮补上它回答的两句话：
+**「上周办了多少单」** 与 **「平均批了多久、久的那批卡在哪一档」**。
+
+落到四处：
+
+| 层 | 落点 |
+|---|---|
+| 枚举 | `WfMetric`（`PROCESS_INSTANCES` / `PROCESS_INSTANCE_DURATION` / `TASK_DURATION` / `TASK_USERS`）+ 8 个分桶 |
+| 条件与结果 | `WfMetricsQuery`（metric / startDate / endDate / definitionKey）、`WfMetricRow`（含 `__ALL__` 汇总行） |
+| 服务 | **新增** `WfMetricsService`，`WfManagementService#queryMetrics` 委派（与 Camunda 把 metrics 放 ManagementService 一致） |
+| REST | `GET /api/wf/management/metrics`（基址从 3 个端点增至 4 个） |
+
+**刻意不做异步指标日志**：Camunda 的 metrics 走一张独立的 metric 日志表由 job 异步写。
+本引擎**不引入那张表**，所有指标从 `ZWF_PROCESS` / `ZWF_TASK` 现算 ——
+理由是**不要第二个真源**：引擎自己的数据已经全了，再维护一份派生副本意味着每次改状态机
+都要记得同步它，而漏同步的症状是「指标说 100 单、库里其实 98 单」，
+那比慢一拍危险得多（慢一拍只是读数旧，数字对不上是数据在骗人）。
+代价是扫全表，所以带一道 `MAX_SCAN` 闸门。
+
+**为什么在 Java 里算而不是 SQL 聚合**：直方图要对 `END_TIME - START_TIME` 分桶，
+而**时间差没有跨库统一的写法**（H2/MySQL 有 `TIMESTAMPDIFF`，PostgreSQL 只有
+`EXTRACT(EPOCH FROM (b - a))`）⇒ 与 `WfProcessQueryService`（变量条件）、
+`WfExecutionQueryService`（token 条件）完全同构。
+分组计数同样在 Java 里做，**不因为「COUNT 跨库安全」就分两套** ——
+两套实现迟早漂移，而漂移的症状是「总数对得上、分组对不上」。
+
+**分桶边界是审批系统真会卡住的那几个时间尺度**（5 分钟 / 半小时 / 2 小时 / 一天），
+不是等距切出来的：等距分桶会让 99% 的数据落进第一格，看不出分布。
+**左闭右开**，且这个选择必须写出来 —— 两端都闭会让人在边界上数出两条，都开会数出零条。
+
+**四个「错了也没人看得出来」的处理**：
+
+- **在途的不进时长统计**：把没结束的当成 0 秒，平均时长瞬间塌掉。
+  「平均多久批完」这句话问的本来就只能是已经批完的那些。
+- **负时长夹到 0**：改过系统时间或数据被手工改过会让结束早于开始。
+  放任负数会落到第 0 桶里**冒充「秒批」**；夹到 0 是最小的撒谎。
+- **空桶也要出一行（count=0）**：看板上少一格与「这一格是 0」在视觉上不一样。
+- **末尾固定给一行 `__ALL__`**：直方图靠它给总数与最值。
+  调用方自己相加的话，「忘了相加」是这类接口最常见的用法错误。
+  而空集合的平均值给 `null` 而不是 0 —— **0 毫秒是一个看起来很像真值的答案**。
+
+**顺带查清一件会让人写错代码的事**：`WfTaskQuery#setDefinitionId` 的
+`DEF_ID` 存的是**节点 id**（引擎里就是 `setDefinitionId(nodeId)` 这么用的），
+任务表上**没有** `DEF_KEY`。所以按定义 key 筛任务时只能**先圈实例、再按实例取任务**，
+没给 key 时才一次查完。**不 join 实例表** —— 与 `createExecutionQuery` 同一条理由：
+一旦 join，实例表的状态过滤就变成任务查询的隐含条件。
+
+**判据两处覆盖，且两处覆盖的不是同一批**（第 40–43 轮同一条纪律的第五次兑现）：
+
+| | core `WfMetricsTest`（18 条） | admin 真 JDBC `WfMetricsJdbcTest`（7 条） |
+|---|---|---|
+| 独有 | 分桶边界 / 负时长 / 空桶 / 闸门 / 分组同数定序 | **毫秒精度能否挺过 TIMESTAMP 列**；**SQL 侧窗口两端闭不闭**；REST 接线 |
+
+admin 那两条是真的只有它能答：core 的时长判据是手工 `setStartTime/setEndTime` 造的，
+**那条路完全绕开了 JDBC 序列化**。而截断的症状特别坏 ——
+平均时长差几毫秒看着「差不多对」，没人会去核，可**分桶边界在毫秒级偏差下直接归错桶**。
+窗口边界同理：InMemory 走 Java 比较、JDBC 走 SQL 的 `>=` / `<=`，**不是同一段代码**。
+
+**本轮自己踩的五个坑**（都记在提交说明里）：
+
+1. **`DateFormat.getDateTimeInstance()` 与我写的注释不符**：注释说 ISO-8601，
+   实现用的却是**默认 Locale 的本地格式**（中文环境是 `2026/10/1 下午3:04:05`），
+   同一段代码在不同机器上接受的输入都不一样。
+   ⇒ 改成显式 `yyyy-MM-dd'T'HH:mm:ss` + `setLenient(false)`，
+   并把注释改成代码真正做的事。
+   ⚠️ `SimpleDateFormat` 不是线程安全的，所以**每次新建而不是提成字段** ——
+   controller 是单例，提成字段在并发下会偶发解析错乱，那类 bug 完全不可复现。
+2. **批量替换脚本的判据太宽**：我想统一中文引号，脚本按「`"` 后面跟 CJK 就换成 `「`」
+   判定，结果把 BPMN XML 里的属性引号（`name="审批"`）也换掉了。
+   **没有先看真实形状就动手批量改**，是这一条真正的教训 ——
+   好在文件未入库，直接按正确写法重写了。
+3. **grep 的正则漏字段**：`^\s+private [A-Za-z<>, ]+ [a-zA-Z]+;` 匹配不到
+   `private int priority = 50;`（末尾是 `= 50;`），于是我一度断言
+   「`WfTask` 根本没有 priority 字段」并准备去订正台账 —— **结论是错的，台账是对的**。
+4. **忘了重新 install web**：加了 REST 端点后直接跑 admin，7 条全是 404 ——
+   admin 吃的是本地仓库里的 jar。第 43 轮刚把这条写进 harness，我手动时又踩了一遍。
+5. **`mvn ... | tail` 的退出码被管道吃掉**，于是 `&& echo 编译通过` 在编译失败时也照常打印 ——
+   **读数骗人**的又一种形态。改用 `set -o pipefail` / 直接看 maven 的 `BUILD` 行。
+
+### 本轮反向验证记录（引擎指标，第 44 轮）
+
+`/tmp/verify_r44.py`，**15 条变异 + core/admin 两层基线对照**，
+完整沿用第 43 轮定下的七条 harness 规矩（快照 / clean / 读 XML / 属性交叉验证 /
+锚点唯一 / install 与还原 / INCONCLUSIVE 打印真实 argv）。
+
+变异分两处，**分层本身就是结论的一部分**：
+
+- **M1–M11 只打 core**：`WfMetric.bucketOf` 的边界、负时长夹 0、在途算不算、
+  ALL 行给不给、空桶出不出、溢出判据、扫描闸门、窗口反了报不报、逗号定序。
+- **M12–M15 只打 admin**：REST 的时间格式与指标名解析（core 不经过 HTTP），
+  以及 **M15 —— 把 JDBC 的 `START_TIME>=?` 改成 `>?`，
+  core 层压根碰不到 SQL（它走 InMemory 的 Java 比较），只有真库那条判据能红**。
+
+M15 是本轮最能说明「为什么判据要两处覆盖」的一条：
+症状会是「core 全绿、SQL 上少算窗口端点上的那一单」，
+而那一单恰好是「今天办完的单」——**看板最常被问的那句话**。
