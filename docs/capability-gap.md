@@ -70,7 +70,7 @@
 
 | Camunda 能力 | z-wf | 说明 |
 |---|---|---|
-| `createTaskQuery` 流畅查询 | 🟡 | `WfTaskQuery` 有 16 个条件，覆盖面不错。缺 `taskParentTaskId`、优先级区间、时间区间之外的高级组合 |
+| `createTaskQuery` 流畅查询 | ✅ | **第 45 轮补上三组条件**：优先级区间（`minPriority`/`maxPriority`）、办理时间区间（`endTimeFrom`/`endTimeTo`）、**截止时间区间（`dueDateFrom`/`dueDateTo`—— 审批超期查询的主力入口）**。对应列（`PRIORITY`/`END_TIME`/`DUE_DATE`）与模型字段**早就存在**，缺的是过滤层。**`taskParentTaskId` 刻意不做**：`ZWF_TASK.PARENT_TASK_ID` 这一列与 `WfTask.parentTaskId` 字段都在，但**没有任何运行时代码写它** ⇒ 提供查询条件只会永远返回空集，那比没有这个条件更坏（调用方会以为「查不到＝没有子任务」，而不是「这功能不存在」）。`WfTaskService#updateTask`（优先级/改期/候选组）**原先没有 HTTP 入口**，第 45 轮补 `PUT /api/wf/task/management`。详见本轮小节 |
 | `claim` / `unclaim` / `complete` | ✅ | |
 | `delegateTask` / `resolveTask` | ✅ | `delegate` / `resolve`。**语义已定：委派不转移责任（只改 owner），转办才改 assignee** |
 | `setAssignee` / `setOwner` / `setPriority` / `setDueDate` | ✅ | `updateTask` |
@@ -3423,3 +3423,98 @@ admin 那两条是真的只有它能答：core 的时长判据是手工 `setStar
 M15 是本轮最能说明「为什么判据要两处覆盖」的一条：
 症状会是「core 全绿、SQL 上少算窗口端点上的那一单」，
 而那一单恰好是「今天办完的单」——**看板最常被问的那句话**。
+
+### 第 45 轮：任务查询补条件 + 改期真的有 HTTP 入口
+
+台账上写着 `WfTaskQuery` 缺「`taskParentTaskId`、优先级区间、时间区间」。补之前先查了三件事：
+**`WfTask.priority`（默认 50）、`WfTask.dueDate`、`WfTask.endTime` 的字段与列都在**，
+所以缺的不是能力而是**过滤层** —— 它们此前是「存得进、读得出、但筛不出来」。
+
+**⚠️ 加任何一条过滤都必须内存与 JDBC 两个实现一起加**：
+少一边就是「开发期（内存）查得到、线上（JDBC）查不到」，而**内存模式下完全不可见**。
+本仓的 `InMemoryWorkflowPersistence#matches` 开头就写着这句与 JDBC 的 `appendTaskFilters` 同口径，
+本轮又加了三条判据专门盯它（见下）。
+
+**三条设计规矩**
+
+- **时间列一律 null 即不匹配**：没办结的任务没有 `END_TIME`、没设截止的任务没有 `DUE_DATE`。
+  把它们当成 0 毫秒算进去，等于回答「他什么时候批的」时说「他秒批了」，
+  以及把没有承诺过期限的任务塞进超期清单 —— 运维第一件事就是去挨个确认「这条到底该不该管」。
+- **区间一律闭**（`>=` 且 `<=`），且三组倒置都在 `assertConsistent` 里挡住。
+  用一个私有的 `rejectReversedRange` 而不是三段复制：漏改一处时，
+  症状是「只有那一对区间写反时静默返回空集」，排查时几乎不会怀疑到区间写反。
+- **SQL 里写 `END_TIME IS NOT NULL AND ...` 而不是单条件**：
+  `END_TIME <= ?` 遇 NULL 直接 UNKNOWN，行会被悄悄滤掉 —— 那是「对」的一边，
+  但要**显式写出来**，否则下次有人「简化」成单条件时会以为语义没变。
+
+**本轮撤回的一组条件：父任务 id**
+
+`ZWF_TASK.PARENT_TASK_ID` 与 `WfTask.parentTaskId` 都在，但 grep `setParentTaskId(` 只有
+**读回**与 setter 本身 —— **没有任何运行时代码写它**。
+⇒ 提供查询条件只会永远返回空集，而那比没有更坏：
+调用方会把「查不到」读成「没有子任务」，而不是「这个功能根本不存在」。
+⇒ 代码、注释与台账三处都把这个事实写下来，判据里也留了一条
+（`parentTaskColumnHasNoWriterSoItIsNotQueryable`）防下一轮又补回去。
+
+**本轮修掉的一处真缺陷：改期在 JDBC 上不落库**
+
+`JdbcWorkflowPersistence#saveTask` 的 UPDATE 路径**只写了 INSERT 那一半的列**：
+`DUE_DATE` 不在其中。而 `WfTaskService#updateTask` 的改期走的正是 UPDATE。
+⇒ 症状是「改期接口返回成功、内存里也是新的、**下一次从库里读出来还是旧日期**」，
+而超期查询正是按这个日期算的 —— 三处对不上账，而人只会怀疑是不是接口没调。
+已修（把 `DUE_DATE=?` 补进 UPDATE），并加了两条判据钉住它。
+
+⚠️ 这与该文件里**已记过的两条**（候选池、挂起列只写进 INSERT）**是同一类**：
+「新增列时只改了 INSERT，忘了 UPDATE」。本轮把它当成一条通用检查项写进提交说明。
+
+**补齐的另一个半套：`updateTask` 没有 HTTP 入口**
+
+service 层能改优先级 / 改期 / 候选组，但 `grep updateTask(` 在 web 层**零命中** ——
+前端想「调高优先级」「延长办理期限」只能改数据库。
+⇒ 补 `PUT /api/wf/task/management`（该 controller 的 `@Operation` 编号补到 008）。
+
+语义定成：**`null` 表示这一项不改，空数组表示清空候选池，四项全空直接 400**。
+「调了一下管理属性而什么都没发生」却返回成功，比报错难查得多。
+时间入参用**毫秒时间戳**，与本仓所有视图（`WfViews.TaskSummary#dueDate`）和筛选器条件同一口径 ——
+存字符串的日期在不同库、不同机器上会按本地时区解释。
+
+**筛选器同步加了六个键**（`minPriority` / `maxPriority` / `endTimeFrom` / `endTimeTo` /
+`dueDateFrom` / `dueDateTo`），键名与 `WfTaskQuery` 的 setter **一一同名** ——
+筛选器是共享资源，同一个意思在两层用两个名字，迟早有人只改一处。
+**刻意不接受 `50-90` 这种区间字面量**：省事，但解析失败时只能报一句「格式不对」，
+调用方不知道是下限写错还是上限写错。
+
+**判据两处覆盖，且两处覆盖的不是同一批**（第 40–44 轮同一条纪律的第六次兑现）：
+
+| | core `WfTaskAdvancedQueryTest`（11 条） | admin 真 JDBC `WfTaskManagementJdbcTest`（8 条） |
+|---|---|---|
+| 独有 | **两套实现逐条件比对**（内存 + 真 H2 在同一进程）、区间边界、null 排除、区间倒置 | 改期经 **HTTP → service → UPDATE → 重读** 整条链；筛选器三个新键 |
+
+core 侧的主轴不是「条件语义对不对」而是「**同一批数据、同一组条件，两个实现给同一个集合**」：
+数据直接灌进两套实现，条件跑两遍，比对结果。core 模块的 test classpath 上就有 H2，
+**不需要起 Spring 上下文**。
+
+**本轮自己踩的四个坑**
+
+1. **`((Number) 1791633233015L).intValue()` 静默截断成 631870583** ——
+   症状是「断言红、而返回体里的值明明是对的」，真因在测试自己。
+   毫秒时间戳约 1.79e12，早已超出 int。⇒ 全部改成 `longValue()`，
+   **顺带把第 44 轮那个同类 helper 也改了**（当时值都小，是侥幸）。
+2. **种子数据用固定基准、查询窗口用 `new Date()`**：
+   两者差一年多时，「明天到期」那条也落进了「已超期」的清单。
+   ⇒ 夹具里种子与窗口必须用**同一个基准**，这一条写进了测试类注释。
+3. **筛选器的值必须写成字符串**（既有设计：自动转换会让「写错了」变成
+   「存得进去、跑的时候才炸」）。我按 JSON 的直觉传了数字，被当场拒掉 —— 该拒。
+4. **`WfTaskService#updateTask` 找 REST 时 grep 不到**，一度以为该方法不存在；
+   查清是「存在但没人调」⇒ 那本身就是本轮要补的半套，不是幻觉。
+5. **两条变异第一次跑「没红」，查清后一条是判据的洞、一条是我的注释说对了**：
+   - 把 `AND DUE_DATE IS NOT NULL AND DUE_DATE<=?` 改成 `AND DUE_DATE<=?`
+     **行为完全不变** —— SQL 里 `NULL <= ?` 直接 UNKNOWN，行照样被滤掉，
+     两种写法结果一样。⇒ 改之前要问「**这个改动的效果在数据上看得见吗**」。
+     讽刺的是**这正是我在上面那段注释里预判过的事**，而我照样把它写成了变异。
+   - 把 `END_TIME>=?` 改成 `END_TIME>?`，判据全绿 —— 查下去是我的测试里
+     **没有任何一条任务的办理时间恰好等于窗口端点**：
+     `NOW >= NOW-1d` 与 `NOW > NOW-1d` 结果相同。
+     ⇒ 与第 42–43 轮的「边界判据必须成对写」同族，但这条更隐蔽：
+     **成对写解决的是「两个判据各自的边界」，这条解决的是「数据里有没有边界值」。两者都要。**
+     补了一条 `endTime == 窗口端点` 的任务（T6）才咬住。

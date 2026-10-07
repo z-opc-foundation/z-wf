@@ -135,7 +135,7 @@ class WfMetricsJdbcTest {
 
         Map<String, Object> total = totalRow("/api/wf/management/metrics"
                 + "?metric=process-instance-duration&definitionKey=" + key);
-        assertEquals(1, numberOf(total.get("count")));
+        assertEquals(1L, numberOf(total.get("count")));
         assertEquals(2 * HOUR, numberOf(total.get("avgMillis")),
                 "**毫秒必须原样回来** —— 差几毫秒看着「差不多对」，"
                         + "没人会去核，而分桶边界在毫秒级偏差下会直接归错桶。实际: " + total);
@@ -271,9 +271,10 @@ class WfMetricsJdbcTest {
     // ==================== 小工具 ====================
 
     private int bucketCount(List<Map<String, Object>> rows, String label) {
+        // 桶计数很小，这里 int 够用；只是 numberOf 现在返回 long
         for (Map<String, Object> row : rows) {
             if (label.equals(row.get("name"))) {
-                return numberOf(row.get("count"));
+                return (int) numberOf(row.get("count"));
             }
         }
         throw new AssertionError("返回里没有名为「" + label + "」的桶。实际: " + rows);
@@ -296,8 +297,9 @@ class WfMetricsJdbcTest {
         return rawGet(url).getStatusCodeValue();
     }
 
-    private int numberOf(Object value) {
-        return ((Number) value).intValue();
+    /** 刻意用 {@code longValue()}：毫秒值一大 {@code intValue()} 就会静默截断（第 45 轮踩过）。 */
+    private long numberOf(Object value) {
+        return ((Number) value).longValue();
     }
 
     @SuppressWarnings("unchecked")

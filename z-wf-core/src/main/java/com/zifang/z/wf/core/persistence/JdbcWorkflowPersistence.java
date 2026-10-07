@@ -1680,12 +1680,19 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         if (exists) {
             // 乐观锁
             int affected = update("UPDATE ZWF_TASK SET STATUS=?, ASSIGNEE=?, OWNER=?, PRIORITY=?, "
-                            + "END_TIME=?, COMPLETER_ID=?, COMMENT_TEXT=?, VARIABLES=?, "
+                            + "DUE_DATE=?, END_TIME=?, COMPLETER_ID=?, COMMENT_TEXT=?, VARIABLES=?, "
                             + "CANDIDATE_USERS=?, CANDIDATE_GROUPS=?, "
                             + "DELEGATE_CHAIN=?, SUSPENDED=?, REVISION=? "
                             + "WHERE TASK_ID=? AND REVISION=?",
                     task.getStatus() == null ? null : task.getStatus().name(),
                     task.getAssignee(), task.getOwner(), task.getPriority(),
+                    // DUE_DATE 必须跟着 UPDATE 走（第 45 轮补）。改期
+                    // （WfTaskService#updateTaskDueDate）走的就是这条路径，
+                    // 只写进 INSERT 的话，改期接口返回成功、内存里也是新的，
+                    // **下一次从库里读出来还是旧日期** —— 而超期查询正是按这个日期算的。
+                    // 症状是"改期没报错、待办清单上的期限没变、超期统计照旧"，
+                    // 三处都对不上账，而人只会怀疑是不是改期接口没调。
+                    timestamp(task.getDueDate()),
                     timestamp(task.getEndTime()), task.getCompleterId(), task.getComment(),
                     JsonUtil.toJson(task.getVariables()),
                     JsonUtil.toJson(task.getCandidateUsers()),
@@ -1930,6 +1937,40 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         if (query.getCreateTimeTo() != null) {
             sql.append(" AND CREATE_TIME<=?");
             args.add(timestamp(query.getCreateTimeTo()));
+        }
+        // ==================== 第 45 轮：父子任务 / 优先级 / 办理时间 / 截止时间 ====================
+        //
+        // 这几条与上面 InMemoryWorkflowPersistence#matches 里的同名分支**逐条对应** ——
+        // 少一条就是「开发期查得到、线上查不到」，而内存模式下完全不可见。
+        //
+        // 时间区间一律写 `IS NOT NULL AND`：**没办结的任务没有 END_TIME、
+        // 没设截止的任务没有 DUE_DATE**，而 SQL 里 `END_TIME <= ?` 遇 NULL 直接 UNKNOWN，
+        // 行会被悄悄滤掉 —— 那是"对"的一边（不匹配），但要写出来，
+        // 否则下次有人"简化"成单条件时会以为语义没变。
+        if (query.getMinPriority() != null) {
+            sql.append(" AND PRIORITY>=?");
+            args.add(Integer.valueOf(query.getMinPriority().intValue()));
+        }
+        if (query.getMaxPriority() != null) {
+            sql.append(" AND PRIORITY<=?");
+            args.add(Integer.valueOf(query.getMaxPriority().intValue()));
+        }
+        if (query.getEndTimeFrom() != null) {
+            sql.append(" AND END_TIME IS NOT NULL AND END_TIME>=?");
+            args.add(timestamp(query.getEndTimeFrom()));
+        }
+        if (query.getEndTimeTo() != null) {
+            sql.append(" AND END_TIME IS NOT NULL AND END_TIME<=?");
+            args.add(timestamp(query.getEndTimeTo()));
+        }
+        // 没设 DUE_DATE 的任务不算超期 —— 与内存侧同一口径，两边必须一致
+        if (query.getDueDateFrom() != null) {
+            sql.append(" AND DUE_DATE IS NOT NULL AND DUE_DATE>=?");
+            args.add(timestamp(query.getDueDateFrom()));
+        }
+        if (query.getDueDateTo() != null) {
+            sql.append(" AND DUE_DATE IS NOT NULL AND DUE_DATE<=?");
+            args.add(timestamp(query.getDueDateTo()));
         }
     }
 

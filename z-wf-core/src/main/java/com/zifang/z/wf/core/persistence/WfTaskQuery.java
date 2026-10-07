@@ -224,6 +224,106 @@ public class WfTaskQuery {
         return this;
     }
 
+    // ==================== 第 45 轮：父子任务 / 优先级 / 办理时间 / 截止时间 ====================
+    //
+    // 这四组条件对应的列**早就存在**（PARENT_TASK_ID / PRIORITY / END_TIME / DUE_DATE），
+    // 模型上也早有字段，缺的只是**过滤层** ——
+    // 也就是说它们此前是"存得进、读得出、但筛不出来"。
+    //
+    // ⚠️ 加任何一条都必须**内存与 JDBC 两个实现一起加**：
+    // 少一边就是「开发期（内存）查得到、线上（JDBC）查不到」，
+    // 而 count 与列表会跟着对不上 —— 那个 bug 在内存模式下完全不可见。
+
+    /** 优先级下界（含）。{@link WfTask#getPriority()} 默认 50。 */
+    private Integer minPriority;
+
+    /** 优先级上界（含）。 */
+    private Integer maxPriority;
+
+    /** 办理时间下界（含）—— 与 {@link #createTimeFrom} 的区别是<b>它是办完的那一刻</b>。 */
+    private Date endTimeFrom;
+
+    /** 办理时间上界（含）。 */
+    private Date endTimeTo;
+
+    /** 截止时间下界（含）。审批超期查询的主要入口。 */
+    private Date dueDateFrom;
+
+    /** 截止时间上界（含）。 */
+    private Date dueDateTo;
+
+    public Integer getMinPriority() {
+        return minPriority;
+    }
+
+    /** 优先级下界（<b>含</b>）。默认优先级是 50，所以 {@code >= 50} 约等于"不限"。 */
+    public WfTaskQuery setMinPriority(Integer minPriority) {
+        this.minPriority = minPriority;
+        return this;
+    }
+
+    public Integer getMaxPriority() {
+        return maxPriority;
+    }
+
+    /** 优先级上界（<b>含</b>）。 */
+    public WfTaskQuery setMaxPriority(Integer maxPriority) {
+        this.maxPriority = maxPriority;
+        return this;
+    }
+
+    public Date getEndTimeFrom() {
+        return endTimeFrom;
+    }
+
+    public WfTaskQuery setEndTimeFrom(Date endTimeFrom) {
+        this.endTimeFrom = endTimeFrom;
+        return this;
+    }
+
+    public Date getEndTimeTo() {
+        return endTimeTo;
+    }
+
+    public WfTaskQuery setEndTimeTo(Date endTimeTo) {
+        this.endTimeTo = endTimeTo;
+        return this;
+    }
+
+    public Date getDueDateFrom() {
+        return dueDateFrom;
+    }
+
+    public WfTaskQuery setDueDateFrom(Date dueDateFrom) {
+        this.dueDateFrom = dueDateFrom;
+        return this;
+    }
+
+    public Date getDueDateTo() {
+        return dueDateTo;
+    }
+
+    public WfTaskQuery setDueDateTo(Date dueDateTo) {
+        this.dueDateTo = dueDateTo;
+        return this;
+    }
+
+    /**
+     * 截止时间窗口。
+     *
+     * <p>审批系统的「哪些单子已经超期未批」就靠它：
+     * {@code setDueDateTo(现在)} 一条就够了 ——
+     * 截止时间早于此刻的全在结果里，<b>没设截止时间的任务不在其中</b>。
+     *
+     * <p><b>没设 dueDate 的任务不算超期</b>：它没有承诺过什么时候办完，
+     * 把它算进超期清单里，运维第一件事就是去挨个确认"这条到底该不该管"。
+     */
+    public WfTaskQuery setDueDateBetween(Date from, Date to) {
+        this.dueDateFrom = from;
+        this.dueDateTo = to;
+        return this;
+    }
+
     public int getPageNum() {
         return pageNum;
     }
@@ -270,6 +370,34 @@ public class WfTaskQuery {
             throw new IllegalArgumentException(
                     "任务查询条件矛盾：createTimeFrom(" + createTimeFrom
                             + ") 晚于 createTimeTo(" + createTimeTo + ")。");
+        }
+        // 第 45 轮补的三组区间：**同一条毛病，同样在这里挡下来**。
+        // 区间写反的后果与 createTime 那对完全一样——静默返回空集，
+        // 而写反一个下界是极常见的手误（尤其是"最近三天"这类口头需求）。
+        rejectReversedRange("endTimeFrom", "endTimeTo", endTimeFrom, endTimeTo);
+        rejectReversedRange("dueDateFrom", "dueDateTo", dueDateFrom, dueDateTo);
+        if (minPriority != null && maxPriority != null
+                && minPriority.intValue() > maxPriority.intValue()) {
+            throw new IllegalArgumentException(
+                    "任务查询条件矛盾：minPriority(" + minPriority
+                            + ") 大于 maxPriority(" + maxPriority + ")。");
+        }
+    }
+
+    /**
+     * 区间倒置的统一拒绝。
+     *
+     * <p><b>单独一个方法而不是三段复制</b>：三处同形状的判断里，
+     * 漏改一处的代价是「只有那一对区间写反时静默返回空集」，
+     * 而那种 bug 只在特定参数下出现、且症状是"查不到"，
+     * 排查时几乎不会怀疑到区间写反。
+     */
+    private static void rejectReversedRange(String fromName, String toName,
+            Date from, Date to) {
+        if (from != null && to != null && from.after(to)) {
+            throw new IllegalArgumentException(
+                    "任务查询条件矛盾：" + fromName + "(" + from
+                            + ") 晚于 " + toName + "(" + to + ")。");
         }
     }
 }

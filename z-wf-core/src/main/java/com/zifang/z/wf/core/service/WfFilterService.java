@@ -58,7 +58,13 @@ public class WfFilterService {
             "processInstanceId", "definitionId", "assignee", "owner", "completerId", "category",
             "candidateUsers", "candidateGroups", "status",
             "openOnly", "suspendedOnly", "candidateOrAssigned", "completedOnly", "unassignedOnly",
-            "createTimeFrom", "createTimeTo");
+            "createTimeFrom", "createTimeTo",
+            // 第 45 轮：优先级区间 / 办理时间 / 截止时间。
+            // 键名与 WfTaskQuery 的 setter **一一同名** —— 筛选器是共享资源，
+            // 同一个意思在两层用两个名字，迟早有人只改一处
+            "minPriority", "maxPriority",
+            "endTimeFrom", "endTimeTo",
+            "dueDateFrom", "dueDateTo");
 
     private static final Set<String> INSTANCE_KEYS = keys(
             "definitionKey", "definitionVersion", "businessKey", "startUserId", "category",
@@ -358,6 +364,18 @@ public class WfFilterService {
                 query.setCreateTimeFrom(millis(key, value));
             } else if ("createTimeTo".equals(key)) {
                 query.setCreateTimeTo(millis(key, value));
+            } else if ("minPriority".equals(key)) {
+                query.setMinPriority(priority(key, value));
+            } else if ("maxPriority".equals(key)) {
+                query.setMaxPriority(priority(key, value));
+            } else if ("endTimeFrom".equals(key)) {
+                query.setEndTimeFrom(millis(key, value));
+            } else if ("endTimeTo".equals(key)) {
+                query.setEndTimeTo(millis(key, value));
+            } else if ("dueDateFrom".equals(key)) {
+                query.setDueDateFrom(millis(key, value));
+            } else if ("dueDateTo".equals(key)) {
+                query.setDueDateTo(millis(key, value));
             } else {
                 throw unhandled(WfFilterType.TASK, key);
             }
@@ -463,6 +481,22 @@ public class WfFilterService {
             return Integer.valueOf(value == null ? "" : value.trim());
         } catch (NumberFormatException e) {
             throw badValue(key, value, "一个整数");
+        }
+    }
+
+    /**
+     * 优先级解析。
+     *
+     * <p><b>刻意不接受区间字面量</b>（{@code "50-90"} 那种）：
+     * 那是给「下限」「上限」两个独立键起名字时省事的写法，
+     * 但解析出来的区间在出错时只能报一句"格式不对"，
+     * 调用方不知道是下限写错了还是上限写错了。
+     */
+    private Integer priority(String key, String value) {
+        try {
+            return Integer.valueOf(Integer.parseInt(value == null ? "" : value.trim()));
+        } catch (NumberFormatException e) {
+            throw badValue(key, value, "一个整数（优先级，闭区间；不认 50-90 这种写法）");
         }
     }
 

@@ -845,6 +845,35 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         if (query.getCreateTimeTo() != null && (create == null || create.after(query.getCreateTimeTo()))) {
             return false;
         }
+        // ==================== 第 45 轮：父子任务 / 优先级 / 办理时间 / 截止时间 ====================
+        //
+        // **时间列一律 null 即不匹配**，与上面 createTime 同一口径：
+        // 没办结的任务没有办理时间，把它算进"办理时长区间"里，
+        // 等于回答「他什么时候批的」时给一个 0 —— 而那个 0 会被当成本人秒批。
+        Integer minPriority = query.getMinPriority();
+        if (minPriority != null && task.getPriority() < minPriority.intValue()) {
+            return false;
+        }
+        Integer maxPriority = query.getMaxPriority();
+        if (maxPriority != null && task.getPriority() > maxPriority.intValue()) {
+            return false;
+        }
+        Date end = task.getEndTime();
+        if (query.getEndTimeFrom() != null && (end == null || end.before(query.getEndTimeFrom()))) {
+            return false;
+        }
+        if (query.getEndTimeTo() != null && (end == null || end.after(query.getEndTimeTo()))) {
+            return false;
+        }
+        // **没设 dueDate 的任务不算超期**：它没有承诺过什么时候办完，
+        // 把它算进超期清单，运维第一件事就是去挨个确认"这条到底该不该管"
+        Date due = task.getDueDate();
+        if (query.getDueDateFrom() != null && (due == null || due.before(query.getDueDateFrom()))) {
+            return false;
+        }
+        if (query.getDueDateTo() != null && (due == null || due.after(query.getDueDateTo()))) {
+            return false;
+        }
         return true;
     }
 
