@@ -387,6 +387,65 @@ public interface WfPersistence {
     /** 删掉某实例的全部补偿登记。 */
     int deleteCompensationsByProcessInstance(String processInstanceId);
 
+    // ==================== 批次（第 39 轮） ====================
+
+    /**
+     * 保存（新建或覆盖）一个批次。
+     *
+     * <p><b>契约与 {@link #saveFilter} 一致</b>：{@code id == null} 走 INSERT，
+     * 非空走 UPDATE 且带乐观锁 —— 调用方改既有批次前必须先 {@code nextRevision()}。
+     *
+     * <p>批次在执行期会被改好几遍（{@code EXECUTING} → {@code COMPLETED}），
+     * 乐观锁正是为了在这种时候抓住「有人同时动它」。
+     */
+    void saveBatch(com.zifang.z.wf.core.model.WfBatch batch);
+
+    /** 按 id 取一个批次；不存在返回 {@code null}（调用方自己决定要不要报错）。 */
+    com.zifang.z.wf.core.model.WfBatch findBatch(String id);
+
+    /**
+     * 物理删除一个批次<b>及其全部明细</b>。
+     *
+     * <p>明细必须一起删：不删的话批次没了、失败记录还在，
+     * 而按 batchId 查明细的接口会返回一批没有主人的行 —— 它们既查不到来源，
+     * 也没法让人确认「这些失败的目标后来处理了没有」。
+     *
+     * @return 是否真的删掉了批次本体（明细删不掉也算成功，本体没了就够）
+     */
+    boolean deleteBatch(String id);
+
+    List<com.zifang.z.wf.core.model.WfBatch> queryBatches(WfBatchQuery query);
+
+    /** 条数，条件与 {@link #queryBatches} 必须一致，<b>忽略分页</b>。 */
+    int countBatches(WfBatchQuery query);
+
+    /**
+     * 追加一条批次明细（{@link com.zifang.z.wf.core.model.WfBatchElement}）。
+     *
+     * <p><b>只有插入，没有更新</b>：一行明细表示「这个目标被处理过，结果是这样」，
+     * 这是个已经发生的事实。批次重跑会再写一行新的，不去改上一次的结果 ——
+     * 覆盖掉会让「上次那批到底哪些失败了」这个问题彻底失去答案。
+     */
+    void saveBatchElement(com.zifang.z.wf.core.model.WfBatchElement element);
+
+    /** 某批次的全部明细，<b>按写入顺序</b>返回（与目标命中顺序一致）。 */
+    List<com.zifang.z.wf.core.model.WfBatchElement> findBatchElements(String batchId);
+
+    /**
+     * 某批次的失败明细。
+     *
+     * <p>单独给一条入口而不是让调用方自己 filter：运维打开一个失败批次时
+     * 几乎只想看失败的那些，而让它下全量再自己筛，
+     * 一批 1000 条的批次每次都要多传 999 条数据。
+     */
+    List<com.zifang.z.wf.core.model.WfBatchElement> findFailedBatchElements(String batchId);
+
+    /** 某批次的明细条数。 */
+    int countBatchElements(String batchId);
+
+    /** 删掉某批次的全部明细（{@link #deleteBatch} 内部会调）。 */
+    int deleteBatchElements(String batchId);
+
     /**
      * 删掉挂在某个 token 上的全部 job（token 正常离开节点时调用）。
      *

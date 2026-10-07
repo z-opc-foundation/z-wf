@@ -29,6 +29,8 @@ import com.zifang.z.wf.core.definition.WfFlow;
 import com.zifang.z.wf.core.definition.WfNode;
 import com.zifang.z.wf.core.definition.WfNodeType;
 import com.zifang.z.wf.core.model.WfActivityInstance;
+import com.zifang.z.wf.core.model.WfBatch;
+import com.zifang.z.wf.core.model.WfBatchElement;
 import com.zifang.z.wf.core.model.WfCompensationEntry;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
@@ -264,6 +266,48 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_JOB_EXEC ON ZWF_JOB (EXEC_ID)");
         // 撤销时按「本实例 + 作用域」取登记并逆序补偿，复合索引正对着这条查询
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_COMP_PROC ON ZWF_COMPENSATION (PROC_ID, SCOPE, SEQ)");
+
+        // 批次（第 39 轮）
+        ddl.add("CREATE TABLE IF NOT EXISTS ZWF_BATCH ("
+                + "BATCH_ID VARCHAR(128) NOT NULL,"
+                // 存枚举短名而不是全名，与 ZWF_FILTER.RESOURCE_TYPE 同一把尺子：
+                // 存储列宽窄，且短名是 REST 层对外的那一套词，两处用同一个词
+                // 才不会出现「库里写的和接口里填的对不上」
+                + "BATCH_TYPE VARCHAR(16) NOT NULL,"
+                // 条件整体存一列 JSON（理由同 ZWF_FILTER.PROPERTIES）：
+                // 它本质就是"一组会变的字段"，逐列存要跟着 criteria 类一起改 schema
+                + "CRITERIA TEXT,"
+                // 操作列表同样存 JSON。这里存文本而不是拆成关系表还有一个理由：
+                // 操作是"动词 + 若干可空参数"，拆表之后大部分列对每种操作都是空的
+                + "OPERATIONS TEXT,"
+                + "STATE VARCHAR(16) NOT NULL DEFAULT 'CREATED',"
+                + "AFFECTED_COUNT INT DEFAULT 0,"
+                + "FAILURE_COUNT INT DEFAULT 0,"
+                + "CREATE_TIME TIMESTAMP,"
+                + "START_TIME TIMESTAMP,"
+                + "END_TIME TIMESTAMP,"
+                // 挂起标记。单独一列而不是塞进 STATE：被挂起的批次状态仍是
+                // CREATED / EXECUTING，合并成一个枚举会让"排队中"和"已挂起"互相覆盖
+                + "SUSPENDED SMALLINT DEFAULT 0,"
+                + "OPERATOR_ID VARCHAR(128),"
+                + "FAILURE_REASON VARCHAR(2048),"
+                + "REV INT,"
+                + "PRIMARY KEY (BATCH_ID))");
+
+        // 批次明细。一批 1000 个目标就是 1000 行，「取某批的全部明细」是它唯一的正常读法
+        ddl.add("CREATE TABLE IF NOT EXISTS ZWF_BATCH_ELEMENT ("
+                + "ELEM_ID VARCHAR(128) NOT NULL,"
+                + "BATCH_ID VARCHAR(128) NOT NULL,"
+                + "BATCH_TYPE VARCHAR(16),"
+                + "TARGET_ID VARCHAR(128) NOT NULL,"
+                + "STATE VARCHAR(16) NOT NULL,"
+                + "FAILURE_MSG VARCHAR(2048),"
+                + "HANDLED_AT TIMESTAMP,"
+                + "PRIMARY KEY (ELEM_ID))");
+        ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_BATCHELT_BATCH ON ZWF_BATCH_ELEMENT (BATCH_ID)");
+        // 运维翻批次列表基本都按"谁建的 + 什么时候建的"筛
+        ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_BATCH_OPERATOR ON ZWF_BATCH (OPERATOR_ID, CREATE_TIME)");
+        ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_BATCH_STATE ON ZWF_BATCH (STATE)");
 
         // 筛选器。整张表都是新增的，不需要补列 ——
         // CREATE TABLE IF NOT EXISTS 对"从来没有这张表"的库直接建，
@@ -2046,7 +2090,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             java.util.Arrays.asList(
                     "ZWF_DEFINITION", "ZWF_PROCESS", "ZWF_EXECUTION", "ZWF_TASK",
                     "ZWF_JOB", "ZWF_ACTIVITY", "ZWF_COMMENT", "ZWF_FILTER",
-                    "ZWF_DECISION", "ZWF_COMPENSATION"));
+                    "ZWF_DECISION", "ZWF_COMPENSATION", "ZWF_BATCH", "ZWF_BATCH_ELEMENT"));
 
     /**
      * 表名清单，<b>从库里真查</b>而不是直接返回常量。
@@ -2696,6 +2740,256 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             return entry;
         }
     };
+
+    // ==================== 批次（第 39 轮） ====================
+
+    @Override
+    public void saveBatch(WfBatch batch) {
+        if (batch == null || batch.getId() == null) {
+            throw new WfPersistenceException("批次必须有 id");
+        }
+        boolean exists = exists("SELECT 1 FROM ZWF_BATCH WHERE BATCH_ID=?", batch.getId());
+        if (exists) {
+            int affected = update("UPDATE ZWF_BATCH SET BATCH_TYPE=?, CRITERIA=?, OPERATIONS=?, "
+                            + "STATE=?, AFFECTED_COUNT=?, FAILURE_COUNT=?, CREATE_TIME=?, "
+                            + "START_TIME=?, END_TIME=?, SUSPENDED=?, OPERATOR_ID=?, "
+                            + "FAILURE_REASON=?, REV=? WHERE BATCH_ID=? AND REV=?",
+                    batch.getBatchType() == null ? null : batch.getBatchType().name(),
+                    batch.getCriteria(), batch.getOperations(),
+                    batch.getState() == null ? null : batch.getState().name(),
+                    batch.getAffectedCount(), batch.getFailureCount(),
+                    timestamp(batch.getCreateTime()), timestamp(batch.getStartTime()),
+                    timestamp(batch.getEndTime()), batch.isSuspended() ? 1 : 0,
+                    batch.getOperatorId(), batch.getFailureReason(),
+                    batch.getRevision(), batch.getId(), batch.getRevision() - 1);
+            if (affected == 0) {
+                throw new WfOptimisticLockException("batch", batch.getId(), batch.getRevision() - 1);
+            }
+            return;
+        }
+        Connection connection = null;
+        try {
+            connection = dataSource.getConnection();
+            PreparedStatement ps = connection.prepareStatement(
+                    "INSERT INTO ZWF_BATCH (BATCH_ID, BATCH_TYPE, CRITERIA, OPERATIONS, STATE, "
+                            + "AFFECTED_COUNT, FAILURE_COUNT, CREATE_TIME, START_TIME, END_TIME, "
+                            + "SUSPENDED, OPERATOR_ID, FAILURE_REASON, REV) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+            try {
+                int i = 1;
+                ps.setString(i++, batch.getId());
+                ps.setString(i++, batch.getBatchType() == null ? null : batch.getBatchType().name());
+                ps.setString(i++, batch.getCriteria());
+                ps.setString(i++, batch.getOperations());
+                ps.setString(i++, batch.getState() == null ? null : batch.getState().name());
+                ps.setInt(i++, batch.getAffectedCount());
+                ps.setInt(i++, batch.getFailureCount());
+                ps.setTimestamp(i++, timestamp(batch.getCreateTime()));
+                ps.setTimestamp(i++, timestamp(batch.getStartTime()));
+                ps.setTimestamp(i++, timestamp(batch.getEndTime()));
+                ps.setInt(i++, batch.isSuspended() ? 1 : 0);
+                ps.setString(i++, batch.getOperatorId());
+                ps.setString(i++, batch.getFailureReason());
+                ps.setInt(i, batch.getRevision());
+                ps.executeUpdate();
+            } finally {
+                ps.close();
+            }
+        } catch (SQLException e) {
+            throw new WfPersistenceException("批次写入失败: " + batch.getId(), e);
+        } finally {
+            close(connection);
+        }
+    }
+
+    @Override
+    public WfBatch findBatch(String id) {
+        if (id == null || id.trim().isEmpty()) {
+            return null;
+        }
+        return queryOne("SELECT * FROM ZWF_BATCH WHERE BATCH_ID=?", id, batchMapper());
+    }
+
+    @Override
+    public boolean deleteBatch(String id) {
+        if (id == null) {
+            return false;
+        }
+        // 先删明细再删本体，理由同内存实现：反过来中途失败会留下孤儿明细，
+        // 那种行查得出 batchId 却查不出批次，是最难认的一种脏数据
+        deleteBatchElements(id);
+        return update("DELETE FROM ZWF_BATCH WHERE BATCH_ID=?", id) > 0;
+    }
+
+    @Override
+    public List<WfBatch> queryBatches(WfBatchQuery query) {
+        StringBuilder sql = new StringBuilder("SELECT * FROM ZWF_BATCH");
+        List<Object> args = new ArrayList<>();
+        appendBatchFilters(sql, args, query);
+        // 创建时间倒序 + id 兜底，与内存实现同一套次序：
+        // 两套实现返回顺序不同的话，同一批数据在开发期与生产期翻页结果就不一样
+        sql.append(" ORDER BY CREATE_TIME DESC, BATCH_ID ASC LIMIT ? OFFSET ?");
+        args.add(query == null ? 50 : query.getPageSize());
+        args.add(query == null ? 0 : (query.getPageNum() - 1) * query.getPageSize());
+        return queryList(sql.toString(), args.toArray(), batchMapper());
+    }
+
+    @Override
+    public int countBatches(WfBatchQuery query) {
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM ZWF_BATCH");
+        List<Object> args = new ArrayList<>();
+        appendBatchFilters(sql, args, query);
+        Long count = queryOne(sql.toString(), args.toArray(), COUNT_MAPPER);
+        return count == null ? 0 : count.intValue();
+    }
+
+    /** 批次过滤。与 {@link #queryBatches} / {@link #countBatches} 共用同一段条件拼装。 */
+    private void appendBatchFilters(StringBuilder sql, List<Object> args, WfBatchQuery query) {
+        if (query == null) {
+            return;
+        }
+        List<String> parts = new ArrayList<>();
+        if (query.getBatchType() != null) {
+            parts.add("BATCH_TYPE=?");
+            args.add(query.getBatchType().name());
+        }
+        if (query.getState() != null) {
+            parts.add("STATE=?");
+            args.add(query.getState().name());
+        }
+        if (query.getSuspendedOnly() != null) {
+            parts.add("SUSPENDED=?");
+            args.add(query.getSuspendedOnly() ? 1 : 0);
+        }
+        if (query.getOperatorId() != null && !query.getOperatorId().trim().isEmpty()) {
+            parts.add("OPERATOR_ID=?");
+            args.add(query.getOperatorId());
+        }
+        if (query.getCreateTimeFrom() != null) {
+            parts.add("CREATE_TIME>=?");
+            args.add(timestamp(query.getCreateTimeFrom()));
+        }
+        if (query.getCreateTimeTo() != null) {
+            parts.add("CREATE_TIME<=?");
+            args.add(timestamp(query.getCreateTimeTo()));
+        }
+        if (!parts.isEmpty()) {
+            sql.append(" WHERE ").append(join(parts, " AND "));
+        }
+    }
+
+    private RowMapper<WfBatch> batchMapper() {
+        return new RowMapper<WfBatch>() {
+            @Override
+            public WfBatch map(ResultSet rs) throws SQLException {
+                return readBatch(rs);
+            }
+        };
+    }
+
+    private WfBatch readBatch(ResultSet rs) throws SQLException {
+        WfBatch batch = new WfBatch();
+        batch.setId(rs.getString("BATCH_ID"));
+        batch.setBatchType(WfBatch.Type.fromName(rs.getString("BATCH_TYPE")));
+        batch.setCriteria(rs.getString("CRITERIA"));
+        batch.setOperations(rs.getString("OPERATIONS"));
+        batch.setState(readBatchState(rs));
+        batch.setAffectedCount(rs.getInt("AFFECTED_COUNT"));
+        batch.setFailureCount(rs.getInt("FAILURE_COUNT"));
+        batch.setCreateTime(date(rs.getTimestamp("CREATE_TIME")));
+        batch.setStartTime(date(rs.getTimestamp("START_TIME")));
+        batch.setEndTime(date(rs.getTimestamp("END_TIME")));
+        batch.setSuspended(rs.getInt("SUSPENDED") != 0);
+        batch.setOperatorId(rs.getString("OPERATOR_ID"));
+        batch.setFailureReason(rs.getString("FAILURE_REASON"));
+        batch.setRevision(rs.getInt("REV"));
+        return batch;
+    }
+
+    /**
+     * 读回批次状态。
+     *
+     * <p>不用 {@code State.valueOf} 直抛：它会报「No enum constant ...STATE.CRAETD」，
+     * 看不出是哪个批次坏了。补上批次 id 之后，拿到这条报错的人不用再回去翻日志找上下文。
+     */
+    private WfBatch.State readBatchState(ResultSet rs) throws SQLException {
+        String raw = rs.getString("STATE");
+        try {
+            return WfBatch.State.valueOf(raw);
+        } catch (RuntimeException e) {
+            throw new WfPersistenceException(
+                    "批次 " + rs.getString("BATCH_ID") + " 的状态非法: [" + raw + "]", e);
+        }
+    }
+
+    @Override
+    public void saveBatchElement(WfBatchElement element) {
+        if (element == null || element.getId() == null || element.getBatchId() == null) {
+            throw new WfPersistenceException("批次明细必须有 id 和 batchId");
+        }
+        update("INSERT INTO ZWF_BATCH_ELEMENT "
+                        + "(ELEM_ID, BATCH_ID, BATCH_TYPE, TARGET_ID, STATE, FAILURE_MSG, HANDLED_AT) "
+                        + "VALUES (?,?,?,?,?,?,?)",
+                element.getId(), element.getBatchId(),
+                element.getType() == null ? null : element.getType().name(),
+                element.getTargetId(),
+                element.getState() == null ? null : element.getState().name(),
+                element.getFailureMessage(), timestamp(element.getHandledAt()));
+    }
+
+    @Override
+    public List<WfBatchElement> findBatchElements(String batchId) {
+        return queryList("SELECT * FROM ZWF_BATCH_ELEMENT WHERE BATCH_ID=?", new Object[]{batchId},
+                batchElementMapper());
+    }
+
+    @Override
+    public List<WfBatchElement> findFailedBatchElements(String batchId) {
+        // 下推成 SQL 过滤，而不是取回全量让调用方筛：一批 1000 个目标、
+        // 其中 3 个失败时，每次打开失败批次都要多传 997 行
+        return queryList("SELECT * FROM ZWF_BATCH_ELEMENT WHERE BATCH_ID=? AND STATE<>?",
+                new Object[]{batchId, WfBatchElement.State.SUCCESS.name()},
+                batchElementMapper());
+    }
+
+    @Override
+    public int countBatchElements(String batchId) {
+        Long count = queryOne("SELECT COUNT(*) FROM ZWF_BATCH_ELEMENT WHERE BATCH_ID=?",
+                new Object[]{batchId}, COUNT_MAPPER);
+        return count == null ? 0 : count.intValue();
+    }
+
+    @Override
+    public int deleteBatchElements(String batchId) {
+        return update("DELETE FROM ZWF_BATCH_ELEMENT WHERE BATCH_ID=?", batchId);
+    }
+
+    private RowMapper<WfBatchElement> batchElementMapper() {
+        return new RowMapper<WfBatchElement>() {
+            @Override
+            public WfBatchElement map(ResultSet rs) throws SQLException {
+                WfBatchElement element = new WfBatchElement();
+                element.setId(rs.getString("ELEM_ID"));
+                element.setBatchId(rs.getString("BATCH_ID"));
+                element.setType(WfBatch.Type.fromName(rs.getString("BATCH_TYPE")));
+                element.setTargetId(rs.getString("TARGET_ID"));
+                element.setState(readElementState(rs));
+                element.setFailureMessage(rs.getString("FAILURE_MSG"));
+                element.setHandledAt(date(rs.getTimestamp("HANDLED_AT")));
+                return element;
+            }
+        };
+    }
+
+    private WfBatchElement.State readElementState(ResultSet rs) throws SQLException {
+        String raw = rs.getString("STATE");
+        try {
+            return WfBatchElement.State.valueOf(raw);
+        } catch (RuntimeException e) {
+            throw new WfPersistenceException("批次明细 " + rs.getString("ELEM_ID")
+                    + "（批次 " + rs.getString("BATCH_ID") + "）的状态非法: [" + raw + "]", e);
+        }
+    }
 
     private boolean exists(String sql, Object arg) {        Connection connection = null;
         try {

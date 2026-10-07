@@ -20,6 +20,8 @@ import org.slf4j.LoggerFactory;
 import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
 import com.zifang.z.wf.core.model.WfActivityInstance;
+import com.zifang.z.wf.core.model.WfBatch;
+import com.zifang.z.wf.core.model.WfBatchElement;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfCompensationEntry;
 import com.zifang.z.wf.core.model.WfExecution;
@@ -73,6 +75,21 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
 
     /** 补偿登记（第 37 轮）。键是登记 id，值是 {@link WfCompensationEntry}。 */
     private final Map<String, WfCompensationEntry> compensations = new ConcurrentHashMap<>();
+
+    /** 批次（第 39 轮）。键是批次 id，值是 {@link WfBatch}。 */
+    private final Map<String, WfBatch> batches = new ConcurrentHashMap<>();
+
+    /**
+     * 批次明细（第 39 轮）。
+     *
+     * <p><b>按批次 id 分组而不是平铺</b>：一批 1000 个目标就是 1000 行，
+     * 「取某批的全部明细」是这条数据唯一的正常读法，
+     * 平铺在 Map 里就得每次全表扫一遍再筛。
+     * 组内用 {@link java.util.List} 而不是按 id 索引的 Map：明细只插入不更新，
+     * 写入顺序本身就是信息（= 目标命中顺序），List 天然保序且省一个索引层。
+     */
+    private final Map<String, List<WfBatchElement>> batchElements =
+            new ConcurrentHashMap<String, List<WfBatchElement>>();
 
     @Override
     public void initialize() {
@@ -903,7 +920,7 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
             java.util.Arrays.asList(
                     "ZWF_DEFINITION", "ZWF_PROCESS", "ZWF_EXECUTION", "ZWF_TASK",
                     "ZWF_JOB", "ZWF_ACTIVITY", "ZWF_COMMENT", "ZWF_FILTER",
-                    "ZWF_DECISION", "ZWF_COMPENSATION"));
+                    "ZWF_DECISION", "ZWF_COMPENSATION", "ZWF_BATCH", "ZWF_BATCH_ELEMENT"));
 
     @Override
     public List<String> getTableNames() {
@@ -960,6 +977,16 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         }
         if ("ZWF_COMPENSATION".equals(name)) {
             return compensations.size();
+        }
+        if ("ZWF_BATCH".equals(name)) {
+            return batches.size();
+        }
+        if ("ZWF_BATCH_ELEMENT".equals(name)) {
+            long total = 0;
+            for (List<WfBatchElement> list : batchElements.values()) {
+                total += list.size();
+            }
+            return total;
         }
         // 刻意**不兜底返回某一张表的行数**（第 37 轮）。
         // 原来这里最后一句是 `return decisions.size()`：名字在 STORAGE_NAMES 里、
@@ -1241,6 +1268,195 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         return target;
     }
 
+    // ==================== 批次（第 39 轮） ====================
+
+    @Override
+    public void saveBatch(WfBatch batch) {
+        if (batch == null || batch.getId() == null) {
+            return;
+        }
+        WfBatch existing = batches.get(batch.getId());
+        // 与 saveTask / saveJob / saveFilter 同一套乐观锁契约，见 WfPersistence#saveBatch
+        if (existing != null && batch.getRevision() != existing.getRevision() + 1) {
+            throw new WfOptimisticLockException("batch", batch.getId(), existing.getRevision() + 1);
+        }
+        batches.put(batch.getId(), copy(batch));
+    }
+
+    @Override
+    public WfBatch findBatch(String id) {
+        return copy(batches.get(id));
+    }
+
+    @Override
+    public boolean deleteBatch(String id) {
+        if (id == null) {
+            return false;
+        }
+        // 先删明细再删本体：反过来万一中途抛异常，会留下"本体没了、明细还在"的孤儿行，
+        // 而那种行按 batchId 查得出来、查不出批次，排查时最难认
+        deleteBatchElements(id);
+        return batches.remove(id) != null;
+    }
+
+    @Override
+    public List<WfBatch> queryBatches(WfBatchQuery query) {
+        List<WfBatch> matched = new ArrayList<>();
+        for (WfBatch raw : batches.values()) {
+            if (matchesBatch(raw, query)) {
+                matched.add(copy(raw));
+            }
+        }
+        // 与 queryFilters 同一把尺子：创建时间新的在前，同一毫秒按 id 排。
+        // 次序不确定的话，分页会漏条目、两次列出来 diff 也没法比
+        matched.sort((a, b) -> {
+            Date ta = a.getCreateTime();
+            Date tb = b.getCreateTime();
+            if (ta != null && tb != null && !ta.equals(tb)) {
+                return tb.compareTo(ta);
+            }
+            return a.getId().compareTo(b.getId());
+        });
+        if (query == null) {
+            return matched;
+        }
+        return paginate(matched, (query.getPageNum() - 1) * query.getPageSize(),
+                query.getPageSize());
+    }
+
+    @Override
+    public int countBatches(WfBatchQuery query) {
+        int count = 0;
+        for (WfBatch raw : batches.values()) {
+            if (matchesBatch(raw, query)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * 批次过滤。与 {@link #queryBatches} / {@link #countBatches} 共用同一个判定 ——
+     * 列表说 3 条而 total 说 5 条的话，前端分页器会以为还有第 2 页，
+     * 翻过去是空的，且没人知道该信哪个。
+     */
+    private boolean matchesBatch(WfBatch batch, WfBatchQuery query) {
+        if (query == null) {
+            return true;
+        }
+        if (query.getBatchType() != null && query.getBatchType() != batch.getBatchType()) {
+            return false;
+        }
+        if (query.getState() != null && query.getState() != batch.getState()) {
+            return false;
+        }
+        if (query.getSuspendedOnly() != null
+                && query.getSuspendedOnly() != batch.isSuspended()) {
+            return false;
+        }
+        if (isNotBlank(query.getOperatorId()) && !query.getOperatorId().equals(batch.getOperatorId())) {
+            return false;
+        }
+        if (query.getCreateTimeFrom() != null
+                && (batch.getCreateTime() == null || batch.getCreateTime().before(query.getCreateTimeFrom()))) {
+            return false;
+        }
+        return query.getCreateTimeTo() == null || batch.getCreateTime() == null
+                || !batch.getCreateTime().after(query.getCreateTimeTo());
+    }
+
+    @Override
+    public void saveBatchElement(WfBatchElement element) {
+        if (element == null || element.getBatchId() == null || element.getId() == null) {
+            throw new WfPersistenceException("批次明细必须有 id 和 batchId");
+        }
+        List<WfBatchElement> list = batchElements.get(element.getBatchId());
+        if (list == null) {
+            // computeIfAbsent 里的动作必须是纯的：这里的 putIfAbsent 冲突时什么都不做，
+            // 不会把别人的 List 换掉
+            list = new java.util.concurrent.CopyOnWriteArrayList<WfBatchElement>();
+            List<WfBatchElement> prev = batchElements.putIfAbsent(element.getBatchId(), list);
+            if (prev != null) {
+                list = prev;
+            }
+        }
+        list.add(copy(element));
+    }
+
+    @Override
+    public List<WfBatchElement> findBatchElements(String batchId) {
+        List<WfBatchElement> list = batchElements.get(batchId);
+        if (list == null) {
+            return new ArrayList<WfBatchElement>();
+        }
+        List<WfBatchElement> result = new ArrayList<>();
+        for (WfBatchElement item : list) {
+            result.add(copy(item));
+        }
+        return result;
+    }
+
+    @Override
+    public List<WfBatchElement> findFailedBatchElements(String batchId) {
+        List<WfBatchElement> result = new ArrayList<>();
+        for (WfBatchElement item : findBatchElements(batchId)) {
+            if (!item.isSuccess()) {
+                result.add(item);
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public int countBatchElements(String batchId) {
+        List<WfBatchElement> list = batchElements.get(batchId);
+        return list == null ? 0 : list.size();
+    }
+
+    @Override
+    public int deleteBatchElements(String batchId) {
+        List<WfBatchElement> removed = batchElements.remove(batchId);
+        return removed == null ? 0 : removed.size();
+    }
+
+    /** 深拷贝：调用方拿到的是快照，改它不会污染存储里的那一份。 */
+    private static WfBatch copy(WfBatch source) {
+        if (source == null) {
+            return null;
+        }
+        WfBatch target = new WfBatch();
+        target.setId(source.getId());
+        target.setBatchType(source.getBatchType());
+        target.setCriteria(source.getCriteria());
+        target.setOperations(source.getOperations());
+        target.setState(source.getState());
+        target.setAffectedCount(source.getAffectedCount());
+        target.setFailureCount(source.getFailureCount());
+        target.setCreateTime(source.getCreateTime());
+        target.setStartTime(source.getStartTime());
+        target.setEndTime(source.getEndTime());
+        target.setSuspended(source.isSuspended());
+        target.setOperatorId(source.getOperatorId());
+        target.setFailureReason(source.getFailureReason());
+        target.setRevision(source.getRevision());
+        return target;
+    }
+
+    private static WfBatchElement copy(WfBatchElement source) {
+        if (source == null) {
+            return null;
+        }
+        WfBatchElement target = new WfBatchElement();
+        target.setId(source.getId());
+        target.setBatchId(source.getBatchId());
+        target.setType(source.getType());
+        target.setTargetId(source.getTargetId());
+        target.setState(source.getState());
+        target.setFailureMessage(source.getFailureMessage());
+        target.setHandledAt(source.getHandledAt());
+        return target;
+    }
+
     @Override
     public int deleteJobsByExecution(String executionId) {
         int removed = 0;
@@ -1303,6 +1519,12 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         jobs.clear();
         filters.clear();
         decisions.clear();
+        // compensations 原来漏在这里（第 39 轮补）。后果不是"测试之间互相污染"这么轻：
+        // clear() 是"内存存储现在空的"这句话的兑现处，漏一项就会出现
+        // 「刚 clear 完，自省面板上补偿登记还有 37 条」——而其它九张表都是 0。
+        compensations.clear();
+        batches.clear();
+        batchElements.clear();
     }
 
     // ==================== 保存筛选器 ====================

@@ -34,6 +34,12 @@ public interface WfIdGenerator {
     /** 生成补偿登记 ID（第 37 轮）。 */
     String nextCompensationId();
 
+    /** 生成批次 ID（第 39 轮）。 */
+    String nextBatchId();
+
+    /** 生成批次明细 ID（第 39 轮）。 */
+    String nextBatchElementId();
+
     /**
      * 默认实现：{@code 前缀 + 进程启动随机数 + 定长自增序号}。
      *
@@ -59,6 +65,11 @@ public interface WfIdGenerator {
 
         /** 补偿登记计数器（第 37 轮）。独立于其它计数器，理由与它们各自独立相同。 */
         private final AtomicLong compensationCounter = new AtomicLong();
+
+        /** 批次与批次明细计数器（第 39 轮）。明细的量级比批次大一两个数量级，
+         * 独立计数让两者的 id 各自从 1 开始，而不是让明细把批次的序号顶掉一大截。 */
+        private final AtomicLong batchCounter = new AtomicLong();
+        private final AtomicLong batchElementCounter = new AtomicLong();
 
         public DefaultWfIdGenerator() {
             // 启动期随机后缀：不同 JVM 实例/不同次启动互不相同
@@ -103,6 +114,16 @@ public interface WfIdGenerator {
         @Override
         public String nextCompensationId() {
             return "comp-" + instanceTag + "-" + pad(compensationCounter.incrementAndGet());
+        }
+
+        @Override
+        public String nextBatchId() {
+            return "batch-" + instanceTag + "-" + pad(batchCounter.incrementAndGet());
+        }
+
+        @Override
+        public String nextBatchElementId() {
+            return "bele-" + instanceTag + "-" + pad(batchElementCounter.incrementAndGet());
         }
 
         /** 左补零到 {@link #SEQ_WIDTH} 位；已超宽则原样返回（不能截断，会撞号）。 */

@@ -844,4 +844,426 @@ public final class WfRequests {
             this.properties = properties == null ? new LinkedHashMap<>() : properties;
         }
     }
+
+    /**
+     * 创建一个批次（第 39 轮）。
+     *
+     * <p>字段与 {@code WfBatchCriteria} / {@code WfBatchOperation} 一一对应，
+     * 但<b>不共用同一批类</b>：那边是引擎的持久化形态（要考虑 JSON 往返、
+     * 枚举怎么存），这边是对外契约（要考虑字段名怎么写别人才看得懂）。
+     * 共用一处的话，为了迁就一边，另一边就得跟着变形。
+     */
+    public static class BatchOperation implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        /** {@code INSTANCE} / {@code TASK} / {@code JOB}。 */
+        private String batchType;
+
+        private BatchCriteriaRequest criteria;
+
+        private List<BatchAction> operations;
+
+        private String operatorId;
+
+        public String getBatchType() {
+            return batchType;
+        }
+
+        public void setBatchType(String batchType) {
+            this.batchType = batchType;
+        }
+
+        public BatchCriteriaRequest getCriteria() {
+            return criteria;
+        }
+
+        public void setCriteria(BatchCriteriaRequest criteria) {
+            this.criteria = criteria;
+        }
+
+        public List<BatchAction> getOperations() {
+            return operations;
+        }
+
+        public void setOperations(List<BatchAction> operations) {
+            this.operations = operations;
+        }
+
+        public String getOperatorId() {
+            return operatorId;
+        }
+
+        public void setOperatorId(String operatorId) {
+            this.operatorId = operatorId;
+        }
+    }
+
+    /** 批次的筛选条件。字段按批次类型分组，<b>不属于该类型的字段被忽略</b>。 */
+    public static class BatchCriteriaRequest implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private List<String> ids;
+
+        private String processDefinitionKey;
+
+        private Integer processDefinitionVersion;
+
+        private String processBusinessKey;
+
+        private String processStartUserId;
+
+        private String processCategory;
+
+        private String status;
+
+        private Boolean finishedOnly;
+
+        private Boolean unfinishedOnly;
+
+        private Long processStartTimeFrom;
+
+        private Long processStartTimeTo;
+
+        private String processResult;
+
+        private String taskProcessInstanceId;
+
+        private String taskDefinitionId;
+
+        private String taskAssignee;
+
+        private String taskOwner;
+
+        private String taskCategory;
+
+        private String taskStatus;
+
+        private Boolean taskOpenOnly;
+
+        private Boolean taskUnassignedOnly;
+
+        private Long taskCreateTimeFrom;
+
+        private Long taskCreateTimeTo;
+
+        private String jobProcessInstanceId;
+
+        private String jobElementId;
+
+        private String jobType;
+
+        private Long jobDueBefore;
+
+        private Boolean jobRetriesExhausted;
+
+        private String jobTopic;
+
+        public List<String> getIds() {
+            return ids;
+        }
+
+        public void setIds(List<String> ids) {
+            this.ids = ids;
+        }
+
+        public String getProcessDefinitionKey() {
+            return processDefinitionKey;
+        }
+
+        public void setProcessDefinitionKey(String processDefinitionKey) {
+            this.processDefinitionKey = processDefinitionKey;
+        }
+
+        public Integer getProcessDefinitionVersion() {
+            return processDefinitionVersion;
+        }
+
+        public void setProcessDefinitionVersion(Integer processDefinitionVersion) {
+            this.processDefinitionVersion = processDefinitionVersion;
+        }
+
+        public String getProcessBusinessKey() {
+            return processBusinessKey;
+        }
+
+        public void setProcessBusinessKey(String processBusinessKey) {
+            this.processBusinessKey = processBusinessKey;
+        }
+
+        public String getProcessStartUserId() {
+            return processStartUserId;
+        }
+
+        public void setProcessStartUserId(String processStartUserId) {
+            this.processStartUserId = processStartUserId;
+        }
+
+        public String getProcessCategory() {
+            return processCategory;
+        }
+
+        public void setProcessCategory(String processCategory) {
+            this.processCategory = processCategory;
+        }
+
+        public String getStatus() {
+            return status;
+        }
+
+        public void setStatus(String status) {
+            this.status = status;
+        }
+
+        public Boolean getFinishedOnly() {
+            return finishedOnly;
+        }
+
+        public void setFinishedOnly(Boolean finishedOnly) {
+            this.finishedOnly = finishedOnly;
+        }
+
+        public Boolean getUnfinishedOnly() {
+            return unfinishedOnly;
+        }
+
+        public void setUnfinishedOnly(Boolean unfinishedOnly) {
+            this.unfinishedOnly = unfinishedOnly;
+        }
+
+        public Long getProcessStartTimeFrom() {
+            return processStartTimeFrom;
+        }
+
+        public void setProcessStartTimeFrom(Long processStartTimeFrom) {
+            this.processStartTimeFrom = processStartTimeFrom;
+        }
+
+        public Long getProcessStartTimeTo() {
+            return processStartTimeTo;
+        }
+
+        public void setProcessStartTimeTo(Long processStartTimeTo) {
+            this.processStartTimeTo = processStartTimeTo;
+        }
+
+        public String getProcessResult() {
+            return processResult;
+        }
+
+        public void setProcessResult(String processResult) {
+            this.processResult = processResult;
+        }
+
+        public String getTaskProcessInstanceId() {
+            return taskProcessInstanceId;
+        }
+
+        public void setTaskProcessInstanceId(String taskProcessInstanceId) {
+            this.taskProcessInstanceId = taskProcessInstanceId;
+        }
+
+        public String getTaskDefinitionId() {
+            return taskDefinitionId;
+        }
+
+        public void setTaskDefinitionId(String taskDefinitionId) {
+            this.taskDefinitionId = taskDefinitionId;
+        }
+
+        public String getTaskAssignee() {
+            return taskAssignee;
+        }
+
+        public void setTaskAssignee(String taskAssignee) {
+            this.taskAssignee = taskAssignee;
+        }
+
+        public String getTaskOwner() {
+            return taskOwner;
+        }
+
+        public void setTaskOwner(String taskOwner) {
+            this.taskOwner = taskOwner;
+        }
+
+        public String getTaskCategory() {
+            return taskCategory;
+        }
+
+        public void setTaskCategory(String taskCategory) {
+            this.taskCategory = taskCategory;
+        }
+
+        public String getTaskStatus() {
+            return taskStatus;
+        }
+
+        public void setTaskStatus(String taskStatus) {
+            this.taskStatus = taskStatus;
+        }
+
+        public Boolean getTaskOpenOnly() {
+            return taskOpenOnly;
+        }
+
+        public void setTaskOpenOnly(Boolean taskOpenOnly) {
+            this.taskOpenOnly = taskOpenOnly;
+        }
+
+        public Boolean getTaskUnassignedOnly() {
+            return taskUnassignedOnly;
+        }
+
+        public void setTaskUnassignedOnly(Boolean taskUnassignedOnly) {
+            this.taskUnassignedOnly = taskUnassignedOnly;
+        }
+
+        public Long getTaskCreateTimeFrom() {
+            return taskCreateTimeFrom;
+        }
+
+        public void setTaskCreateTimeFrom(Long taskCreateTimeFrom) {
+            this.taskCreateTimeFrom = taskCreateTimeFrom;
+        }
+
+        public Long getTaskCreateTimeTo() {
+            return taskCreateTimeTo;
+        }
+
+        public void setTaskCreateTimeTo(Long taskCreateTimeTo) {
+            this.taskCreateTimeTo = taskCreateTimeTo;
+        }
+
+        public String getJobProcessInstanceId() {
+            return jobProcessInstanceId;
+        }
+
+        public void setJobProcessInstanceId(String jobProcessInstanceId) {
+            this.jobProcessInstanceId = jobProcessInstanceId;
+        }
+
+        public String getJobElementId() {
+            return jobElementId;
+        }
+
+        public void setJobElementId(String jobElementId) {
+            this.jobElementId = jobElementId;
+        }
+
+        public String getJobType() {
+            return jobType;
+        }
+
+        public void setJobType(String jobType) {
+            this.jobType = jobType;
+        }
+
+        public Long getJobDueBefore() {
+            return jobDueBefore;
+        }
+
+        public void setJobDueBefore(Long jobDueBefore) {
+            this.jobDueBefore = jobDueBefore;
+        }
+
+        public Boolean getJobRetriesExhausted() {
+            return jobRetriesExhausted;
+        }
+
+        public void setJobRetriesExhausted(Boolean jobRetriesExhausted) {
+            this.jobRetriesExhausted = jobRetriesExhausted;
+        }
+
+        public String getJobTopic() {
+            return jobTopic;
+        }
+
+        public void setJobTopic(String jobTopic) {
+            this.jobTopic = jobTopic;
+        }
+    }
+
+    /**
+     * 批次里的一条操作。
+     *
+     * <p>（条件里的时间字段是 {@code Long} 毫秒时间戳，与本仓其它控制器的
+     * {@code startedAfter} / {@code dueBefore} 同一套写法 ——
+     * 统一成字符串日期会多出一类"格式不对"的错误，而它没有任何价值。）
+     */
+    public static class BatchAction implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private String type;
+
+        private String variable;
+
+        private Object value;
+
+        private Map<String, Object> variables;
+
+        private Integer retries;
+
+        private Integer priority;
+
+        private String reason;
+
+        public String getType() {
+            return type;
+        }
+
+        public void setType(String type) {
+            this.type = type;
+        }
+
+        public String getVariable() {
+            return variable;
+        }
+
+        public void setVariable(String variable) {
+            this.variable = variable;
+        }
+
+        public Object getValue() {
+            return value;
+        }
+
+        public void setValue(Object value) {
+            this.value = value;
+        }
+
+        public Map<String, Object> getVariables() {
+            return variables;
+        }
+
+        public void setVariables(Map<String, Object> variables) {
+            this.variables = variables;
+        }
+
+        public Integer getRetries() {
+            return retries;
+        }
+
+        public void setRetries(Integer retries) {
+            this.retries = retries;
+        }
+
+        public Integer getPriority() {
+            return priority;
+        }
+
+        public void setPriority(Integer priority) {
+            this.priority = priority;
+        }
+
+        public String getReason() {
+            return reason;
+        }
+
+        public void setReason(String reason) {
+            this.reason = reason;
+        }
+    }
 }

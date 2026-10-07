@@ -28,6 +28,7 @@ import com.zifang.z.wf.core.hook.WfTaskHook;
 import com.zifang.z.wf.core.persistence.InMemoryWorkflowPersistence;
 import com.zifang.z.wf.core.persistence.JdbcWorkflowPersistence;
 import com.zifang.z.wf.core.persistence.WfPersistence;
+import com.zifang.z.wf.core.service.WfBatchService;
 import com.zifang.z.wf.core.service.WfDelegateRegistry;
 import com.zifang.z.wf.core.service.WfDecisionService;
 import com.zifang.z.wf.core.service.WfHistoryService;
@@ -215,6 +216,27 @@ public class WfAutoConfiguration {
     @ConditionalOnMissingBean
     public WfJobService wfJobService(WfPersistence persistence, WfRuntimeService runtimeService) {
         return new WfJobService(persistence, runtimeService);
+    }
+
+    /**
+     * 批量操作（第 39 轮）。
+     *
+     * <p>依赖 runtime / variable / task 三个服务而不是自己直接改存储 ——
+     * 批次改的是「一个已经跑起来的实例/任务」，而这些服务各自带一整套
+     * 前置校验（终态实例不能挂起、办结任务不能改变量）与审计留痕。
+     * 自己绕过它们直接 {@code save} 的话，批量改完的实例会缺一条
+     * 「谁在什么时候改的」记录，而单条操作是有这条的 ——
+     * 同一个动作两条路径两种留痕，排障时最费时间的就是这种不一致。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public WfBatchService wfBatchService(WfPersistence persistence,
+                                         WfIdGenerator idGenerator,
+                                         WfRuntimeService runtimeService,
+                                         WfVariableService variableService,
+                                         WfTaskService taskService) {
+        return new WfBatchService(persistence, idGenerator, runtimeService,
+                variableService, taskService);
     }
 
     /**

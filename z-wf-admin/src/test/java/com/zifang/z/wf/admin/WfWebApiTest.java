@@ -1678,6 +1678,149 @@ class WfWebApiTest {
         return json.readValue(response.getBody(), Map.class);
     }
 
+    // ==================== 批量操作端点（第 39 轮） ====================
+
+    /**
+     * 批量端点走真实 HTTP。
+     *
+     * <p>和 DMN 那条一样的理由：z-wf-web 的单测是 {@code standaloneSetup}
+     * （手工 new controller + 注入 service），它<b>断不到自动装配</b>。
+     * {@code WfBatchService} 有没有被注册成 Bean、{@code ZWF_BATCH} 表建了没有、
+     * 路由有没有挂上，只有起完整上下文才看得见 ——
+     * 而"服务写了、REST 层忘了接线"正是最常见的半成品：单测全绿，端点 404。
+     *
+     * <p>这条还顺带钉住了 JDBC 侧：批次与它的条件/操作都要真的走一趟
+     * {@code JSON → TEXT 列 → JSON} 的往返。内存实现下这一步是空气，
+     * 所以 JSON 里少写一个字段、枚举怎么存，两套实现就会分家。
+     */
+    @Test
+    @DisplayName("批量端点：创建（不动数据）→ 看命中数 → 执行 → 查明细，全部走 HTTP")
+    void batchEndpointsOverHttp() throws Exception {
+        String key = deployBatchProcess();
+        String tag = String.valueOf(System.nanoTime());
+        List<String> ids = new ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+            Map<String, Object> start = postOk("/api/approval-center/processes/start",
+                    body("definitionKey", key, "businessKey", "BATCH-" + tag + "-" + i,
+                            "userId", "batch-alice", "deptId", "d1", "variables", new HashMap<>()));
+            ids.add((String) start.get("data"));
+        }
+        assertEquals(2, ids.size());
+
+        Map<String, Object> created = asMap(postOk("/api/wf/batches", body(
+                "batchType", "INSTANCE",
+                "criteria", body("processDefinitionKey", key),
+                "operations", java.util.Collections.singletonList(
+                        body("type", "setVariable", "variable", "migrated", "value", "v2")),
+                "operatorId", "admin-web")).get("data"));
+        String batchId = (String) created.get("id");
+        assertEquals("CREATED", created.get("state"), "刚创建必须是「已创建」");
+        assertEquals("已创建", created.get("stateLabel"));
+        assertEquals(0, ((Number) created.get("affectedCount")).intValue());
+        assertTrue(((String) created.get("criteria")).contains(key),
+                "条件必须原样落库并回显 —— 「这批当初是按什么建的」是排障第一个要问的问题");
+
+        // **两段式在 HTTP 上也成立**：创建之后数据一个字节都没动
+        for (String id : ids) {
+            // 用 assertNull 而不是 assertFalse(value.contains(...))：变量压根不存在时
+            // get 返回 null，对 null 调方法抛的是 NPE，报错指向不到真正的原因
+            assertNull(instanceVariables(id).get("migrated"),
+                    "创建阶段绝不能改数据。实例 " + id + " 的变量: " + instanceVariables(id));
+        }
+
+        // 执行前的那一眼
+        assertEquals(2, count("/api/wf/batches/" + batchId + "/count"));
+
+        Map<String, Object> done = asMap(postOk("/api/wf/batches/" + batchId + "/execute", null)
+                .get("data"));
+        assertEquals("COMPLETED", done.get("state"));
+        assertEquals(2, ((Number) done.get("affectedCount")).intValue());
+        assertEquals(0, ((Number) done.get("failureCount")).intValue());
+        assertNotNull(done.get("startTime"), "执行过就要有开始时间");
+        assertNotNull(done.get("endTime"), "执行过就要有结束时间");
+
+        for (String id : ids) {
+            assertEquals("v2", instanceVariables(id).get("migrated"),
+                    "实例 " + id + " 必须真的被改到了。实际变量: " + instanceVariables(id));
+        }
+
+        Map<String, Object> elements = asMap(getOk("/api/wf/batches/" + batchId + "/elements")
+                .get("data"));
+        assertEquals(2, ((Number) elements.get("total")).intValue());
+        assertEquals("SUCCESS", asList(elements.get("elements")).get(0).get("state"));
+
+        // 列表：口径一致
+        Map<String, Object> list = asMap(getOk("/api/wf/batches?state=COMPLETED").get("data"));
+        assertTrue(((Number) list.get("total")).intValue() >= 1);
+    }
+
+    @Test
+    @DisplayName("批量端点：重复执行 / 挂起后执行 / 空条件 都是 400")
+    void batchRejectionsOverHttp() throws Exception {
+        String key = deployBatchProcess();
+        postOk("/api/approval-center/processes/start",
+                body("definitionKey", key, "businessKey", "BATCH-REJ-" + System.nanoTime(),
+                        "userId", "batch-alice", "deptId", "d1", "variables", new HashMap<>()));
+
+        String batchId = createBatchOverHttp(key);
+        assertEquals(HttpStatus.OK, exchange(HttpMethod.POST,
+                "/api/wf/batches/" + batchId + "/execute", null).getStatusCode());
+        // 批次不做二次执行 —— 点了两次是最容易犯的错
+        assertEquals(HttpStatus.BAD_REQUEST, exchange(HttpMethod.POST,
+                "/api/wf/batches/" + batchId + "/execute", null).getStatusCode());
+
+        String other = createBatchOverHttp(key);
+        assertEquals(HttpStatus.OK, exchange(HttpMethod.POST,
+                "/api/wf/batches/" + other + "/suspend", null).getStatusCode());
+        assertEquals(HttpStatus.BAD_REQUEST, exchange(HttpMethod.POST,
+                "/api/wf/batches/" + other + "/execute", null).getStatusCode());
+
+        // 条件为空 = 改全部，必须挡住
+        ResponseEntity<String> empty = exchange(HttpMethod.POST, "/api/wf/batches", body(
+                "batchType", "INSTANCE", "criteria", body(),
+                "operations", java.util.Collections.singletonList(
+                        body("type", "setVariable", "variable", "x", "value", 1))));
+        assertEquals(HttpStatus.BAD_REQUEST, empty.getStatusCode(),
+                "空条件必须挡住，响应: " + empty.getBody());
+    }
+
+    /** 部署一个带待办的流程，返回它的 definitionKey（带时间戳，避免跨用例撞 key）。 */
+    private String deployBatchProcess() {
+        String key = "webBatchProcess-" + System.nanoTime();
+        String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<definitions xmlns=\"http://www.omg.org/spec/BPMN/20100524/MODEL\""
+                + " xmlns:zifang=\"https://zifang.com/bpmn\" targetNamespace=\"x\">\n"
+                + "  <process id=\"" + key + "\" isExecutable=\"true\">\n"
+                + "    <startEvent id=\"bs\"/>\n"
+                + "    <userTask id=\"bapprove\" name=\"批量审批\" zifang:assignee=\"batch-boss\"/>\n"
+                + "    <endEvent id=\"be1\"/>\n"
+                + "    <sequenceFlow id=\"bf1\" sourceRef=\"bs\" targetRef=\"bapprove\"/>\n"
+                + "    <sequenceFlow id=\"bf2\" sourceRef=\"bapprove\" targetRef=\"be1\"/>\n"
+                + "  </process>\n"
+                + "</definitions>\n";
+        repositoryService.deploy(new com.zifang.z.wf.core.definition.WfXmlParser().parse(xml));
+        return key;
+    }
+
+    private String createBatchOverHttp(String definitionKey) throws Exception {
+        Map<String, Object> created = asMap(postOk("/api/wf/batches", body(
+                "batchType", "INSTANCE",
+                "criteria", body("processDefinitionKey", definitionKey),
+                "operations", java.util.Collections.singletonList(
+                        body("type", "setVariable", "variable", "migrated", "value", "v2")),
+                "operatorId", "admin-web")).get("data"));
+        return (String) created.get("id");
+    }
+
+    /** 读实例的变量：走 HTTP 读的才是「线上真正看到的那份」。 */
+    private Map<String, Object> instanceVariables(String processInstanceId) throws Exception {
+        Map<String, Object> detail = asMap(getOk("/api/approval-center/processes/get?processInstanceId="
+                + processInstanceId).get("data"));
+        Map<String, Object> variables = detail.get("variables") == null
+                ? new HashMap<String, Object>() : asMap(detail.get("variables"));
+        return variables;
+    }
+
     // ==================== DMN 决策表端点 ====================
 
     /**

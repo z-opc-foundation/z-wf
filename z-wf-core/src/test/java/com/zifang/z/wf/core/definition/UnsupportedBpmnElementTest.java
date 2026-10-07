@@ -424,6 +424,57 @@ class UnsupportedBpmnElementTest {
             return 0;
         }
 
+        // 批次（第 39 轮）。理由同上：这个 stub 只关心「退化元素被部署期挡住」，
+        // 批次用不到 —— 抛异常会把它挡在真正要测的东西前面
+        @Override
+        public void saveBatch(com.zifang.z.wf.core.model.WfBatch batch) {
+        }
+
+        @Override
+        public com.zifang.z.wf.core.model.WfBatch findBatch(String id) {
+            return null;
+        }
+
+        @Override
+        public boolean deleteBatch(String id) {
+            return false;
+        }
+
+        @Override
+        public List<com.zifang.z.wf.core.model.WfBatch> queryBatches(
+                com.zifang.z.wf.core.persistence.WfBatchQuery query) {
+            return java.util.Collections.emptyList();
+        }
+
+        @Override
+        public int countBatches(com.zifang.z.wf.core.persistence.WfBatchQuery query) {
+            return 0;
+        }
+
+        @Override
+        public void saveBatchElement(com.zifang.z.wf.core.model.WfBatchElement element) {
+        }
+
+        @Override
+        public List<com.zifang.z.wf.core.model.WfBatchElement> findBatchElements(String batchId) {
+            return java.util.Collections.emptyList();
+        }
+
+        @Override
+        public List<com.zifang.z.wf.core.model.WfBatchElement> findFailedBatchElements(String batchId) {
+            return java.util.Collections.emptyList();
+        }
+
+        @Override
+        public int countBatchElements(String batchId) {
+            return 0;
+        }
+
+        @Override
+        public int deleteBatchElements(String batchId) {
+            return 0;
+        }
+
         @Override
         public int deleteJobsByExecution(String executionId) {
             return 0;

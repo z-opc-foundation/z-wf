@@ -124,10 +124,10 @@
 | FormService | ⛔ 有意排除，见 §5 |
 | AuthorizationService | ⛔ 有意排除，见 §5 |
 | FilterService（保存的查询） | ✅ | 早已实现：`WfFilterService` + `WfFilter` + `ZWF_FILTER` 表，REST `GET/POST/PUT/DELETE /api/wf/filters` 与 `GET /api/wf/filters/{id}/results`。见 §1.2。**这一行曾经长期挂着 ❌** —— 功能早就有了而能力表没跟上，读表的人会以为"保存筛选条件"得业务方自己存，于是自己又造了一套 |
-| ExternalTaskService | ✅ | 已实现（**第 8 轮起**：早先列为有意排除 —— 理由是「`serviceTask` + delegate 已覆盖同样场景，不需要额外的拉取协议」—— 后因需要接外部系统主动领活而补上，**这一条已从 §5 移除**）。`WfExternalTaskService`（fetchAndLock / complete / fail / release / list）+ `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制。REST 7 端点在 `/api/wf/external-tasks`。**剩余**：Camunda 侧的 `handleBpmnError` / `handleEscalation` 交回流程、`setVariableLocal`、外部任务优先级与批量操作 |
+| ExternalTaskService | ✅ | 已实现（**第 8 轮起**：早先列为有意排除 —— 理由是「`serviceTask` + delegate 已覆盖同样场景，不需要额外的拉取协议」—— 后因需要接外部系统主动领活而补上，**这一条已从 §5 移除**）。`WfExternalTaskService`（fetchAndLock / complete / fail / release / list）+ `TOPIC`/`LOCKED_BY`/`LOCK_AT` 三列，租约制。REST 7 端点在 `/api/wf/external-tasks`。**剩余**：Camunda 侧的 `handleBpmnError` / `handleEscalation` 交回流程、`setVariableLocal` |
 | DecisionService（DMN） | ✅ | 第 24 轮起可被 BPMN 的 `businessRuleTask` 直接调用（见 §2）。第 23 轮实现：`WfDecisionService`（`parseDecision` / `deployDecision` / `findDecisionByKey` / `findDecisionsByKey` / `deleteDecision` / `evaluateDecision`）+ `WfDmnParser` + `WfDmnEvaluator` + `ZWF_DECISION` 表（带版本，与流程定义同一套版本语义）+ REST `POST /api/wf/decisions/deploy`、`GET /api/wf/decisions/{key}`、`GET /api/wf/decisions/{key}/versions[/{version}]`、`POST /api/wf/decisions/{key}/evaluate`、`DELETE /api/wf/decisions/{key}/versions/{version}`。**六种 HitPolicy 全支持**：UNIQUE（命中多条直接报违规）/ ANY（多条输出必须一致）/ FIRST / RULE_ORDER（多结果聚合）/ COLLECT（列表）/ OUTPUT_PRIORITY（按 `outputValues` 的先后排序）。聚合器 SUM / MIN / MAX / COUNT。**单目测试补全**：`inputEntry` 省略左操作数时以该列 `inputExpression` 的值为左操作数（`> 5000` 写作 `(amount) > 5000`）；`outputValues` 列表逐项展开。**决策图已支持（第 35 轮）**：`informationRequirement/requiredDecision` 组成的有向图，求值时**按依赖关系递归展开**（不是按声明顺序跑一遍 —— 那会在依赖顺序与声明顺序不一致时算出错误结果且不报错），上游的 `<output name>` 作为其输出值进入下游的求值上下文；成环在**部署期**报错（跨文件成环也挡：环检测查的是「本文件 + 库里已部署」凑出的闭合图），挡住时一条决策都不落库。仍不支持 **DMN 文字表达式（literal expression）**（不带 `decisionTable` 的决策节点部署期报错）与 **FEEL**（`[a..b]` 区间、`date(` / `time(` / `duration(`、`@"..."` 上下文 —— 部署期挡下高置信度的那几类，其余留给运行期 fail-closed） |
 | CaseService（CMMN） | ⛔ 有意排除，见 §5 |
-| Batch | ❌ 未实现 |
+| Batch（批量操作） | ✅ | 第 39 轮实现：`WfBatchService`（createBatch / countTargets / executeBatch / suspendBatch / activateBatch / deleteBatch / queryBatches）+ `WfBatch` / `WfBatchCriteria` / `WfBatchOperation` / `WfBatchElement` + `ZWF_BATCH` / `ZWF_BATCH_ELEMENT` 两表，REST 9 端点在 `/api/wf/batches`。作用对象分 **INSTANCE / TASK / JOB** 三类；操作 `setVariable` / `setVariables` / `removeVariable` / `suspend` / `activate` / `setJobRetries` / `setPriority`。**两段式**（创建只记「改哪些改什么」，`GET /{id}/count` 先看命中数，`POST /{id}/execute` 才动手）与**逐个目标独立成败**（失败原因逐条落 `ZWF_BATCH_ELEMENT`）是两处最要紧的设计。**剩余**：Camunda 默认的异步执行（落一条 batch job 由执行器接手）本轮不做，理由见 §7 第 39 轮记录 |
 
 ---
 
@@ -2776,3 +2776,85 @@ Camunda 走 **hazard**（事务挂起等人处理、**不补偿**），本引擎
 补 hazard 需要一套「事务挂起 / 人工介入 / 恢复」的状态机，
 与本轮要解决的「取消路径」是两个量级，单列成一轮更合适。
 注意这条**不是加 transaction 引入的**：任何流程内未捕获的 error 在本仓都会终止实例。
+
+### 第 39 轮：Camunda `Batch`（批量操作）
+
+**为什么先做它。** `docs/capability-gap.md` 的服务面里 Batch 一直挂着 `❌`，
+而它是这一串运维类能力里最实用的一条：数据迁移。
+旧流程用 `approved` 布尔判断、新流程要读 `status` 枚举时，
+一次要把十万个在跑的实例改过来 —— 逐个开接口改是不可能的，
+而这些实例此刻还在被人正常办理，改量必须可控、可回查、单个失败不影响其余。
+
+**三处设计决定**
+
+1. **两段式**：创建（把「改哪些」「改什么」固化）与执行（真正动手）分开。
+   分成两段不是为了像谁 —— 是因为**「看到要改什么再决定改不改」本身就是需求**。
+   一条「把所有超时任务的 retries 清零」的操作，确认之前不该有任何数据被动。
+   REST 层也把它立住了：`POST /api/wf/batches` 只创建，
+   确认的入口是独立的 `GET /api/wf/batches/{id}/count`。
+
+2. **逐个目标独立成败**：一批 1000 个里失败了 3 个，另外 997 个照样改完，
+   失败原因逐条落 `ZWF_BATCH_ELEMENT`。
+   不这么做的后果是运维只能整批回滚 —— 而其中 997 个其实是对的。
+   ⇒ 判据盯的是「**本该改的那几个真的改到了**」，
+   不是只看 `affectedCount` 这个数（数对了但改的是别人，一样是事故）。
+
+3. **条件与操作存文本（JSON）而不是引用可变的筛选器**：
+   批次是「一次性的决定」。引用 `WfFilter` 的话，
+   「三天后执行这批」会按**三天后**那个筛选器的定义去找目标 ——
+   中间谁改过筛选器，这批要改的东西就悄悄变了，而记录上只写着「按我的待办筛选器」。
+
+**判据抓到的三个真缺陷**
+
+1. **`InMemoryWorkflowPersistence#clear()` 漏了 `compensations.clear()`**（第 37 轮遗留）。
+   后果不是「测试之间互相污染」这么轻：`clear()` 是「内存存储现在空的」这句话的兑现处，
+   漏一项就会出现「刚 clear 完，自省面板上补偿登记还有 37 条」—— 而其它九张表都是 0。
+2. **条件判空必须是「按批次类型」判，不是整体判空**。
+   传 `processDefinitionKey` 配一个 `TASK` 批次，整体看是有内容的，
+   但任务查询根本不读这个字段 ⇒ 命中**全部任务**，
+   而记录上写着「按定义 key 筛过」。这不是理论风险，前端复用了同一个表单就会这么发。
+3. **枚举字段转不动时必须报错，绝不退化成「不过滤」**。
+   退化在 `status` 上写错一个字母时的后果是「这批改的是全部实例」。
+   同一份代码里 `WfBatch.Type.fromName` 之前对未知值返回 null，
+   已改成抛出并列出合法值 —— 它的另一条调用路径是**从库里读回一行**，
+   那里遇到认不出的值是数据已损坏，返回 null 会让这行在后面变成空壳。
+
+**顺带修掉的两处「半套」**（都是写的时候发现的，不做会留下会落空的东西）
+- `WfBatch.State` 原本有 `QUEUED`（已排队等执行器）。异步执行本轮不做（理由见下），
+  留着这个态就是**一个永远到不了的状态**，记录上出现它只会让人以为有队列机制。删掉。
+- `InMemoryWorkflowPersistence` 与 `JdbcWorkflowPersistence` 的实体名单必须同步，
+  忘了同步的症状是「自省面板上某张表的行数等于隔壁表的行数」，**没有任何报错**。
+
+**本轮明确记下的缺口（不是遗漏，是取舍）：Camunda 的 `executeBatch` 默认异步。**
+Camunda 把执行做成一条 batch job 交执行器接手；本轮只提供同步执行。
+**具体原因**：`ZWF_JOB.PROC_ID` 是 `NOT NULL` —— job 必须挂在某个流程实例上，
+而批次不属于任何流程实例。要么塞一个假的实例 id（那是造假而不是实现），
+要么把该列放宽成可空并为**已建表**做一次改写，而
+`CREATE TABLE IF NOT EXISTS` 无法改变已存在的列。后者成本与风险都远超这一轮该付的。
+代价如实记着：目标极多时单次执行会长时间占着调用线程。
+⇒ 补它的正确形态是**复用引擎既有的 job 执行器**（`executeDueJobs(Date)` 那一套）
+而不是另造一个队列。
+
+**反向验证 13/13 红 + 对照全绿**（`/tmp/verify_r39.py`）。
+
+其中**两条变异第一版是错的，值得记下来**：
+
+- **M2 第一版把整个 `catch` 删掉了** —— 那留下一个空 `try{}`，**编译不过**。
+  而编译失败按纪律不算 RED，于是这一轮被记成「判据不敏感」。
+  改成「抓到再原样抛出去」：同样能编译，效果也一样（第一个目标失败就中断整批）。
+- **M6 第一版把判据里的类型从 `batchType` 换成了 `JOB`** ——
+  那不是「关掉判据」，是「换个类型去判」：空条件对 JOB 也算空，
+  于是目标用例照样绿，而另外 16 个用例全红。
+  ⇒ **变异打偏时，harness 报的「没红」是在说变异本身，不是判据**。
+  真正的判据没红，被红的那 16 个反而是变异生效的证据。
+
+**测试自身写错的四处**（都不是产品缺陷，记下来是因为它们都属于同一类：
+「看起来在断言某件事，实际断言的是另一件」）
+- 两个 job 夹具**没给 `setId`** —— `saveJob` 少了 id 会静默丢弃，
+  症状是「断言说命中 0 个」，看不出是自己少给了 id。
+- REST 层一条断言拿**实例的 `startTime`** 当「批次没执行」的判据 ——
+  那是**流程自己**的启动时间，实例一建出来就有，与批次毫无关系。
+- 一条断言写成 `assertNull(done.getFailureCount() == 0 ? "0 个失败" : null)`
+  —— 那等于断言「字符串不是字符串」。
+- admin 端到端里对一个**尚不存在**的变量调 `.contains`，NPE 指向不到真正原因；
+  换成 `assertNull`。读实例变量的 URL 也第一次猜错了（404），查了真实端点才对。
