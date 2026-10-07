@@ -385,6 +385,27 @@ class UnsupportedBpmnElementTest {
             return 0;
         }
 
+        // 补偿登记（第 37 轮）。这个 stub 只关心「退化元素被部署期挡住」，
+        // 补偿用不到 —— 返回空而不是抛异常，免得它挡着这条用例真正要测的东西。
+        @Override
+        public void saveCompensation(com.zifang.z.wf.core.model.WfCompensationEntry entry) {
+        }
+
+        @Override
+        public List<com.zifang.z.wf.core.model.WfCompensationEntry> findCompensations(String id) {
+            return java.util.Collections.emptyList();
+        }
+
+        @Override
+        public int markCompensated(String id, java.util.Date when) {
+            return 0;
+        }
+
+        @Override
+        public int deleteCompensationsByProcessInstance(String processInstanceId) {
+            return 0;
+        }
+
         @Override
         public int deleteJobsByExecution(String executionId) {
             return 0;

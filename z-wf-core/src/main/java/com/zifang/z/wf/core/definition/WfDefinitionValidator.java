@@ -153,6 +153,10 @@ public class WfDefinitionValidator {
             if (node.getType() == WfNodeType.BOUNDARY_EVENT) {
                 validateBoundaryEvent(node, definition);
             }
+            // ---- 补偿（第 37 轮）----
+            if (node.isForCompensation() || node.isCompensationBoundary()) {
+                validateCompensationNode(definition, node);
+            }
             // ---- 多实例（会签 / 或签）----
             validateMultiInstance(node);
             // ---- 终止结束事件（第 36 轮）----
@@ -195,14 +199,185 @@ public class WfDefinitionValidator {
             }
         }
 
+        // ---- 关联线（第 37 轮）----
+        validateAssociations(definition, ids);
+
         validateGraphShape(definition, ids);
 
         return result();
     }
 
     /**
-     * 同一条消息 / 信号不得对应两个起始节点。
+     * 补偿相关节点的结构合法性（第 37 轮）。
      *
+     * <p>覆盖两类节点：
+     * <ul>
+     *   <li><b>补偿处理器</b>（{@code isForCompensation="true"}）</li>
+     *   <li><b>补偿边界事件</b>（含 {@code <compensateEventDefinition/>}）</li>
+     * </ul>
+     *
+     * <p>每一条规则挡掉的都是「能部署、补偿静默不发生或发生错」：
+     * 补偿不发生时流程照常跑完，<b>全程没有任何报错</b>，
+     * 业务上要等到「该退的款没退」才有人发现。
+     */
+    private void validateCompensationNode(WfDefinition definition, WfNode node) {
+        if (node.isForCompensation()) {
+            validateCompensationHandler(definition, node);
+        }
+        if (node.isCompensationBoundary()) {
+            validateCompensationBoundary(definition, node);
+        }
+    }
+
+    /**
+     * 补偿处理器必须是「<b>能一次跑完</b>的活动」，且不能挂在流程路径上。
+     *
+     * <p>三条规则：
+     * <ol>
+     *   <li><b>类型要是同步可完成的活动</b>。补偿的语义是「退完了才继续」，
+     *       所以处理器必须当场跑完；人工任务要等人、子流程要建自己的 token 树、
+     *       网关要分叉 —— 这些都会把撤销卡在半路。
+     *       放行人工补偿的具体后果：补偿建出一条待办，而实例并没有因此挂起，
+     *       于是撤销永远等不到它办结，后续步骤在「退了一半」的状态下继续跑。</li>
+     *   <li><b>不能有入线</b>。处理器在正常路径上永远不会被 token 走到；
+     *       给它接一条入线，症状是「补偿 handler 出现在正常流程里」——
+     *       真的会被执行一次（当它是普通后继节点），于是退款在正轨上先退了一遍。</li>
+     *   <li><b>不能有出线</b>。同理，接了出线意味着作者期待它往下走，
+     *       而补偿执行完就结束了，那条线永远走不到。</li>
+     * </ol>
+     */
+    private void validateCompensationHandler(WfDefinition definition, WfNode node) {
+        WfNodeType type = node.getType();
+        // 这四种的 behavior 都是「调一段外部逻辑然后立刻返回」，当场跑完。
+        // userTask 建待办、subProcess/callActivity 建 token 树、网关分叉 ——
+        // 它们都需要「引擎停在这里等一会儿」，而补偿没有那个等待点。
+        boolean executable = type == WfNodeType.SERVICE_TASK
+                || type == WfNodeType.SCRIPT_TASK
+                || type == WfNodeType.SEND_TASK
+                || type == WfNodeType.BUSINESS_RULE_TASK;
+        if (!executable) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "isForCompensation=\"true\" 只能标在能一次跑完的活动上"
+                            + "（serviceTask / scriptTask / sendTask / businessRuleTask），"
+                            + "当前节点类型是 " + type + "。"
+                            + (type == WfNodeType.USER_TASK
+                                    ? "人工补偿任务要等人办结，而补偿的语义是「退完了才继续」——"
+                                    + "本引擎当前没有「实例挂起等人办结补偿后再恢复」的状态机，"
+                                    + "放行的话撤销会建出一条待办并停在半路"
+                                    : "它需要 token 树或分叉才能执行，"
+                                    + "而补偿触发时没有可用的上下文"));
+        }
+        if (!definition.incomingFlows(node.getId()).isEmpty()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "补偿处理器 " + node.getId() + " 不能有入线。"
+                            + "它在正常路径上不会被 token 走到（只有 <association> 能在补偿时触发它），"
+                            + "接了入线却会被当成普通后继节点真的执行一次 —— "
+                            + "于是补偿动作在流程正轨上先发生了一遍");
+        }
+        if (!definition.outgoingFlows(node.getId()).isEmpty()) {
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "补偿处理器 " + node.getId() + " 不能有出线。"
+                            + "补偿执行完就结束了，接的出线永远走不到；"
+                            + "要继续往下走请用正常的 sequenceFlow 另起一条路径");
+        }
+        // 补偿处理器上不得再挂补偿边界事件 —— 这条是<b>防递归</b>，不是防画错。
+        // 处理器完成时会被登记成一条新的可补偿登记（它确实是「做完的一件事」），
+        // 下次撤销就会再触发它，而它触发的又是自己 ⇒ 每次撤销都真的执行一遍退款，
+        // 且这个循环只在同一作用域被撤销第二次时才会显形，排查时极难看出因果。
+        List<WfNode> nestedBoundaries = definition.compensationBoundariesOf(node.getId());
+        if (!nestedBoundaries.isEmpty()) {
+            List<String> ids = new ArrayList<>();
+            for (WfNode boundary : nestedBoundaries) {
+                ids.add(boundary.getId());
+            }
+            add(WfValidationIssue.Severity.ERROR, node.getId(),
+                    "补偿处理器 " + node.getId() + " 上不能挂补偿边界事件: " + ids
+                            + "。它完成时会被登记成新的可补偿项，下次撤销就会再触发它 —— "
+                            + "而它触发的又是自己，于是每撤销一次就真的执行一遍退款。"
+                            + "「退什么」写在普通活动的边界事件上，「怎么退」才放在处理器上");
+        }
+    }
+
+    /**
+     * 补偿边界事件：必须能找到它要执行的处理器。
+     *
+     * <p>「找不到处理器」是本机制最隐蔽的一种坏法：定义部署成功、补偿边界事件挂在图上、
+     * 触发时引擎找不到要执行的东西 ⇒ 什么都不发生，且没有报错。
+     */
+    private void validateCompensationBoundary(WfDefinition definition, WfNode boundary) {
+        if (definition.compensationHandlersOf(boundary.getId()).isEmpty()) {
+            add(WfValidationIssue.Severity.ERROR, boundary.getId(),
+                    "补偿边界事件 " + boundary.getId() + " 没有任何关联的补偿处理器。"
+                            + "要用 <association sourceRef=\"" + boundary.getId()
+                            + "\" targetRef=\"处理器id\"/> 把它们连起来。"
+                            + "不连的话补偿被触发时无事发生，而流程照常跑完，没有任何报错");
+        }
+        String activityRef = boundary.compensationActivityRef();
+        if (activityRef != null && definition.node(activityRef) == null) {
+            add(WfValidationIssue.Severity.ERROR, boundary.getId(),
+                    "compensateEventDefinition 的 activityRef 指向不存在的活动: " + activityRef
+                            + "。补偿会去找那个活动的补偿处理器，而它在这份定义里不存在");
+        }
+        if (boundary.getType() != WfNodeType.BOUNDARY_EVENT) {
+            add(WfValidationIssue.Severity.ERROR, boundary.getId(),
+                    "compensateEventDefinition 只能写在 boundaryEvent 上，当前节点类型是 "
+                            + boundary.getType() + "。补偿边界事件靠宿主 token 仍在该活动上才触发");
+        }
+    }
+
+    /**
+     * {@code <association>} 的两端必须是补偿结构（第 37 轮）。
+     *
+     * <p>端点写错的 association 不会被任何其他规则兜住 —— 它既不是节点也不是连线，
+     * 连线级校验看不到它，而它静默失效的后果是「补偿不发生」。
+     */
+    private void validateAssociations(WfDefinition definition, Set<String> ids) {
+        List<WfAssociation> associations = definition.getAssociations();
+        if (associations == null) {
+            return;
+        }
+        for (WfAssociation association : associations) {
+            if (association == null) {
+                add(WfValidationIssue.Severity.ERROR, null, "存在 null 关联线");
+                continue;
+            }
+            String sourceId = association.getSourceRef();
+            String targetId = association.getTargetRef();
+            WfNode source = sourceId == null ? null : definition.node(sourceId);
+            WfNode target = targetId == null ? null : definition.node(targetId);
+            if (source == null) {
+                add(WfValidationIssue.Severity.ERROR, sourceId,
+                        "association " + nameOf(association) + " 的 sourceRef 指向不存在的节点: " + sourceId);
+                continue;
+            }
+            if (target == null) {
+                add(WfValidationIssue.Severity.ERROR, targetId,
+                        "association " + nameOf(association) + " 的 targetRef 指向不存在的节点: " + targetId);
+                continue;
+            }
+            if (!source.isCompensationBoundary()) {
+                add(WfValidationIssue.Severity.ERROR, source.getId(),
+                        "association " + nameOf(association) + " 的 source 端 " + source.getId()
+                                + " 不是补偿边界事件（没有 <compensateEventDefinition/>），"
+                                + "类型是 " + source.getType() + "。它不会被补偿机制触发，"
+                                + "这条关联等于没有");
+            }
+            if (!target.isForCompensation()) {
+                add(WfValidationIssue.Severity.ERROR, target.getId(),
+                        "association " + nameOf(association) + " 的 target 端 " + target.getId()
+                                + " 没有标 isForCompensation=\"true\"。"
+                                + "补偿执行的是一个反向动作，而这个节点在正常路径上就会被 token 走到 —— "
+                                + "把它当补偿处理器会让同一段逻辑跑两遍");
+            }
+        }
+    }
+
+    private String nameOf(WfAssociation association) {
+        return association.getId() == null ? "(无 id)" : association.getId();
+    }
+
+    /**
+     * 同一条消息 / 信号不得对应两个起始节点。     *
      * <p>分两类报：<b>同一个定义内</b>重复是定义本身有问题；
      * <b>同一 key 的不同版本</b>重复则是升级时新增了一个同名起始节点 ——
      * 后者同样要报，因为"按消息启动"是不带版本号找定义的，
@@ -1263,6 +1438,13 @@ public class WfDefinitionValidator {
         } else if (node.isMessageBoundary() || node.isSignalBoundary()
                 || node.isEscalationEvent()) {
             // 消息/信号/升级边界本身合法（缺名字的情况上面已单独报过）
+        } else if (node.isCompensationBoundary()) {
+            // 补偿边界事件（第 37 轮）自身合法：它不是靠「外部发生了什么」触发的，
+            // 而是引擎在补偿被触发时由 <association> 找到它再去执行处理器。
+            // 掉进下面的 else 会被说成「没有任何触发条件，永远不会触发」——
+            // 而作者确实无从判断这句话指哪里：他写的就是 <compensateEventDefinition/>。
+            // 与 timer/message/signal 同一支的理由相同：它是「已认出的触发类型」之一，
+            // 缺关联处理器的情况已由 validateCompensationBoundary 单独报出。
         } else if (isBlank(node.getErrorCode())) {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
                     "boundaryEvent 既没有 errorCode（errorEventDefinition/@errorRef）"
@@ -1276,6 +1458,12 @@ public class WfDefinitionValidator {
             add(WfValidationIssue.Severity.ERROR, node.getId(),
                     "boundaryEvent 不该有入线。它靠宿主节点出错时被触发，"
                             + "被 sequenceFlow 指到说明画成了普通流程节点");
+        }
+        // 补偿边界事件没有出线（第 37 轮）：它触发之后不是「沿某条线继续走」，
+        // 而是「执行 <association> 指向的补偿处理器」，走完补偿就结束了。
+        // 要求它有出线，等于要求作者画一条永远走不到的线来消警告。
+        if (node.isCompensationBoundary()) {
+            return;
         }
         List<WfFlow> outgoing = definition.outgoingFlows(node.getId());
         if (outgoing == null || outgoing.isEmpty()) {

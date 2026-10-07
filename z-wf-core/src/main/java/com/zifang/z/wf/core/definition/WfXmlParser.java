@@ -267,8 +267,31 @@ public class WfXmlParser {
             }
         }
 
+        // ---- 关联线（第 37 轮）----
+        // 与 sequenceFlow 分开收：它不承载 token，混进 flows 会让「沿边走」和
+        // 「只在补偿时走」两种语义共用一个列表，遍历出线的代码漏判一次就会把
+        // 补偿处理器当成普通后继节点执行。
+        List<WfAssociation> associations = new ArrayList<>();
+        for (Element element : elements(process, "association")) {
+            if (!isDirectChildOf(process, element)) {
+                continue;
+            }
+            String sourceRef = attr(element, "sourceRef");
+            String targetRef = attr(element, "targetRef");
+            if (sourceRef == null || targetRef == null) {
+                // 端点缺失报解析期错误而不是丢进校验器：association 不是流程图上的边，
+                // 丢了不会有任何「孤立节点」之类的兜底消息，作者只会看到补偿安静地不发生。
+                throw new WfDefinitionException("BPMN XML 中 association "
+                        + (attr(element, "id") == null ? "(无 id)" : attr(element, "id"))
+                        + " 缺少 " + (sourceRef == null ? "sourceRef" : "targetRef")
+                        + "：关联线的两端必须写全，否则无法判断它关联了谁");
+            }
+            associations.add(new WfAssociation(attr(element, "id"), sourceRef, targetRef));
+        }
+
         definition.setNodes(nodes);
         definition.setFlows(flows);
+        definition.setAssociations(associations);
         definition.buildIndex();
         return definition;
     }
@@ -343,6 +366,20 @@ public class WfXmlParser {
         Element errorDef = childElement(element, "errorEventDefinition");
         if (errorDef != null) {
             node.setErrorCode(errorDef.getAttribute("errorRef"));
+        }
+        // ---- 补偿（第 37 轮）----
+        // isForCompensation 在活动元素上，compensateEventDefinition 在边界事件内部。
+        // 两个都不是 zifang 扩展，是标准 BPMN 的属性/子元素，所以读 attr 与 childElement。
+        if ("true".equalsIgnoreCase(attr(element, "isForCompensation"))) {
+            node.getProperties().put(WfNode.PROPERTY_FOR_COMPENSATION, Boolean.TRUE);
+        }
+        Element compensateDef = childElement(element, "compensateEventDefinition");
+        if (compensateDef != null) {
+            node.getProperties().put(WfNode.PROPERTY_COMPENSATION_BOUNDARY, Boolean.TRUE);
+            String activityRef = attr(compensateDef, "activityRef");
+            if (activityRef != null) {
+                node.getProperties().put(WfNode.PROPERTY_COMPENSATION_ACTIVITY_REF, activityRef);
+            }
         }
         parseTimerDefinition(element, node);
         parseEventDefinition(element, node);

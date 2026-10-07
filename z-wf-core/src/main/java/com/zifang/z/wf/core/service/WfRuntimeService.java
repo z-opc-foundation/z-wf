@@ -28,6 +28,7 @@ import com.zifang.z.wf.core.engine.WfSubProcessLauncher;
 import com.zifang.z.wf.core.hook.WfHookDispatcher;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
+import com.zifang.z.wf.core.model.WfCompensationEntry;
 import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfJobType;
@@ -2922,6 +2923,11 @@ public class WfRuntimeService implements WfSubProcessLauncher {
      * 「这条路径上抛的事件从来没送出去」，而流程看上去完全正常。
      */
     private void finishTransaction(WfContext context) {
+        saveCompensations(context);
+        // 补偿必须排在终止**之前**：Camunda 的语义是「撤销时先退后撤」，
+        // 顺序反过来等于先把要退的东西毁掉再去做补偿 ——
+        // 而补偿处理器往往要把那份数据找回来才能退。
+        applyCompensation(context);
         applyTerminateScope(context);
         resolveCompletion(context);
         boolean hadEvent = !context.getPendingEvents().isEmpty();
@@ -2932,6 +2938,143 @@ public class WfRuntimeService implements WfSubProcessLauncher {
                 refreshInstanceInPlace(self);
             }
         }
+    }
+
+    /**
+     * 把本次推进登记的补偿<b>落库</b>（第 37 轮）。
+     *
+     * <p>引擎只登记意图（{@code WfContext.getPendingCompensations()}），
+     * 落库在这里做 —— 与 {@code terminateScope} / {@code pendingEvents} 同一套形状。
+     *
+     * <p><b>seq 必须接着已有登记往下排</b>：实例跑过几轮之后表里已经有几十行，
+     * 每条新登记都从 1 开始会让两次登记拿到同一个 seq，
+     * 而逆序补偿靠 seq 定序，同 seq 就是随机序。
+     */
+    private void saveCompensations(WfContext context) {
+        List<String> pending = context.getPendingCompensations();
+        WfProcessInstance instance = context.getProcessInstance();
+        if (pending == null || pending.isEmpty() || instance == null
+                || instance.getId() == null) {
+            return;
+        }
+        String processInstanceId = instance.getId();
+        long base = 0;
+        for (WfCompensationEntry existing : persistence.findCompensations(processInstanceId)) {
+            base = Math.max(base, existing.getSeq());
+        }
+        long seq = base;
+        for (String activityId : pending) {
+            WfCompensationEntry entry = new WfCompensationEntry();
+            entry.setId(idGenerator.nextCompensationId());
+            entry.setProcessInstanceId(processInstanceId);
+            entry.setActivityId(activityId);
+            entry.setScope(context.getCompensationScopeOf(activityId));
+            entry.setSeq(++seq);
+            entry.setRegisteredAt(new Date());
+            persistence.saveCompensation(entry);
+        }
+        context.getPendingCompensations().clear();
+    }
+
+    /**
+     * 撤销发生时<b>逆序执行补偿</b>（第 37 轮）。
+     *
+     * <p><b>本轮只有作用域终止会触发补偿</b>（{@code terminateEndEvent}）。
+     * Camunda 的 {@code cancelEndEvent} 与 {@code transaction} 也走这里 ——
+     * 那两个元素要到第 38 轮，届时只补触发点，本方法不变。
+     *
+     * <p><b>逆序不是风格问题</b>：后做的先撤。退款在退订之前做完是对的，
+     * 反过来会把钱退在已经作废的订单上。
+     *
+     * <p><b>只退同一作用域</b>：内层子流程终止不能顺手撤掉外层已完成的步骤 ——
+     * 那些步骤在流程层面仍然是有效的。
+     */
+    private void applyCompensation(WfContext context) {
+        if (!context.isTerminateRequested()) {
+            return;
+        }
+        WfProcessInstance instance = context.getProcessInstance();
+        if (instance == null || instance.getId() == null) {
+            return;
+        }
+        String processInstanceId = instance.getId();
+        String scope = context.getTerminateScope();
+        List<WfCompensationEntry> entries = persistence.findCompensations(processInstanceId);
+        if (entries == null || entries.isEmpty()) {
+            return;
+        }
+        // 逆序：后做的先撤。entries 本身按 seq 正序（见 WfPersistence#findCompensations），
+        // 从尾部往前取就是逆序 —— 不在这里重新排序是为了让「取出来的顺序 == 退的顺序」
+        // 这件事在读代码时一眼可见，而不是要读者自己去对 sort 的方向。
+        for (int i = entries.size() - 1; i >= 0; i--) {
+            WfCompensationEntry entry = entries.get(i);
+            if (entry.isDone() || !scope.equals(nullToEmpty(entry.getScope()))) {
+                continue;
+            }
+            compensateOne(context, instance, entry);
+        }
+    }
+
+    private static String nullToEmpty(String value) {
+        return value == null ? "" : value;
+    }
+
+    /**
+     * 执行一条登记对应的补偿：建一条**临时 token** 指向补偿处理器，跑完即结束。
+     *
+     * <p>为什么需要 token：{@code WfJavaDelegate#execute(context, execution)} 要 execution，
+     * 而业务方的 delegate 普遍从它上面读实例 id 与变量 —— 直接反射调 handler
+     * 等于把这些契约全废掉，让补偿处理器与同名的正常 serviceTask 行为不一致。
+     *
+     * <p>临时 token 跑完自己就结束了：补偿处理器按 BPMN 规范<b>没有出线</b>
+     * （本仓的校验器强制这一点），{@code WfEngine#leave} 遇到没有出线的节点
+     * 会正常结束这条 token。所以这里不需要额外收尾。
+     */
+    private void compensateOne(WfContext context, WfProcessInstance instance,
+                               WfCompensationEntry entry) {
+        WfDefinition definition = context.getDefinition();
+        String targetId = entry.getActivityId();
+        List<WfNode> boundaries = definition.compensationBoundariesOf(targetId);
+        if (boundaries.isEmpty()) {
+            // 登记的行找不到边界事件（定义被换过版本、或 activityRef 指错了）。
+            // 记一条评论而不是静默跳过：静默跳过的后果是「该退的没退」且无人知晓 ——
+            // 而终止照样发生、实例照样完成，轨迹上一片正常。
+            persistence.saveComment(new WfComment(idGenerator.nextCommentId(),
+                    instance.getId(), null, "compensation",
+                    "补偿登记 " + entry.getId() + " 指向的活动 " + targetId
+                            + " 在当前版本的定义里没有补偿边界事件，无法补偿。"
+                            + "多半是定义换版本后登记行留了下来"));
+            log.warn("流程 {} 的补偿登记 {} 找不到活动 {} 的补偿边界事件",
+                    instance.getId(), entry.getId(), targetId);
+            return;
+        }
+        context.setInCompensation(true);
+        try {
+            for (WfNode boundary : boundaries) {
+                for (WfNode handler : definition.compensationHandlersOf(boundary.getId())) {
+                    runCompensationHandler(context, instance, entry, handler);
+                }
+            }
+        } finally {
+            context.setInCompensation(false);
+        }
+        persistence.markCompensated(entry.getId(), new Date());
+    }
+
+    private void runCompensationHandler(WfContext context, WfProcessInstance instance,
+                                        WfCompensationEntry entry, WfNode handler) {
+        WfExecution token = new WfExecution(idGenerator.nextExecutionId(),
+                instance.getId(), handler.getId());
+        token.setState(WfExecution.State.ACTIVE);
+        token.setEnteredTime(new Date());
+        persistence.saveExecution(token);
+
+        WfContext handlerContext = newContext(context.getDefinition(), instance, token);
+        handlerContext.setInCompensation(true);
+        handlerContext.setProcessExecutions(
+                persistence.findExecutionsByProcessInstance(instance.getId()));
+        engine.enterAt(handlerContext, token);
+        persistAll(handlerContext);
     }
 
     /**

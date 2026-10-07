@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.zifang.util.json.JsonUtil;
+import com.zifang.z.wf.core.definition.WfAssociation;
 import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.WfFlow;
 import com.zifang.z.wf.core.definition.WfNode;
@@ -47,6 +48,17 @@ public final class WfDefinitionCodec {
         private String description;
         private List<GraphNode> nodes = new ArrayList<>();
         private List<GraphFlow> flows = new ArrayList<>();
+
+        /** 关联线（第 37 轮）：补偿边界事件 ↔ 补偿处理器。 */
+        private List<GraphAssociation> associations = new ArrayList<>();
+
+        public List<GraphAssociation> getAssociations() {
+            return associations;
+        }
+
+        public void setAssociations(List<GraphAssociation> associations) {
+            this.associations = associations;
+        }
 
         public String getKey() {
             return key;
@@ -102,6 +114,47 @@ public final class WfDefinitionCodec {
 
         public void setFlows(List<GraphFlow> flows) {
             this.flows = flows == null ? new ArrayList<GraphFlow>() : flows;
+        }
+    }
+
+    /**
+     * 关联线快照（第 37 轮）。
+     *
+     * <p>刻意<b>不带 properties</b>：{@link com.zifang.z.wf.core.definition.WfAssociation}
+     * 只有三个字段，且语义固定（BPMN 规范里 association 就这三个属性）。
+     * 给它挂一个永远空的扩展槽，是为了让「将来可能用到」这种假设先落进数据结构 ——
+     * 真要加时补上，那时该连着它的往返判据一起补。
+     */
+    public static class GraphAssociation implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private String id;
+        private String sourceRef;
+        private String targetRef;
+
+        public String getId() {
+            return id;
+        }
+
+        public void setId(String id) {
+            this.id = id;
+        }
+
+        public String getSourceRef() {
+            return sourceRef;
+        }
+
+        public void setSourceRef(String sourceRef) {
+            this.sourceRef = sourceRef;
+        }
+
+        public String getTargetRef() {
+            return targetRef;
+        }
+
+        public void setTargetRef(String targetRef) {
+            this.targetRef = targetRef;
         }
     }
 
@@ -715,6 +768,22 @@ public final class WfDefinitionCodec {
         }
         graph.setFlows(flows);
 
+        // 关联线（第 37 轮）。不落库的后果是重启后补偿边界事件找不到处理器 ——
+        // 而症状是「补偿安静地不发生」，流程照常跑完，没有任何报错。
+        List<GraphAssociation> associations = new ArrayList<>();
+        for (WfAssociation association : definition.getAssociations()) {
+            if (association == null || association.getSourceRef() == null
+                    || association.getTargetRef() == null) {
+                continue;
+            }
+            GraphAssociation ga = new GraphAssociation();
+            ga.setId(association.getId());
+            ga.setSourceRef(association.getSourceRef());
+            ga.setTargetRef(association.getTargetRef());
+            associations.add(ga);
+        }
+        graph.setAssociations(associations);
+
         return JsonUtil.toJson(graph);
     }
 
@@ -828,6 +897,19 @@ public final class WfDefinitionCodec {
             flows.add(flow);
         }
         definition.setFlows(flows);
+
+        List<WfAssociation> associations = new ArrayList<>();
+        // 老库里没有这个字段 ⇒ 读回来是 null ⇒ 按空处理，不抛：
+        // 与上面 timerType 的取舍同一条，升级不能让整批存量定义读不出来。
+        if (graph.getAssociations() != null) {
+            for (GraphAssociation ga : graph.getAssociations()) {
+                if (ga == null || ga.getSourceRef() == null || ga.getTargetRef() == null) {
+                    continue;
+                }
+                associations.add(new WfAssociation(ga.getId(), ga.getSourceRef(), ga.getTargetRef()));
+            }
+        }
+        definition.setAssociations(associations);
 
         definition.buildIndex();
         return definition;

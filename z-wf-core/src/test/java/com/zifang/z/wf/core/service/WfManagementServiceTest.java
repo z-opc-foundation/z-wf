@@ -23,6 +23,7 @@ import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
+import com.zifang.z.wf.core.model.WfCompensationEntry;
 import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfFilter;
 import com.zifang.z.wf.core.model.WfJob;
@@ -61,7 +62,7 @@ class WfManagementServiceTest {
         assertTrue(String.valueOf(memory.get("storage")).contains("不落库"),
                 "内存存储要把「重启即失」写进返回值：这是排障时最先要确认的一条。实际: "
                         + memory.get("storage"));
-        assertEquals(9, memory.get("storageCount"));
+        assertEquals(10, memory.get("storageCount"));
 
         Map<String, Object> jdbc = propsOf(jdbcPersistence());
         assertEquals("jdbc", jdbc.get("persistence"));
@@ -264,6 +265,14 @@ class WfManagementServiceTest {
         for (int i = 1; i <= 7; i++) {                                                 // 7
             memory.saveDecision(new WfDmnDecision("d" + i, "决策" + i));
         }
+        for (int i = 1; i <= 9; i++) {                                                 // 9
+            WfCompensationEntry entry = new WfCompensationEntry();
+            entry.setId("cmp" + i);
+            entry.setProcessInstanceId("p1");
+            entry.setActivityId("act" + i);
+            entry.setSeq(i);
+            memory.saveCompensation(entry);
+        }
 
         Map<String, Long> expected = new java.util.LinkedHashMap<>();
         expected.put("ZWF_DEFINITION", 3L);
@@ -275,17 +284,18 @@ class WfManagementServiceTest {
         expected.put("ZWF_COMMENT", 6L);
         expected.put("ZWF_FILTER", 8L);
         expected.put("ZWF_DECISION", 7L);
+        expected.put("ZWF_COMPENSATION", 9L);
         assertEquals(new java.util.TreeSet<>(expected.keySet()),
                 new java.util.TreeSet<>(InMemoryWorkflowPersistence.STORAGE_NAMES),
-                "这里造的九项必须与存储项名单一一对应 —— 名单多一项或少一项，"
+                "这里造的十项必须与存储项名单一一对应 —— 名单多一项或少一项，"
                         + "下面的断言就只覆盖了其中一部分。**比集合不比顺序**："
                         + "这里要验的是「覆盖完整」，不是「顺序一致」");
 
         WfManagementService service = new WfManagementService(memory);
         for (java.util.Map.Entry<String, Long> entry : expected.entrySet()) {
             assertEquals(entry.getValue(), service.getTableCount(entry.getKey()),
-                    entry.getKey() + " 数错了。九项各造了互不相同的条数就是为了抓住串味 —— "
-                            + "如果这八项里有两项碰巧相等，下面这条断言就抓不住");
+                    entry.getKey() + " 数错了。十项各造了互不相同的条数就是为了抓住串味 —— "
+                            + "如果这十项里有两项碰巧相等，下面这条断言就抓不住");
         }
     }
 
@@ -358,8 +368,8 @@ class WfManagementServiceTest {
         assertEquals(1, new WfManagementService(repo).getTableCount("ZWF_PROCESS"));
         Map<String, Object> properties = new WfManagementService(repo).getProperties();
         assertNotNull(properties.get("storageCount"));
-        assertEquals(9, properties.get("storageCount"),
-                "建完表之后应当报满九张 —— 与「未迁移时报空」那条互为对照");
+        assertEquals(10, properties.get("storageCount"),
+                "建完表之后应当报满十张 —— 与「未迁移时报空」那条互为对照");
     }
 
     @Test
@@ -374,7 +384,7 @@ class WfManagementServiceTest {
                     "名字 " + evil + " 绝不能被拼进 SQL");
         }
         // 确认表还在（上面那串没有造成任何影响）
-        assertEquals(9, service.getTables().size());
+        assertEquals(10, service.getTables().size());
     }
 
     @Test

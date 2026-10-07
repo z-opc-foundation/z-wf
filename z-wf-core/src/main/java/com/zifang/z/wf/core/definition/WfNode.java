@@ -805,6 +805,69 @@ public class WfNode implements Serializable {
         return value == null ? null : String.valueOf(value);
     }
 
+    // ==================== 补偿（第 37 轮） ====================
+    //
+    // 三个属性都放在 properties 里而不是做成顶层字段，理由有二：
+    //   ① WfDefinitionCodec 对 properties 是整包拷贝（编解码两侧都是
+    //      new HashMap<>(node.getProperties())），走这里就不用改持久化表结构；
+    //   ② 它们与上面两个 PROPERTY_* 是同一类信息 —— 「这个元素在 BPMN 里的
+    //      结构角色」，而不是「这个节点要做什么」，顶层字段留给后者。
+
+    /** {@code isForCompensation="true"}：本活动是一个**补偿处理器**（第 37 轮）。 */
+    public static final String PROPERTY_FOR_COMPENSATION = "zifang:forCompensation";
+
+    /** 本节点是挂在活动上的**补偿边界事件**（含 {@code <compensateEventDefinition/>}）。 */
+    public static final String PROPERTY_COMPENSATION_BOUNDARY = "zifang:compensationBoundary";
+
+    /** {@code compensateEventDefinition@activityRef}：不填时用宿主活动。 */
+    public static final String PROPERTY_COMPENSATION_ACTIVITY_REF = "zifang:compensationActivityRef";
+
+    /**
+     * 本活动是不是**补偿处理器**（{@code isForCompensation="true"}）。
+     *
+     * <p>补偿处理器在正常路径上<b>永远不会被 token 走到</b>：它由
+     * {@code <association>} 关联到某个补偿边界事件，只有那次补偿被触发时才执行。
+     * 所以它天然没有入线 —— 这正是 {@link WfDefinition#unconditionalStartNodes()}
+     * 必须显式排除它的原因，否则「无入线」这一条会让每个画了补偿的流程
+     * 凭空多出一个无条件入口，部署期报「存在多个无条件开始节点」。
+     */
+    public boolean isForCompensation() {
+        return boolProperty(this, PROPERTY_FOR_COMPENSATION);
+    }
+
+    /** 本节点是不是补偿边界事件。 */
+    public boolean isCompensationBoundary() {
+        return boolProperty(this, PROPERTY_COMPENSATION_BOUNDARY);
+    }
+
+    /**
+     * 补偿边界事件上 {@code activityRef} 指定的补偿目标活动。
+     *
+     * @return 活动 id；没写 {@code activityRef} 则返回 {@code null}，
+     *         此时目标就是这条边界事件的宿主
+     */
+    public String compensationActivityRef() {
+        Object value = property(PROPERTY_COMPENSATION_ACTIVITY_REF);
+        return value == null || String.valueOf(value).trim().isEmpty()
+                ? null : String.valueOf(value).trim();
+    }
+
+    /**
+     * 读 properties 里的布尔值，字符串 {@code "true"} 也算 true。
+     *
+     * <p>走 properties 的代价是值要经过 JSON 一趟：写进去时是 {@link Boolean}，
+     * 读回来未必还是同一个类（换一套 JSON 库就可能是 {@code "true"} 字符串）。
+     * 这里两种都认，比让「重启后补偿突然全都不触发」更好 ——
+     * 那条症状没有任何报错，只是补偿安静地不做了。
+     */
+    private static boolean boolProperty(WfNode node, String key) {
+        Object value = node.property(key);
+        if (value instanceof Boolean) {
+            return (Boolean) value;
+        }
+        return value != null && "true".equalsIgnoreCase(String.valueOf(value).trim());
+    }
+
     public WfNode() {
     }
 

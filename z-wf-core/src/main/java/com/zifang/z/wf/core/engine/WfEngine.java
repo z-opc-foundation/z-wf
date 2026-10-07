@@ -918,6 +918,31 @@ public class WfEngine {
         // 30 分钟后定时器照样响，把一条正常结束的流程拽进"超时"分支。
         context.clearJobsOf(token.getId());
 
+        // ---- 补偿登记（第 37 轮）：本活动做完了，将来要退就退它 ----
+        //
+        // 登记的**时机是「做完」不是「打算做」**，所以登记表里的每一行都对应一件
+        // 已经发生的事；反过来「进入时登记」会在活动做失败时留下一条假的补偿记录。
+        //
+        // 三个必须排除的：
+        //   · 网关不是活动（与上面记历史同一把尺子）
+        //   · 补偿处理器自己：它完成时不能再登记，否则补偿一次就把 handler 记成新的可补偿项，
+        //     下次补偿再触发它 —— 无限循环，且每次都真的执行了退款
+        //   · 补偿执行期间（inCompensation）：退订这个动作完成时不该产生一条新的可补偿登记
+        //
+        // 落在 clearJobsOf 之后、选线之前：无论下一步走哪条线，这个活动都已经做完了。
+        if (!context.isInCompensation() && !node.getType().isGateway()
+                && !node.isForCompensation() && !node.isCompensationBoundary()
+                && definition.isCompensable(node.getId())) {
+            // 登记的是**补偿目标**，不一定是宿主自己：
+            // <compensateEventDefinition activityRef="pay"/> 挂在 book 上时，
+            // book 完成意味着「pay 这一笔进入可退状态」—— 退的是 pay，不是 book。
+            // 登记成 book 的话，退款会退错对象，而那时流程已经结束了、没人看得见。
+            String target = definition.compensationTargetOf(
+                    definition.compensationBoundariesOf(node.getId()).get(0));
+            context.addPendingCompensation(target == null ? node.getId() : target,
+                    definition.inlineScopeOf(node.getId()));
+        }
+
         // ---- 异步后置：节点已经执行完，离开之前先排一次队 ----
         //
         // 放在 clearJobsOf 之后：那个调用会清掉本 token 上的全部 job，

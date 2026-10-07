@@ -106,8 +106,84 @@ public class WfContext {
         return terminateScope;
     }
 
-    public java.util.List<WfJob> getCreatedJobs() {
-        return createdJobs;
+    // ==================== 补偿登记（第 37 轮） ====================
+
+    /**
+     * 本次推进里<b>刚刚完成、且可补偿</b>的活动 id，按完成的先后排列。
+     *
+     * <p>列表顺序就是补偿的<b>逆序</b>依据，所以它必须是确定的：
+     * 并行分支上的两个活动可能同一毫秒完成，用时间戳排会让补偿次序变成随机的，
+     * 而"后做的先撤"是补偿唯一不能错的地方（先退款再退订与反过来，
+     * 前者会让钱白退一次）。
+     *
+     * <p>与 {@link #terminateScope} 同一套形状：<b>引擎只登记意图，运行期服务落库</b> ——
+     * {@code WfEngine} 没有持久化。
+     */
+    private final java.util.List<String> pendingCompensations = new java.util.ArrayList<>();
+
+    /**
+     * 本次推进登记的补偿的<b>作用域</b>（内联容器 id，空串为进程级）。
+     *
+     * <p>按<b>每个活动各记各的</b>而不是全局一个：内层的补偿不能撤掉外层已完成的步骤，
+     * 而这两个作用域的 token 在同一时刻都还活着。
+     */
+    private final java.util.Map<String, String> compensationScopes =
+            new java.util.LinkedHashMap<>();
+
+    /**
+     * 本次推进起始时已有的补偿登记条数 —— 用来给新登记的条目算续号。
+     *
+     * <p>不能每条都用 {@code 1,2,3}：实例跑过几轮之后表里已经有几十条，
+     * 续号必须接着往下走，否则同一实例里两次登记会拿到同一个 seq，
+     * 而逆序补偿靠 seq 定序，同 seq 就是随机的。
+     */
+    private long compensationSeqBase;
+
+    /** 是否正在执行补偿。补偿期间的活动完成<b>不再</b>登记（否则会自我触发）。 */
+    private boolean inCompensation;
+
+    /**
+     * 登记一条补偿。
+     *
+     * @param activityId 刚完成且可补偿的活动
+     * @param scope      该活动所属的内联容器 id，空串表示进程级
+     */
+    public void addPendingCompensation(String activityId, String scope) {
+        if (activityId == null || activityId.trim().isEmpty()) {
+            return;
+        }
+        if (!pendingCompensations.contains(activityId)) {
+            pendingCompensations.add(activityId);
+        }
+        compensationScopes.put(activityId, scope == null ? "" : scope);
+    }
+
+    public java.util.List<String> getPendingCompensations() {
+        return pendingCompensations;
+    }
+
+    public String getCompensationScopeOf(String activityId) {
+        String scope = compensationScopes.get(activityId);
+        return scope == null ? "" : scope;
+    }
+
+    public long getCompensationSeqBase() {
+        return compensationSeqBase;
+    }
+
+    public void setCompensationSeqBase(long compensationSeqBase) {
+        this.compensationSeqBase = compensationSeqBase;
+    }
+
+    public boolean isInCompensation() {
+        return inCompensation;
+    }
+
+    public void setInCompensation(boolean inCompensation) {
+        this.inCompensation = inCompensation;
+    }
+
+    public java.util.List<WfJob> getCreatedJobs() {        return createdJobs;
     }
 
     public void addCreatedJob(WfJob job) {

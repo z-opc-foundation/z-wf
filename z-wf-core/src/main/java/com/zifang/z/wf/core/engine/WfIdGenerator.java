@@ -31,6 +31,9 @@ public interface WfIdGenerator {
     /** 生成 job ID。 */
     String nextJobId();
 
+    /** 生成补偿登记 ID（第 37 轮）。 */
+    String nextCompensationId();
+
     /**
      * 默认实现：{@code 前缀 + 进程启动随机数 + 定长自增序号}。
      *
@@ -53,6 +56,9 @@ public interface WfIdGenerator {
         private final AtomicLong activityCounter = new AtomicLong();
         private final AtomicLong commentCounter = new AtomicLong();
         private final AtomicLong jobCounter = new AtomicLong();
+
+        /** 补偿登记计数器（第 37 轮）。独立于其它计数器，理由与它们各自独立相同。 */
+        private final AtomicLong compensationCounter = new AtomicLong();
 
         public DefaultWfIdGenerator() {
             // 启动期随机后缀：不同 JVM 实例/不同次启动互不相同
@@ -92,6 +98,11 @@ public interface WfIdGenerator {
         @Override
         public String nextJobId() {
             return "job-" + instanceTag + "-" + pad(jobCounter.incrementAndGet());
+        }
+
+        @Override
+        public String nextCompensationId() {
+            return "comp-" + instanceTag + "-" + pad(compensationCounter.incrementAndGet());
         }
 
         /** 左补零到 {@link #SEQ_WIDTH} 位；已超宽则原样返回（不能截断，会撞号）。 */

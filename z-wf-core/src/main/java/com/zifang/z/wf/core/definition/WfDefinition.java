@@ -48,6 +48,15 @@ public class WfDefinition implements Serializable {
     /** 流程图上的连线。 */
     private List<WfFlow> flows = new ArrayList<>();
 
+    /**
+     * 关联线（association），目前只有补偿一种（第 37 轮）。
+     *
+     * <p>与 {@link #flows} 分开存，不合并：一条 association 不承载 token。
+     * <b>必须落库</b> —— 不落的话重启后补偿边界事件找不到它的处理器，
+     * 而症状是「补偿安静地不发生」，没有任何报错。
+     */
+    private List<WfAssociation> associations = new ArrayList<>();
+
     /** 原始 XML（部署时留存，供导出与审计）。 */
     private String sourceXml;
 
@@ -398,6 +407,14 @@ public class WfDefinition implements Serializable {
                 if (node.getType() == WfNodeType.LINK_CATCH) {
                     continue;
                 }
+                // 排除补偿处理器（第 37 轮）：理由与上面两条同源 ——
+                // 它也天然无入线，因为 token 在正常路径上<b>永远走不到它</b>，
+                // 它只由 <association> 在补偿被触发时执行。
+                // 不排除的话，任何画了补偿的流程都会凭空多出一个无条件入口，
+                // 部署期报「存在多个无条件开始节点」，而作者图上确实只有一个 startEvent。
+                if (node.isForCompensation()) {
+                    continue;
+                }
                 if (incomingFlows(node.getId()).isEmpty() && !isEventTriggered(node)) {
                     starts.add(node);
                 }
@@ -715,6 +732,97 @@ public class WfDefinition implements Serializable {
         this.nodeMap = null;
         this.outgoing = null;
         this.incoming = null;
+    }
+
+    public List<WfAssociation> getAssociations() {
+        return associations;
+    }
+
+    public void setAssociations(List<WfAssociation> associations) {
+        this.associations = associations == null ? new ArrayList<WfAssociation>() : associations;
+    }
+
+    // ==================== 补偿查询（第 37 轮） ====================
+
+    /**
+     * 挂在某个活动上的<b>补偿边界事件</b>。
+     *
+     * <p>一条活动可以挂多个补偿边界事件（BPMN 允许），所以返回列表。
+     * 返回空列表而不是 {@code null}：调用方要判的是「有没有」，
+     * 给一个可为空的对象等于让它多写一遍判空，而漏判的后果是
+     * 「该补偿的活动没补偿」—— 那正是本机制要防的事。
+     */
+    public List<WfNode> compensationBoundariesOf(String activityId) {
+        List<WfNode> result = new ArrayList<>();
+        if (activityId == null) {
+            return result;
+        }
+        for (WfNode node : nodeNodes()) {
+            if (node == null || node.getType() != WfNodeType.BOUNDARY_EVENT) {
+                continue;
+            }
+            if (!activityId.equals(node.getAttachedToRef())) {
+                continue;
+            }
+            if (node.isCompensationBoundary()) {
+                result.add(node);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 一条补偿边界事件关联到的<b>补偿处理器</b>。
+     *
+     * <p>方向按 BPMN：{@code association@sourceRef} 是边界事件、
+     * {@code targetRef} 是处理器。返回空列表表示「这条边界事件没有关联任何处理器」，
+     * 那是部署期要报错的一种配置（见 {@code WfDefinitionValidator}），
+     * 运行期拿到空列表同样不该猜一个。
+     */
+    public List<WfNode> compensationHandlersOf(String boundaryEventId) {
+        List<WfNode> result = new ArrayList<>();
+        if (boundaryEventId == null) {
+            return result;
+        }
+        for (WfAssociation association : associations) {
+            if (association == null || !boundaryEventId.equals(association.getSourceRef())) {
+                continue;
+            }
+            WfNode handler = node(association.getTargetRef());
+            if (handler != null) {
+                result.add(handler);
+            }
+        }
+        return result;
+    }
+
+    /** 这个活动有没有可被补偿的标记（有补偿边界事件，或作为 {@code activityRef} 被引用）。 */
+    public boolean isCompensable(String activityId) {
+        if (activityId == null) {
+            return false;
+        }
+        if (!compensationBoundariesOf(activityId).isEmpty()) {
+            return true;
+        }
+        for (WfNode node : nodeNodes()) {
+            if (node != null && activityId.equals(node.compensationActivityRef())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 这条补偿边界事件的补偿<b>目标活动</b>。
+     *
+     * @return {@code compensateEventDefinition@activityRef}；没写则回退到宿主活动
+     */
+    public String compensationTargetOf(WfNode boundary) {
+        if (boundary == null) {
+            return null;
+        }
+        String ref = boundary.compensationActivityRef();
+        return ref != null ? ref : boundary.getAttachedToRef();
     }
 
     public String getSourceXml() {

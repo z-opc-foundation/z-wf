@@ -21,6 +21,7 @@ import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
+import com.zifang.z.wf.core.model.WfCompensationEntry;
 import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfFilter;
 import com.zifang.z.wf.core.model.WfJob;
@@ -69,6 +70,9 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
 
     /** 决策定义（DMN）。键是 {@code key@version}，与流程定义"多版本并存"同约定。 */
     private final Map<String, WfDmnDecision> decisions = new ConcurrentHashMap<>();
+
+    /** 补偿登记（第 37 轮）。键是登记 id，值是 {@link WfCompensationEntry}。 */
+    private final Map<String, WfCompensationEntry> compensations = new ConcurrentHashMap<>();
 
     @Override
     public void initialize() {
@@ -899,7 +903,7 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
             java.util.Arrays.asList(
                     "ZWF_DEFINITION", "ZWF_PROCESS", "ZWF_EXECUTION", "ZWF_TASK",
                     "ZWF_JOB", "ZWF_ACTIVITY", "ZWF_COMMENT", "ZWF_FILTER",
-                    "ZWF_DECISION"));
+                    "ZWF_DECISION", "ZWF_COMPENSATION"));
 
     @Override
     public List<String> getTableNames() {
@@ -951,7 +955,21 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
         if ("ZWF_FILTER".equals(name)) {
             return filters.size();
         }
-        return decisions.size();
+        if ("ZWF_DECISION".equals(name)) {
+            return decisions.size();
+        }
+        if ("ZWF_COMPENSATION".equals(name)) {
+            return compensations.size();
+        }
+        // 刻意**不兜底返回某一张表的行数**（第 37 轮）。
+        // 原来这里最后一句是 `return decisions.size()`：名字在 STORAGE_NAMES 里、
+        // 但上面没列到，就默默返回了决策数 —— 而 STORAGE_NAMES 同时也是
+        // 「JDBC 会建哪些表」的唯一名单，所以往那名单里加一项而忘了在这里加分支，
+        // 症状是「自省面板上某张表的行数等于决策数」，**没有任何报错**。
+        // 宁可抛：这一行的存在本身就是为了让那种漏改立刻暴露。
+        throw new com.zifang.z.wf.core.service.WfEngineException(
+                "实体 " + name + " 在名单里但没写计数分支。补一个分支，"
+                        + "不要靠兜底返回别人的行数 —— 那会让自省面板上的数字静默错掉");
     }
 
     @Override
@@ -1152,6 +1170,75 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
             }
         }
         return removed;
+    }
+
+    // ==================== 补偿登记（第 37 轮） ====================
+
+    @Override
+    public void saveCompensation(WfCompensationEntry entry) {
+        if (entry == null || entry.getId() == null) {
+            throw new WfPersistenceException("补偿登记必须有 id");
+        }
+        compensations.put(entry.getId(), copy(entry));
+    }
+
+    @Override
+    public List<WfCompensationEntry> findCompensations(String processInstanceId) {
+        List<WfCompensationEntry> found = new ArrayList<>();
+        for (WfCompensationEntry entry : compensations.values()) {
+            if (processInstanceId.equals(entry.getProcessInstanceId())) {
+                found.add(copy(entry));
+            }
+        }
+        // 按 seq 正序：调用方要做的是逆序补偿，正序交出去更不容易用错。
+        Collections.sort(found, new Comparator<WfCompensationEntry>() {
+            @Override
+            public int compare(WfCompensationEntry left, WfCompensationEntry right) {
+                return Long.compare(left.getSeq(), right.getSeq());
+            }
+        });
+        return found;
+    }
+
+    @Override
+    public int markCompensated(String id, Date when) {
+        WfCompensationEntry entry = compensations.get(id);
+        if (entry == null) {
+            return 0;
+        }
+        entry.setDone(true);
+        entry.setCompensatedAt(when);
+        compensations.put(id, entry);
+        return 1;
+    }
+
+    @Override
+    public int deleteCompensationsByProcessInstance(String processInstanceId) {
+        int removed = 0;
+        for (WfCompensationEntry entry : compensations.values()) {
+            if (processInstanceId.equals(entry.getProcessInstanceId())) {
+                compensations.remove(entry.getId());
+                removed++;
+            }
+        }
+        return removed;
+    }
+
+    /** 深拷贝：调用方拿到的是快照，改它不会污染存储里的那一份。 */
+    private static WfCompensationEntry copy(WfCompensationEntry source) {
+        if (source == null) {
+            return null;
+        }
+        WfCompensationEntry target = new WfCompensationEntry();
+        target.setId(source.getId());
+        target.setProcessInstanceId(source.getProcessInstanceId());
+        target.setActivityId(source.getActivityId());
+        target.setScope(source.getScope());
+        target.setSeq(source.getSeq());
+        target.setDone(source.isDone());
+        target.setRegisteredAt(source.getRegisteredAt());
+        target.setCompensatedAt(source.getCompensatedAt());
+        return target;
     }
 
     @Override

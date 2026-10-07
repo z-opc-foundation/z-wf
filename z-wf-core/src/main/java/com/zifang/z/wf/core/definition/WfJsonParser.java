@@ -135,6 +135,29 @@ public class WfJsonParser {
 
         definition.setNodes(nodes);
         definition.setFlows(flows);
+
+        // ---- 关联线（第 37 轮）：补偿边界事件 ↔ 补偿处理器 ----
+        // LogicFlow 没有对应物，所以只认这一个键名。缺失按空处理（老定义照常解析），
+        // 但端点写一半的必须报错 —— 与 XML 入口同一条纪律：
+        // 半条关联线丢掉不会触发任何兜底消息，作者只会看到补偿安静地不发生。
+        List<WfAssociation> associations = new ArrayList<>();
+        for (Object item : listOf(graph.get("associations"))) {
+            Map<String, Object> raw = asMap(item);
+            if (raw == null) {
+                continue;
+            }
+            String source = str(raw.get("sourceRef"), null);
+            String target = str(raw.get("targetRef"), null);
+            if (source == null || target == null) {
+                throw new WfDefinitionException("流程定义 JSON 中 association "
+                        + str(raw.get("id"), "(无 id)")
+                        + " 缺少 " + (source == null ? "sourceRef" : "targetRef")
+                        + "：关联线的两端必须写全，否则无法判断它关联了谁");
+            }
+            associations.add(new WfAssociation(str(raw.get("id"), null), source, target));
+        }
+        definition.setAssociations(associations);
+
         definition.buildIndex();
         return definition;
     }
@@ -174,12 +197,33 @@ public class WfJsonParser {
         node.setCandidateGroups(stringList(raw.get("candidateGroups")));
         node.setRequiredVariables(stringList(raw.get("requiredVariables")));
 
-        // LogicFlow 会把业务属性塞进 properties/text，一并接收
-        Object properties = raw.get("properties");
-        if (properties instanceof Map) {
-            node.getProperties().putAll(asMap(properties));
+        // LogicFlow 会把业务属性塞进 properties/text，一并接收。
+        //
+        // 用 asMap 而不是 `instanceof Map`：嵌套对象是 JsonObject，**不是** Map 的子类，
+        // instanceof 会把它整个挡掉，而后面那行 putAll(asMap(...)) 正好能处理它。
+        // 写成 instanceof Map 的后果是 properties 整包静默丢失 ——
+        // 第 37 轮的补偿属性（forCompensation / compensationBoundary）就走这里，
+        // 症状是「JSON 部署的流程图上画了补偿，运行时一次都不补偿」且没有任何报错。
+        Map<String, Object> rawProperties = asMap(raw.get("properties"));
+        if (rawProperties != null) {
+            node.getProperties().putAll(rawProperties);
         }
         node.getProperties().putAll(pickKnown(raw));
+
+        // 补偿（第 37 轮）。与 XML 入口对称：显式读，不依赖 properties 透传 ——
+        // JSON 定义的作者更可能把 BPMN 标准属性写在顶层（像 attachedToRef 那样），
+        // 而不是知道要塞进 properties。
+        if (boolOf(raw.get("isForCompensation"), false)) {
+            node.getProperties().put(WfNode.PROPERTY_FOR_COMPENSATION, Boolean.TRUE);
+        }
+        Map<String, Object> compensateDef = asMap(raw.get("compensateEventDefinition"));
+        if (compensateDef != null) {
+            node.getProperties().put(WfNode.PROPERTY_COMPENSATION_BOUNDARY, Boolean.TRUE);
+            String activityRef = str(compensateDef.get("activityRef"), null);
+            if (activityRef != null) {
+                node.getProperties().put(WfNode.PROPERTY_COMPENSATION_ACTIVITY_REF, activityRef);
+            }
+        }
         return node;
     }
 

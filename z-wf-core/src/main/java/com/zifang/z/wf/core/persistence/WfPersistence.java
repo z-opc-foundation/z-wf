@@ -361,6 +361,32 @@ public interface WfPersistence {
      */
     int deleteJobsByProcessInstance(String processInstanceId);
 
+    // ==================== 补偿登记（第 37 轮） ====================
+
+    /**
+     * 追加一条补偿登记（{@link com.zifang.z.wf.core.model.WfCompensationEntry}）。
+     *
+     * <p><b>只有插入，没有更新</b>：一行登记表示"这件事已经做过"，
+     * 它的存在本身就是事实，改写事实会让补偿的幂等性无从谈起。
+     * 补偿执行完毕时置 {@code done} 走 {@link #markCompensated}，
+     * 它写的是"退过了"这个事实，与"做过"是两条不同的记录。
+     */
+    void saveCompensation(com.zifang.z.wf.core.model.WfCompensationEntry entry);
+
+    /**
+     * 某实例的补偿登记，<b>按 {@code seq} 正序</b>返回。
+     *
+     * <p>正序而不是逆序：调用方要做的是逆序补偿，正序交出去更不容易用错。
+     * 与"按时间排序"相比，{@code seq} 是登记动作本身产生的次序，确定且无并列。
+     */
+    List<com.zifang.z.wf.core.model.WfCompensationEntry> findCompensations(String processInstanceId);
+
+    /** 把一条登记标记成"已补偿"。返回受影响行数。 */
+    int markCompensated(String id, java.util.Date when);
+
+    /** 删掉某实例的全部补偿登记。 */
+    int deleteCompensationsByProcessInstance(String processInstanceId);
+
     /**
      * 删掉挂在某个 token 上的全部 job（token 正常离开节点时调用）。
      *

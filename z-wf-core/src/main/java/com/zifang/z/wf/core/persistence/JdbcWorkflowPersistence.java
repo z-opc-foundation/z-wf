@@ -29,6 +29,7 @@ import com.zifang.z.wf.core.definition.WfFlow;
 import com.zifang.z.wf.core.definition.WfNode;
 import com.zifang.z.wf.core.definition.WfNodeType;
 import com.zifang.z.wf.core.model.WfActivityInstance;
+import com.zifang.z.wf.core.model.WfCompensationEntry;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfExecution;
 import com.zifang.z.wf.core.model.WfFilter;
@@ -229,6 +230,23 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 + "REV INT,"
                 + "PRIMARY KEY (JOB_ID))");
 
+        // 补偿登记（第 37 轮）。整张表都是新增的，不需要补列 ——
+        // CREATE TABLE IF NOT EXISTS 对"从来没有这张表"的库直接建，对"已经有"的库原样跳过。
+        ddl.add("CREATE TABLE IF NOT EXISTS ZWF_COMPENSATION ("
+                + "COMP_ID VARCHAR(128) NOT NULL,"
+                + "PROC_ID VARCHAR(128) NOT NULL,"
+                // 被补偿的活动，不是处理器：处理器是「退的方法」，这个才是「退什么」
+                + "ACTIVITY_ID VARCHAR(128) NOT NULL,"
+                // 内联容器 id；空串 = 进程级（与 WfExecution 的作用域同一把尺子）
+                + "SCOPE VARCHAR(128),"
+                // 登记次序。用 BIGINT 而不是时间戳：并行分支上的两个活动可能同一毫秒完成，
+                // 按时间排会让逆序补偿变成随机序，而逆序是补偿唯一不能错的地方
+                + "SEQ BIGINT,"
+                + "DONE SMALLINT DEFAULT 0,"
+                + "REGISTERED_AT TIMESTAMP,"
+                + "COMPENSATED_AT TIMESTAMP,"
+                + "PRIMARY KEY (COMP_ID))");
+
         // 审批中心的三条主查询路径都走这些索引
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_PROC_BIZKEY ON ZWF_PROCESS (BUSINESS_KEY)");
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_PROC_USER ON ZWF_PROCESS (START_USER_ID)");
@@ -244,6 +262,8 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_JOB_DUEDATE ON ZWF_JOB (DUEDATE)");
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_JOB_PROC ON ZWF_JOB (PROC_ID)");
         ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_JOB_EXEC ON ZWF_JOB (EXEC_ID)");
+        // 撤销时按「本实例 + 作用域」取登记并逆序补偿，复合索引正对着这条查询
+        ddl.add("CREATE INDEX IF NOT EXISTS IDX_WF_COMP_PROC ON ZWF_COMPENSATION (PROC_ID, SCOPE, SEQ)");
 
         // 筛选器。整张表都是新增的，不需要补列 ——
         // CREATE TABLE IF NOT EXISTS 对"从来没有这张表"的库直接建，
@@ -2026,7 +2046,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             java.util.Arrays.asList(
                     "ZWF_DEFINITION", "ZWF_PROCESS", "ZWF_EXECUTION", "ZWF_TASK",
                     "ZWF_JOB", "ZWF_ACTIVITY", "ZWF_COMMENT", "ZWF_FILTER",
-                    "ZWF_DECISION"));
+                    "ZWF_DECISION", "ZWF_COMPENSATION"));
 
     /**
      * 表名清单，<b>从库里真查</b>而不是直接返回常量。
@@ -2626,8 +2646,58 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         }
     };
 
-    private boolean exists(String sql, Object arg) {
-        Connection connection = null;
+    // ==================== 补偿登记（第 37 轮） ====================
+
+    @Override
+    public void saveCompensation(WfCompensationEntry entry) {
+        if (entry == null || entry.getId() == null) {
+            throw new WfPersistenceException("补偿登记必须有 id");
+        }
+        update("INSERT INTO ZWF_COMPENSATION "
+                        + "(COMP_ID, PROC_ID, ACTIVITY_ID, SCOPE, SEQ, DONE, "
+                        + "REGISTERED_AT, COMPENSATED_AT) VALUES (?,?,?,?,?,?,?,?)",
+                entry.getId(), entry.getProcessInstanceId(), entry.getActivityId(),
+                entry.getScope(), entry.getSeq(), entry.isDone() ? 1 : 0,
+                timestamp(entry.getRegisteredAt()), timestamp(entry.getCompensatedAt()));
+    }
+
+    @Override
+    public List<WfCompensationEntry> findCompensations(String processInstanceId) {
+        // 正序返回，理由同接口注释：调用方要做逆序补偿，正序交出去更不容易用错
+        return queryList("SELECT * FROM ZWF_COMPENSATION WHERE PROC_ID=? ORDER BY SEQ ASC",
+                new Object[]{processInstanceId}, compensationMapper);
+    }
+
+    @Override
+    public int markCompensated(String id, java.util.Date when) {
+        return update("UPDATE ZWF_COMPENSATION SET DONE=1, COMPENSATED_AT=? WHERE COMP_ID=?",
+                timestamp(when), id);
+    }
+
+    @Override
+    public int deleteCompensationsByProcessInstance(String processInstanceId) {
+        return update("DELETE FROM ZWF_COMPENSATION WHERE PROC_ID=?", processInstanceId);
+    }
+
+    private final RowMapper<WfCompensationEntry> compensationMapper = new RowMapper<WfCompensationEntry>() {
+        @Override
+        public WfCompensationEntry map(ResultSet rs) throws SQLException {
+            WfCompensationEntry entry = new WfCompensationEntry();
+            entry.setId(rs.getString("COMP_ID"));
+            entry.setProcessInstanceId(rs.getString("PROC_ID"));
+            entry.setActivityId(rs.getString("ACTIVITY_ID"));
+            // 空串与 NULL 是同一个含义（进程级）。库里读到 NULL 时归一成空串，
+            // 否则调用方要同时判两个值，而漏一个的后果是补偿一条都不做
+            entry.setScope(rs.getString("SCOPE"));
+            entry.setSeq(rs.getLong("SEQ"));
+            entry.setDone(rs.getInt("DONE") != 0);
+            entry.setRegisteredAt(date(rs.getTimestamp("REGISTERED_AT")));
+            entry.setCompensatedAt(date(rs.getTimestamp("COMPENSATED_AT")));
+            return entry;
+        }
+    };
+
+    private boolean exists(String sql, Object arg) {        Connection connection = null;
         try {
             connection = dataSource.getConnection();
             PreparedStatement ps = connection.prepareStatement(sql);
