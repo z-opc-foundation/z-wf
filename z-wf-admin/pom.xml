@@ -27,7 +27,6 @@
         <!-- 与 ../pom.xml <revision> 同步：根仓升到 2.0.0 是因为 z-wf 坐标的 1.x 是 Camunda 版，
              本仓是自研引擎，属于破坏性大版本（详见根 pom 注释与 README 顶部）。 -->
         <z-wf.version>2.0.0</z-wf.version>
-        <z-boot-fleet.version>1.0.1</z-boot-fleet.version>
         <maven.deploy.skip>true</maven.deploy.skip>
         <java.version>8</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -38,8 +37,8 @@
             <!-- own-parent 形态下兄弟仓版本只能靠 import fleet 拿权威 -->
             <dependency>
                 <groupId>io.github.yuku123</groupId>
-                <artifactId>z-boot-fleet</artifactId>
-                <version>${z-boot-fleet.version}</version>
+                <artifactId>z-boot-parent</artifactId>
+                <version>1.1.0</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
