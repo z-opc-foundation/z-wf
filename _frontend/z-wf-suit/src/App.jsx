@@ -1,6 +1,7 @@
 import {Navigate, Route, Routes} from 'react-router-dom'
 import {AppLayout} from '@yuku123/z-frontend-common'
 import {menuItems, routeTable} from '@yuku123/z-wf-component/pages'
+import '@yuku123/z-wf-component/style.css'
 
 export default function App() {
     return (
