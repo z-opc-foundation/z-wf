@@ -7,7 +7,7 @@
   "scripts": {"dev": "vite", "build": "vite build"},
   "dependencies": {
     "@yuku123/z-wf-component": "file:../z-wf-component",
-    "@yuku123/z-frontend-common": "^0.1.1",
+    "@yuku123/z-frontend-common": "0.1.1",
     "@logicflow/core": "^2.0.0",
     "@logicflow/extension": "^2.0.0",
     "dayjs": "^1.11.10",
