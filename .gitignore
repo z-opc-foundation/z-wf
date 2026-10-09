@@ -46,3 +46,7 @@ application-h2-test-local.properties
 .claude/
 CLAUDE.md
 .playwright-mcp/
+
+# 前端 node_modules / dist
+_frontend/**/node_modules/
+_frontend/**/dist/
