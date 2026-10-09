@@ -1,0 +1,63 @@
+.container {
+    padding: 0;
+}
+
+.card {
+    border-radius: 8px;
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+}
+
+.titleSection {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+}
+
+.title {
+    margin: 0 !important;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.titleIcon {
+    color: #52c41a;
+}
+
+.subtitle {
+    color: #8c8c8c;
+    font-size: 14px;
+}
+
+.taskName {
+    font-weight: 500;
+    color: #262626;
+}
+
+.ellipsis {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: inline-block;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+    .header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 16px;
+    }
+
+    .titleSection {
+        flex-direction: column;
+        gap: 4px;
+    }
+}

@@ -1,0 +1,137 @@
+.designerContainer {
+    width: 100%;
+    height: 100%;
+    position: relative;
+    background: #fafafa;
+}
+
+.canvas {
+    width: 100%;
+    height: 100%;
+}
+
+/* 拖拽面板样式 */
+.dndItem {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px;
+    cursor: grab;
+    transition: all 0.2s;
+    border-radius: 6px;
+}
+
+.dndItem:hover {
+    background: #f0f7ff;
+    transform: scale(1.05);
+}
+
+.dndItem img {
+    width: 40px;
+    height: 40px;
+    margin-bottom: 8px;
+}
+
+.dndItem span {
+    font-size: 12px;
+    color: #595959;
+    white-space: nowrap;
+}
+
+/* LogicFlow 样式覆盖 */
+:global(.lf-dnd-panel) {
+    width: 80px !important;
+    background: #fff;
+    border-right: 1px solid #e8e8e8;
+    padding: 16px 0;
+}
+
+:global(.lf-control) {
+    background: #fff;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+:global(.lf-mini-map) {
+    background: #fff;
+    border: 1px solid #e8e8e8;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* 节点样式 */
+:global(.lf-node) {
+    cursor: pointer;
+}
+
+:global(.lf-node:hover) {
+    filter: brightness(0.95);
+}
+
+:global(.lf-node.selected) {
+    filter: drop-shadow(0 0 4px rgba(22, 119, 255, 0.5));
+}
+
+/* 边样式 */
+:global(.lf-edge) {
+    stroke: #8c8c8c;
+    stroke-width: 2;
+}
+
+:global(.lf-edge:hover) {
+    stroke: #1677ff;
+    stroke-width: 3;
+}
+
+/* 文本样式 */
+:global(.lf-text) {
+    font-size: 14px;
+    fill: #262626;
+}
+
+/* 属性面板 */
+.propertyPanel {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 300px;
+    background: #fff;
+    border-left: 1px solid #e8e8e8;
+    padding: 16px;
+    overflow-y: auto;
+    z-index: 10;
+}
+
+.propertyPanelTitle {
+    font-size: 16px;
+    font-weight: 500;
+    color: #262626;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+/* 工具栏 */
+.toolbar {
+    position: absolute;
+    top: 16px;
+    left: 96px;
+    right: 316px;
+    height: 48px;
+    background: #fff;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 8px;
+    z-index: 10;
+}
+
+.toolbarDivider {
+    width: 1px;
+    height: 24px;
+    background: #e8e8e8;
+    margin: 0 8px;
+}

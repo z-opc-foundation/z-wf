@@ -1,0 +1,79 @@
+.dashboard {
+    padding: 0;
+}
+
+.statsRow {
+    margin-bottom: 24px;
+}
+
+.statCard {
+    border-radius: 8px;
+    transition: all 0.3s;
+}
+
+.statCard:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.todoIcon {
+    color: #1677ff;
+}
+
+.doneIcon {
+    color: #52c41a;
+}
+
+.initiatedIcon {
+    color: #722ed1;
+}
+
+.statFooter {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid #f0f0f0;
+}
+
+.statFooter a {
+    color: #595959;
+    font-size: 14px;
+    transition: color 0.3s;
+}
+
+.statFooter a:hover {
+    color: #1677ff;
+}
+
+.todoCard {
+    border-radius: 8px;
+}
+
+.taskTitle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.taskDesc {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: #8c8c8c;
+    font-size: 13px;
+}
+
+.taskDesc span {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+    .statsRow {
+        margin-bottom: 16px;
+    }
+
+    .statCard {
+        margin-bottom: 16px;
+    }
+}
