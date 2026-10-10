@@ -18,6 +18,7 @@ export {default as TodoList} from './wf/pages/TodoList'
 export {default as ProcessList} from './wf/pages/ProcessList'
 export {default as ProcessDesigner} from './wf/pages/ProcessDesigner'
 import HomePage from './pages/HomePage'
+import WorkflowApp from './pages/WorkflowApp.jsx'
 
 /** 菜单 + 路由清单（lead 008 §10/§14/§16 批量落地）。App 壳在 suit 侧组装。 */
 export const appMeta = { title: 'z-wf 流程中心', short: 'z-wf' }
@@ -43,6 +44,7 @@ export const routes = [
     { path: '/z-wf/workflow/designer/:id', Component: ProcessDesigner },
     { path: '/z-wf/workflow/process/:processInstanceId', Component: ProcessDetail },
     { path: '/z-wf/workflow/task/:taskId', Component: TaskDetail },
+    { path: '/z-wf/:rest*', Component: WorkflowApp },
 ]
 
 export { default as HomePage } from './pages/HomePage'
