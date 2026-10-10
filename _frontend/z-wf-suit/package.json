@@ -4,9 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "description": "z-wf 独立运行壳（lead 005 §9.1 suit：AppLayout + manifest 路由）。不发布 npm",
-  "scripts": {"dev": "vite", "build": "vite build"},
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
   "dependencies": {
-    "@yuku123/z-wf-component": "file:../z-wf-component",
+    "@yuku123/z-wf-component": "^0.1.0",
     "@yuku123/z-frontend-common": "0.1.1",
     "@logicflow/core": "^2.0.0",
     "@logicflow/extension": "^2.0.0",
