@@ -33,7 +33,7 @@ export const menuItems = [
     { key: '/z-wf/workflow/process', label: '流程详情', icon: <FileDoneOutlined /> },
 ]
 
-export const routeTable = [
+export const routes = [
     { path: '/z-wf/home', Component: HomePage },
     { path: '/z-wf/workflow/dashboard', Component: Dashboard },
     { path: '/z-wf/workflow/todo', Component: TodoList },
