@@ -9,7 +9,7 @@ import {
 } from '@ant-design/icons';
 import {Link, useNavigate} from 'react-router-dom';
 import {approvalApi} from '@/wf/services/api';
-import {EmptyState, ErrorState, PageHeader} from '@/common/components/ui';
+import {EmptyState, ErrorState, PageHeader} from '@yuku123/z-frontend-common/ui';
 import {DashboardStats, Task} from '../../types/workflow';
 
 const styles: Record<string, any> = {

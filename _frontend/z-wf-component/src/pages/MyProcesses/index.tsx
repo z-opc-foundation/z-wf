@@ -10,7 +10,7 @@ import {
     SearchOutlined,
 } from '@ant-design/icons';
 import {approvalApi} from '@/wf/services/api';
-import {EmptyState, ErrorState, PageHeader} from '@/common/components/ui';
+import {EmptyState, ErrorState, PageHeader} from '@yuku123/z-frontend-common/ui';
 import {PageResult, ProcessInstance} from '@/wf/types';
 import dayjs from 'dayjs';
 import styles from './index.module.css';

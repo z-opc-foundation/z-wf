@@ -6,7 +6,8 @@
   "description": "z-wf 独立运行壳（lead 005 §9.1 suit：AppLayout + manifest 路由）。不发布 npm",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build:component": "cd ../z-wf-component && npm install --silent && npm run build",
+    "build": "npm run build:component && vite build"
   },
   "dependencies": {
     "@yuku123/z-wf-component": "^0.1.0",
