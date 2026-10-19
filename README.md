@@ -68,8 +68,8 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
 mvn -o install
 ```
 
-版本治理：parent `z-boot-parent:1.0.21`（`relativePath` 留空，parent 在 repo1）；
-兄弟仓版本走 `z-boot-fleet:1.0.1`；`z-util.version` 本仓显式覆盖为 `1.0.18`
+版本治理：parent `z-boot-parent:1.1.0`（`relativePath` 留空，parent 在 repo1）；
+兄弟仓版本槽位由 parent 自身下发（1.1.0 已不再 import `z-boot-fleet`）；`z-util.version` 本仓显式覆盖为 `1.0.18`
 （fleet 下发的是 1.0.14，本仓要对齐 `z-util-wf-kernel` 的 revision）。
 本仓自己声明 `flatten-maven-plugin`——父链那条是 `<inherited>false</inherited>`，
 不开会让 `${revision}` 字面量泄漏到装/发出去的 pom 里，消费方解析必然失败。
@@ -673,7 +673,7 @@ swagger-annotations（web 层 `provided`，只取注解）。
 
 **只定义 `<z-util.version>` 属性是盖不住 `import` 进来的 BOM 的。**
 
-`z-boot-parent:1.0.21` 引入 `z-boot-fleet:1.0.1`，而 fleet 的 `dependencyManagement` 里写的是
+`z-boot-parent:1.0.21` 当年引入 `z-boot-fleet:1.0.1`，而 fleet 的 `dependencyManagement` 里写的是
 `${z-util.version}`。**import 进来的 BOM 是用它自己 pom 的属性上下文解析的**
 （fleet 1.0.1 里该属性 = 1.0.14），消费方再定义同名属性不会生效。
 
@@ -711,6 +711,7 @@ classpath 上同时存在 `z-util-core 1.0.14` 与 `z-util-wf-kernel 1.0.18` —
 本项目文档统一收口在 `_doc/` 下（lead 002 规范八类固定编号表，桶按需存在）:
 
 - [`_doc/001_arch/`](_doc/001_arch/) — 架构、对外能力盘点、英文版说明
+  - [`00-overview.md`](_doc/001_arch/00-overview.md) — 项目总览：模块架构、核心功能、上下游、目录结构
 - [`_doc/007_backlog/`](_doc/007_backlog/) — 待办与未完成事项交接单
 
 另有 GitHub 平台约定的两份根外文件：[`CONTRIBUTING.md`](.github/CONTRIBUTING.md)（贡献指南）、
