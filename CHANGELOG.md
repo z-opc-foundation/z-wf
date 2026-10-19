@@ -37,7 +37,7 @@
 - 与 `z-util-wf-kernel` 的双向协议桥 `ZUtilWfBridge`
 - 4 个模块：`z-wf-core` / `z-wf-web` / `z-wf-starter` / `z-wf-admin`
 - 开源基座：LICENSE、CONTRIBUTING、SECURITY、CHANGELOG、CI 工作流、issue 模板
-- 能力盘点文档 `docs/capability-gap.md`
+- 能力盘点文档 `_doc/001_arch/01-capability-gap.md`
 
 ### 修复
 
@@ -70,7 +70,7 @@ z-util 版本覆盖失效；`WfHistoryService` 两个与既有路径逐字重复
 
 ### 已知限制
 
-见 [`docs/capability-gap.md`](docs/capability-gap.md)。最要紧的几条：
+见 [`_doc/001_arch/01-capability-gap.md`](_doc/001_arch/01-capability-gap.md)。最要紧的几条：
 
 - **不支持会签的集合迭代与串行**（`collection` / `isSequential`）—— 配置了会在部署期报错
 - **没有定时器 / 异步执行** —— 超时提醒有 `WfOverdueScanner` 可用，

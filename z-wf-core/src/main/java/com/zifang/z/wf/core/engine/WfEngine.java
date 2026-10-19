@@ -1055,7 +1055,7 @@ public class WfEngine {
      * 它展开在父实例的同一棵 token 树里，所以并行网关的汇合判定、
      * 轨迹的父子归属都沿用主图的机制，不需要跨实例回查。
      * 代价是没有独立作用域（内联节点与主流程共享变量），这是与 Camunda 的显式差异，
-     * 已写进 {@code docs/capability-gap.md}。
+     * 已写进 {@code _doc/001_arch/01-capability-gap.md}。
      *
      * <p>内联子流程的进入<b>不发 transition 事件</b>：BPMN 里没有一条 sequenceFlow
      * 跨容器边界（subProcess 到它的内联起始节点之间本来就没有线），

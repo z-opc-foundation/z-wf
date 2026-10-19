@@ -39,7 +39,7 @@ import com.zifang.z.wf.core.service.WfRuntimeService;
  * <p>所以本类的判据盯的都是「本该发生的事发生了没有」，而不是「流程能不能跑完」。
  *
  * <p><b>本轮的实现边界</b>（与 Camunda 的差异写在
- * {@code docs/capability-gap.md}，不是这里）：
+ * {@code _doc/001_arch/01-capability-gap.md}，不是这里）：
  * <ul>
  *   <li>触发点只有<b>作用域终止</b>。Camunda 的 {@code cancelEndEvent} 与
  *       {@code transaction} 也走同一条补偿路径，那两个元素在第 38 轮补，

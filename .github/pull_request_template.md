@@ -1,4 +1,4 @@
-请先读 [`CONTRIBUTING.md`](../../CONTRIBUTING.md)，尤其是"这个项目最看重什么"那一节。
+请先读 [`CONTRIBUTING.md`](CONTRIBUTING.md)，尤其是"这个项目最看重什么"那一节。
 留空也能提交，但填了会快很多。
 
 ## 变更内容
@@ -22,4 +22,4 @@
 - [ ] 改动流程定义解析器时，`WfNodeType` / `WfXmlParser.NODE_ELEMENTS` /
       `WfDefinitionValidator` 三处一起改了
 - [ ] 依赖树里没有出现 camunda / flowable / activiti / jbpm / zeebe
-- [ ] 能力有增减的话，同步更新了 `docs/capability-gap.md`
+- [ ] 能力有增减的话，同步更新了 `_doc/001_arch/01-capability-gap.md`

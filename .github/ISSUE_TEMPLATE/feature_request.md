@@ -28,7 +28,7 @@ assignees: ''
 <!--
 Camunda 7 或其他引擎里对应的能力是什么？
 
-如果是补齐 [`docs/capability-gap.md`](../../docs/capability-gap.md) 里列出的
+如果是补齐 [`_doc/001_arch/01-capability-gap.md`](../../_doc/001_arch/01-capability-gap.md) 里列出的
 缺口，直接引用那一条的编号即可。
 -->
 

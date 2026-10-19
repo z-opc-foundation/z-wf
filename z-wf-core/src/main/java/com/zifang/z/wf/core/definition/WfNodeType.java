@@ -83,7 +83,7 @@ public enum WfNodeType {
      *   <li>内部未被捕获的 error ⇒ Camunda 走 <b>hazard</b>（事务挂起等人处理，<b>不补偿</b>）。
      *       本引擎当前没有 hazard 状态机，这类 error 走既有路径把实例停成
      *       {@code INTERNALLY_TERMINATED} 并记错误码 —— <b>这一条与 Camunda 不一致</b>，
-     *       已记进 {@code docs/capability-gap.md} 的缺口清单，不是遗漏而是取舍。</li>
+     *       已记进 {@code _doc/001_arch/01-capability-gap.md} 的缺口清单，不是遗漏而是取舍。</li>
      * </ul>
      *
      * <p>刻意<b>不</b>做成 {@link #SUB_PROCESS} 上的标志位：容器的出口规则不一样

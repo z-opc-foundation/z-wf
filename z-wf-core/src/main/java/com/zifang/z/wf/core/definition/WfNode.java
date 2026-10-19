@@ -336,7 +336,7 @@ public class WfNode implements Serializable {
      * 不会挂死也不会算错，只是作者的心愿不会实现。
      *
      * <p>Camunda 7 / 8 <b>都只实现 {@code false} 那一种</b>，
-     * {@code true} 是本实现按规范补的，见 {@code docs/capability-gap.md} 第 33 轮记录。
+     * {@code true} 是本实现按规范补的，见 {@code _doc/001_arch/01-capability-gap.md} 第 33 轮记录。
      */
     private boolean parallelMultiple;
 

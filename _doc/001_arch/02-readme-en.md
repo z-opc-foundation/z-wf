@@ -4,7 +4,7 @@
 > no Activiti. The definition layer shares its protocol with `z-util-wf-kernel`; the runtime
 > layer (token execution tree, gateway evaluation, persistence, REST) is written from scratch.
 
-> **[中文文档](README.md) · [能力盘点 / Capability Gap Analysis](docs/capability-gap.md)**
+> **[中文文档](../../README.md) · [能力盘点 / Capability Gap Analysis](01-capability-gap.md)**
 
 `z-camuda` wraps Camunda 7 in our REST shape. `z-wf` replaces the engine itself.
 The module layout is identical (`core` / `web` / `starter` / `admin`), so the integration
@@ -403,7 +403,7 @@ who can reach it can call `force-complete`, `jump`, or `POST /api/wf/jobs/{jobId
 and change the outcome of any process. `trigger` has an internal type whitelist — it refuses
 the job kinds that must not be fired by hand — but *who* is allowed to push a process along is
 a business decision, and the engine does not make it for you.
-See [SECURITY.md](SECURITY.md) for the full trust-boundary notes.
+See [SECURITY.md](../../.github/SECURITY.md) for the full trust-boundary notes.
 
 ---
 
@@ -420,10 +420,10 @@ See [SECURITY.md](SECURITY.md) for the full trust-boundary notes.
 - **Narrower extension surface** — 3 hook interfaces against Camunda's dozens of listeners
 
 Identity, forms, authorization, and CMMN are **deliberately out of scope**; the reasoning
-is in [docs/capability-gap.md §5](docs/capability-gap.md).
+is in [capability-gap.md §5](01-capability-gap.md).
 
 The full item-by-item comparison against Camunda 7 is in
-**[docs/capability-gap.md](docs/capability-gap.md)**.
+**[capability-gap.md](01-capability-gap.md)**.
 
 ---
 

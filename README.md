@@ -1,6 +1,6 @@
 # z-wf — 自研流程引擎
 
-> [English](README.en.md) · [能力盘点：与 Camunda 7 的逐项对照](docs/capability-gap.md)
+> [English](_doc/001_arch/02-readme-en.md) · [能力盘点：与 Camunda 7 的逐项对照](_doc/001_arch/01-capability-gap.md)
 
 > 不依赖 Camunda / Flowable / Activiti 等任何第三方工作流引擎。定义层协议与 `z-util-wf-kernel` 共用，
 > 运行时层（token 执行树、网关求值、持久化、REST）全部自研。
@@ -705,3 +705,14 @@ classpath 上同时存在 `z-util-core 1.0.14` 与 `z-util-wf-kernel 1.0.18` —
 ### 12.5 死依赖
 
 `z-wf-web` 的 `lombok` 已移除：全仓零 `lombok` import，VO 全是手写 getter/setter。
+
+## 文档目录
+
+本项目文档统一收口在 `_doc/` 下（lead 002 规范八类固定编号表，桶按需存在）:
+
+- [`_doc/001_arch/`](_doc/001_arch/) — 架构、对外能力盘点、英文版说明
+- [`_doc/007_backlog/`](_doc/007_backlog/) — 待办与未完成事项交接单
+
+另有 GitHub 平台约定的两份根外文件：[`CONTRIBUTING.md`](.github/CONTRIBUTING.md)（贡献指南）、
+[`SECURITY.md`](.github/SECURITY.md)（安全策略）—— 放在 `.github/` 下，GitHub 仍会自动渲染对应页面，
+同时仓根不落散件（lead 002 规范「仓根只放 README 和工程必需件」）。

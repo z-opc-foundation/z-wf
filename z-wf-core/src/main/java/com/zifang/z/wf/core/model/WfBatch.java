@@ -24,7 +24,7 @@ import java.util.Date;
  * job 必须挂在某个流程实例上，而批次不属于任何流程实例，把它塞进去只能靠一个假的实例 id，
  * 那是造假而不是实现。要么把该列放宽成可空并为已建表做一次改写，成本与风险都远超这一轮该付的。
  * 代价如实记着：目标极多时单次执行会长时间占着调用线程。缺口记在
- * {@code docs/capability-gap.md}。
+ * {@code _doc/001_arch/01-capability-gap.md}。
  *
  * @author zifang
  */

@@ -1,7 +1,7 @@
 # lead —— z-wf 未完成事项交接单
 
 本文件只记**没做完的事**，以及每一件已经查清的原因。
-做完了的部分见 `CHANGELOG.md` 与 `docs/capability-gap.md`，不在这里重复。
+做完了的部分见 `CHANGELOG.md` 与 `../001_arch/01-capability-gap.md`，不在这里重复。
 
 最后更新：2026-10-07
 
@@ -72,7 +72,7 @@ origin/main 落后 16 条（第 22–46 轮），本文件提交后一并推送
 
 ### 1.3 本轮顺带做的台账订正（已在工作区，未提交）
 
-- **第 47 轮小节尚未写入** `docs/capability-gap.md`（第 165 / 47 / 40 行三处**表格行**已改，小节没写）
+- **第 47 轮小节尚未写入** `../001_arch/01-capability-gap.md`（第 165 / 47 / 40 行三处**表格行**已改，小节没写）
 - **订正了 `adHocSubProcess` 那一行的事实错误**（见 §2）
 - 连带改了 `WfDefinitionValidator#substitutionHint`：
   删掉了「请改用 `<subProcess>`」这条**已被证伪的建议**，
@@ -114,7 +114,7 @@ origin/main 落后 16 条（第 22–46 轮），本文件提交后一并推送
 
 ---
 
-## 3. 能力缺口（`docs/capability-gap.md` 剩余项）
+## 3. 能力缺口（`../001_arch/01-capability-gap.md` 剩余项）
 
 按台账当前状态：
 

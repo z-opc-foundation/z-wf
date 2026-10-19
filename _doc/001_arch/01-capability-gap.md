@@ -370,7 +370,7 @@ z-wf 的定位是"审批流程引擎"，不是"Camunda 的完整复刻"。
 > `scriptTask` 的 `zifang:resultVariable` 是死字段 —— `WfScriptTaskBehavior` 读的是
 > `node.property("resultVariable")`（properties Map），而三处写入写的都是**字段**。
 > 属性名完全一致，所以没有任何报错，只是这个功能从未生效过。
-> 同时订正 `README.en.md`：它把 `intermediateCatchEvent` 列为不支持，
+> 同时订正 `02-readme-en.md`：它把 `intermediateCatchEvent` 列为不支持，
 > 而那个元素第 7 轮就实现了。
 
 > 第 19 轮没有新缺陷，但逼出两处**当初差点漏掉的东西**：
@@ -2779,7 +2779,7 @@ Camunda 走 **hazard**（事务挂起等人处理、**不补偿**），本引擎
 
 ### 第 39 轮：Camunda `Batch`（批量操作）
 
-**为什么先做它。** `docs/capability-gap.md` 的服务面里 Batch 一直挂着 `❌`，
+**为什么先做它。** 本文档的服务面里 Batch 一直挂着 `❌`，
 而它是这一串运维类能力里最实用的一条：数据迁移。
 旧流程用 `approved` 布尔判断、新流程要读 `status` 枚举时，
 一次要把十万个在跑的实例改过来 —— 逐个开接口改是不可能的，

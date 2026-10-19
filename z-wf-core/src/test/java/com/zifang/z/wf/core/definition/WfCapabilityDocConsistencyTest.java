@@ -33,7 +33,7 @@ import org.junit.jupiter.api.Test;
  */
 class WfCapabilityDocConsistencyTest {
 
-    private static final String DOC = "../docs/capability-gap.md";
+    private static final String DOC = "../_doc/001_arch/01-capability-gap.md";
 
     /** 服务名 → 在文档里认得的写法。 */
     private static final String[][] SERVICES = {
