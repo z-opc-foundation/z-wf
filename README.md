@@ -69,8 +69,8 @@ mvn -o install
 ```
 
 版本治理：parent `z-boot-parent:1.1.0`（`relativePath` 留空，parent 在 repo1）；
-兄弟仓版本槽位由 parent 自身下发（1.1.0 已不再 import `z-boot-fleet`）；`z-util.version` 本仓显式覆盖为 `1.0.18`
-（fleet 下发的是 1.0.14，本仓要对齐 `z-util-wf-kernel` 的 revision）。
+兄弟仓版本槽位由 parent 自身下发（1.1.0 已不再 import `z-boot-fleet`，它自己的 `z-util.version` 是 1.0.19）；
+本仓 `z-util.version` 显式覆盖为 `1.2.6`（要对齐 `z-util-wf-kernel` —— kernel 是协议层，必须与 parser 同版本）。
 本仓自己声明 `flatten-maven-plugin`——父链那条是 `<inherited>false</inherited>`，
 不开会让 `${revision}` 字面量泄漏到装/发出去的 pom 里，消费方解析必然失败。
 
@@ -568,15 +568,20 @@ z.wf.history-level=full              # 历史留痕档位（none | activity | au
 
 ## 9. 测试
 
-截至 2026-10-20 的读数（口径：surefire 逐模块自报）：**core 1091 / web 41 / admin 124**，合计 **1256** 条用例。
+截至 2026-10-20 的读数（口径：surefire 逐模块自报）：**core 1093 / web 41 / admin 124**，合计 **1258** 条用例，
+**0 failure / 0 error / 0 skipped**。
 
-⚠ 这次读数里**有 16 条 error**，集中在 `WfBatchTest` / `WfDecisionServiceTest` / `WfDmnDecisionGraphTest`，
-根因是**z-util 版本 skew**：本仓把 `z-util.version` 钉在 `1.0.18`，那个版本的 JSON 层还不支持
-「枚举带业务字段」（盘面 z-util 已到 1.2.x，`@EnumValue` 机制在那之后才有），
-于是 `WfBatchOperation.Type` 被当 POJO 序列化，反序列化时找不到枚举名。
-抬 pin 并给 `WfBatchOperation.Type` 的业务字段标 `@EnumValue` 即可解 ——
-但那是**独立的一次依赖升级决定**（z-util 是全组织共用件，抬 pin 要连带看 `z-util-wf-kernel` 对齐），
-不夹在本次 README 收口里，**不要**当成"测试本来就红"放过。
+这次读数之前是红的（core 16 error、web 5 failure、admin 5 failure，共 26 条），根因是**z-util 版本 skew**：
+本仓原先把 z-util 钉在 1.0.18 / 1.0.19，而那个版本的 `JsonUtil` 有枚举序列化的老 bug ——
+枚举被当 POJO 输出成 `{"name":null,"ordinal":null}`（`name()` / `ordinal()` 不是 bean getter），
+回读时直接抛「Enum name not found in JSON」。
+实测打在两处：`WfDecisionService` 的决策表落库回读（`TABLE_JSON`）与 `WfBatchService` 的批次操作回读。
+z-util **1.2.2** 起枚举改为输出 `name()` 字符串（z-util 侧自己的发版说明原话：
+「enum 序列化的输出形态是行为变更，下游须钉这一版」），本仓抬到 `1.2.6` 后 26 条全清。
+
+**不是**「缺 `@EnumValue`」——`@EnumValue` 在全组织除 z-util 外零使用，
+且 1.0.19 与 1.2.6 的 `JsonUtil` 都不读它（两个版本的字节码里 `EnumValue` 引用数都是 0），
+加上也不会有任何效果。真凶是枚举**序列化**那一侧的老 bug，不是**反序列化**侧缺机制。
 
 下表的「数量」列是**带日期的快照**（口径：该类的 `@Test` 方法数，与 surefire 逐类自报一致），
 随用例增删而变；README 自守卫**不钉它们**（钉了必漂），改钉各测试类**存在**。
@@ -691,7 +696,7 @@ swagger-annotations（web 层 `provided`，只取注解）。
 `${z-util.version}`。**import 进来的 BOM 是用它自己 pom 的属性上下文解析的**
 （fleet 1.0.1 里该属性 = 1.0.14），消费方再定义同名属性不会生效。
 
-实测症状：pom 里属性明明写着 1.0.18，`dependency:tree` 仍然显示 `z-util-core:1.0.14`，
+实测症状（抬 pin 之前的历史读数）：pom 里属性明明写着 1.0.18，`dependency:tree` 仍然显示 `z-util-core:1.0.14`，
 classpath 上同时存在 `z-util-core 1.0.14` 与 `z-util-wf-kernel 1.0.18` —— 同一个仓两个版本。
 而协议层（kernel）与解析器分属两个版本，正是"同一套 BPMN 语义出现两份实现"的温床。
 
@@ -699,11 +704,24 @@ classpath 上同时存在 `z-util-core 1.0.14` 与 `z-util-wf-kernel 1.0.18` —
 （本仓的 dependencyManagement 优先级高于 import 的 BOM），**传递依赖也要钉**
 （dependencyManagement 对传递依赖同样生效，否则 z-util-jdbc / z-config / z-rpc
 拖进来的 z-util-aop、z-util-bc、z-util-expr-sql 会停在 1.0.14）。
-本仓已钉 12 个 z-util 坐标，全部解析到 1.0.18。
+本仓已钉 12 个 z-util 坐标，全部解析到 1.2.6。
 
-**已知钉不到的两项**：`z-util-dsl`、`z-util-proxy` 的 1.0.18 **z-util 侧尚未发布**。
-它们只出现在 `z-util-jdbc`（optional）分支下，不影响 z-wf 的核心链路，
-但这是 z-util 的发布缺口，补齐后本仓的钉版列表可再收紧。
+`z-wf-admin` 是另一条线，**必须单独钉**：它是 **own-parent**（parent = `spring-boot-starter-parent`），
+根仓的属性与 dependencyManagement **根本到不了它**（没有那条父子继承链）。
+它只能自己 import `z-boot-parent:1.1.0` 拿权威（该 parent 自己把 z-util 槽位管在 1.0.19），
+再在自己的 dependencyManagement 里钉住 14 个 z-util 坐标，
+`z-util.version` 显式覆盖为 `1.2.6`，与根仓同版本。
+（own-parent 的实测症状比上面那条更隐蔽：根仓 `pom.xml` 里 `z-util.version` 明明写着同一个版本，
+`z-wf-admin` 的 `dependency:tree` 仍然全是 1.0.19 —— 父链那条根本没生效。）
+
+实测（2026-10-20，`mvn -o dependency:tree` 全 reactor）：树里 19 个 z-util 坐标**全部解析到 1.2.6**，零混装。
+原先「钉不到」的两项 `z-util-dsl`、`z-util-proxy` 现在**根本不出现在树上** ——
+`z-util-jdbc` 1.2.6 不再拖这两个，那条发布缺口在本仓自动消失。
+
+⚠ **升级前的数据面检查**：z-util 1.2.2 改的是枚举**序列化输出形态**，属行为变更 ——
+旧版本把枚举写成 `{"name":null,...}`，新版本读这种旧行会直接抛「Enum name not found in JSON」。
+本仓把枚举序列化进 JSON 列的有两处：`ZWF_DECISION.TABLE_JSON`（决策表）与 `ZWF_BATCH.OPERATIONS`（批次操作列表）。
+**这两个列有存量行就得先备份再清掉或用旧版回填**，否则升级后读旧数据直接报错；没有存量则直接升。
 
 ### 12.4 XML 解析为什么没用 z-util-parser-xml
 

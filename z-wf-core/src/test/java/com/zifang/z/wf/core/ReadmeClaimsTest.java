@@ -387,6 +387,16 @@ public class ReadmeClaimsTest {
         Map<String, String> configDefaults = new LinkedHashMap<>();
         /** 测试类简单名 → 该类的 {@code @Test} 方法数。 */
         Map<String, Integer> testClassCounts = new LinkedHashMap<>();
+        /** 根 pom {@code <properties>} 里的 z-util 版本（协议层与 parser 必须同版本）。 */
+        String rootZUtilVersion = "";
+        /** 根 pom {@code <properties>} 里的 z-util-wf 版本键（协议层）。 */
+        String rootZUtilWfVersion = "";
+        /** z-wf-admin/pom.xml 里的 z-util 版本（own-parent，只能自己钉）。 */
+        String adminZUtilVersion = "";
+        /** 根 pom 的 dependencyManagement 里显式钉住的 z-util 坐标（集合）。 */
+        Set<String> rootPinnedZUtil = new TreeSet<>();
+        /** z-wf-admin/pom.xml 的 dependencyManagement 里显式钉住的 z-util 坐标（集合）。 */
+        Set<String> adminPinnedZUtil = new TreeSet<>();
     }
 
     private static Facts facts() {
@@ -421,6 +431,16 @@ public class ReadmeClaimsTest {
                 }
             }
         }
+
+        // z-util 钉版：两个 pom 各自的属性与 dependencyManagement。
+        // admin 是 own-parent，父链那套到不了它 —— **必须单独采**，
+        // 只采根 pom 会把 admin 悄悄漏掉，而 README 里两处都要写。
+        f.rootZUtilVersion = pomProperty(rootPom, "z-util.version");
+        f.rootZUtilWfVersion = pomProperty(rootPom, "z-util-wf.version");
+        f.rootPinnedZUtil = pinnedZUtilCoordinates(rootPom);
+        String adminPom = stripXmlComments(readText(root.resolve("z-wf-admin/pom.xml")));
+        f.adminZUtilVersion = pomProperty(adminPom, "z-util.version");
+        f.adminPinnedZUtil = pinnedZUtilCoordinates(adminPom);
 
         // 节点类型：枚举真身（不是 names() 那份手抄清单 —— 它漏过一个类型）
         for (WfNodeType t : WfNodeType.values()) {
@@ -699,6 +719,94 @@ public class ReadmeClaimsTest {
             // 这里只校验「数量列是个数字」+「点名的类在盘上真的存在」。
         }
 
+        // ---- z-util 钉版：README 写的版本与坐标数必须与两个 pom 对得上 ----
+        problems.addAll(verifyZUtilPin(readme, f));
+
+        return problems;
+    }
+
+    /**
+     * 核对 z-util 钉版这条主张。
+     *
+     * <p><b>为什么单列一条</b>：z-util 是全组织共用件，本仓的版本 skew 曾经让 26 条用例红
+     * （z-util 1.0.x 的枚举序列化老 bug：枚举被当 POJO 输出成 {@code {"name":null}}，
+     * 回读直接抛「Enum name not found in JSON」）。
+     * 而 README 里那句「已钉 N 个 z-util 坐标，全部解析到 X」此前**没有任何尺子**在看 ——
+     * 它可以既过期又自相矛盾，且不触发任何一条断言。</p>
+     *
+     * <p><b>逐处全判</b>：同一个说法在 README 里出现两次（根仓一次、admin 一次），
+     * 只判首处会漏 —— 改第二处就能溜过去。</p>
+     */
+    private static List<String> verifyZUtilPin(String readme, Facts f) {
+        List<String> problems = new ArrayList<>();
+
+        // ① 两个 pom 的版本属性必须自洽（源码侧不变量，不经 README）：
+        //    协议层与 parser 同版本；admin 与根仓同版本。
+        if (!f.rootZUtilVersion.equals(f.rootZUtilWfVersion)) {
+            problems.add("【z-util 钉版】根 pom 的 z-util.version（" + f.rootZUtilVersion
+                    + "）与 z-util-wf.version（" + f.rootZUtilWfVersion
+                    + "）不一致 —— kernel 是协议层，必须与 parser 同版本");
+        }
+        if (!f.rootZUtilVersion.equals(f.adminZUtilVersion)) {
+            problems.add("【z-util 钉版】根 pom 的 z-util.version（" + f.rootZUtilVersion
+                    + "）与 z-wf-admin 的 z-util.version（" + f.adminZUtilVersion
+                    + "）不一致 —— admin 是 own-parent，父链钉不住，只能自己钉");
+        }
+
+        // ② README 的每一处版本声明都必须等于钉版值。
+        Matcher vm = Pattern.compile("`z-util\\.version` 显式覆盖为 `([0-9]+\\.[0-9]+\\.[0-9]+)`")
+                .matcher(readme);
+        int seen = 0;
+        while (vm.find()) {
+            seen++;
+            if (!vm.group(1).equals(f.rootZUtilVersion)) {
+                problems.add("【z-util 钉版】README 写「z-util.version 显式覆盖为 " + vm.group(1)
+                        + "」，根 pom 钉的是 " + f.rootZUtilVersion);
+            }
+        }
+        if (seen == 0) {
+            problems.add("【z-util 钉版】README 里找不到「z-util.version 显式覆盖为 <版本>」这一处版本声明");
+        }
+
+        // ③ 「全部解析到 X」必须等于钉版值。
+        Matcher rm = Pattern.compile("全部解析到\\s*`?([0-9]+\\.[0-9]+\\.[0-9]+)`?").matcher(readme);
+        int seenResolved = 0;
+        while (rm.find()) {
+            seenResolved++;
+            if (!rm.group(1).equals(f.rootZUtilVersion)) {
+                problems.add("【z-util 钉版】README 写「全部解析到 " + rm.group(1)
+                        + "」，钉版值是 " + f.rootZUtilVersion);
+            }
+        }
+        if (seenResolved == 0) {
+            problems.add("【z-util 钉版】README 里找不到「全部解析到 <版本>」这一处解析结果声明");
+        }
+
+        // ④ 两处坐标数：根仓与 admin 各一个，必须分别等于各自 pom 里实际钉住的坐标数。
+        problems.addAll(verifyPinnedCount(readme, "已钉 ([0-9]+) 个 z-util 坐标",
+                "本仓", f.rootPinnedZUtil.size()));
+        problems.addAll(verifyPinnedCount(readme, "钉住 ([0-9]+) 个 z-util 坐标",
+                "z-wf-admin", f.adminPinnedZUtil.size()));
+
+        return problems;
+    }
+
+    /** 核对一处「已钉 / 钉住 N 个 z-util 坐标」的声明，N 必须等于 pom 里实际钉住的坐标数。 */
+    private static List<String> verifyPinnedCount(String readme, String regex, String label, int actual) {
+        List<String> problems = new ArrayList<>();
+        Matcher m = Pattern.compile(regex).matcher(readme);
+        int seen = 0;
+        while (m.find()) {
+            seen++;
+            int said = Integer.parseInt(m.group(1));
+            if (said != actual) {
+                problems.add("【z-util 钉版】README 写 " + label + " 钉了 " + said
+                        + " 个 z-util 坐标，pom 里实际钉住 " + actual + " 个");
+            }
+        }
+        if (seen == 0) {
+            problems.add("【z-util 钉版】README 里找不到「" + label + " 钉住 N 个 z-util 坐标」这一处坐标数声明");
+        }
         return problems;
     }
 
@@ -713,6 +821,77 @@ public class ReadmeClaimsTest {
         if (!m.group(1).equals(f.revision)) {
             problems.add(label + " README 写 " + m.group(1) + "，根 POM <revision> 是 " + f.revision);
         }
+    }
+
+    /**
+     * 取 pom <b>顶层</b> {@code <properties>} 里某个属性的字面值。
+     *
+     * <p>只看文档根的直接子节点，不钻 profile —— profile 里若有同名 properties 会串味。</p>
+     */
+    private static String pomProperty(String pomText, String prop) {
+        for (Node n : childElements(parseXml(pomText).getDocumentElement())) {
+            if (!"properties".equals(n.getNodeName())) {
+                continue;
+            }
+            for (Node p : childElements(n)) {
+                if (prop.equals(p.getNodeName())) {
+                    return p.getTextContent().trim();
+                }
+            }
+        }
+        return "";
+    }
+
+    /**
+     * 取 pom 顶层 {@code dependencyManagement} 里<b>被显式钉住</b>的 z-util 坐标（集合）。
+     *
+     * <p>判据是 {@code <version>} 写成属性引用（{@code ${...}}）——
+     * 写死字面量的不算「钉住」，那是另一回事（字面量钉在哪个坐标上，仍会被别人的 BOM 改写）。
+     * 集合而不是个数：个数对但钉错了坐标，同样是错。</p>
+     */
+    private static Set<String> pinnedZUtilCoordinates(String pomText) {
+        Set<String> out = new TreeSet<>();
+        for (Node dm : childElements(parseXml(pomText).getDocumentElement())) {
+            if (!"dependencyManagement".equals(dm.getNodeName())) {
+                continue;
+            }
+            for (Node deps : childElements(dm)) {
+                if (!"dependencies".equals(deps.getNodeName())) {
+                    continue;
+                }
+                for (Node d : childElements(deps)) {
+                    if (!"dependency".equals(d.getNodeName())) {
+                        continue;
+                    }
+                    String artifact = "";
+                    String version = "";
+                    for (Node c : childElements(d)) {
+                        if ("artifactId".equals(c.getNodeName())) {
+                            artifact = c.getTextContent().trim();
+                        } else if ("version".equals(c.getNodeName())) {
+                            version = c.getTextContent().trim();
+                        }
+                    }
+                    if (artifact.startsWith("z-util") && version.startsWith("${")) {
+                        out.add(artifact);
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    /** 某个元素下的全部直接子元素（跳过文本节点与注释）。 */
+    private static List<Node> childElements(Node parent) {
+        List<Node> out = new ArrayList<>();
+        NodeList kids = parent.getChildNodes();
+        for (int i = 0; i < kids.getLength(); i++) {
+            Node n = kids.item(i);
+            if (n.getNodeType() == Node.ELEMENT_NODE) {
+                out.add(n);
+            }
+        }
+        return out;
     }
 
     // ==================================================================
@@ -814,6 +993,31 @@ public class ReadmeClaimsTest {
     }
 
     @Test
+    @DisplayName("牙口：z-util 钉版版本改错必红，且报错指向钉版那条主张")
+    void mutatedZUtilVersionMustFail() {
+        String readme = readme();
+        // README 里这句话出现两次（根仓一次、admin 一次），replace 全部替换 ——
+        // 逐处全判要的就是这个效果：改一处就够红。
+        String mutated = readme.replace("`z-util.version` 显式覆盖为 `1.2.6`",
+                "`z-util.version` 显式覆盖为 `9.9.9`");
+        assertFalse(mutated.equals(readme), "合成变异没生效：README 里没找到 z-util 版本声明那一处");
+        AssertionError err = assertThrows(AssertionError.class, () -> assertConsistent(mutated, facts()));
+        assertTrue(err.getMessage().contains("9.9.9"), "报错没指出被改坏的版本号：\n" + err.getMessage());
+        assertTrue(err.getMessage().contains("【z-util 钉版】"), "报错没指向 z-util 钉版这条主张：\n" + err.getMessage());
+    }
+
+    @Test
+    @DisplayName("牙口：z-util 坐标数改错必红，且报错指向钉版那条主张")
+    void mutatedZUtilCountMustFail() {
+        String readme = readme();
+        String mutated = readme.replace("已钉 12 个 z-util 坐标", "已钉 99 个 z-util 坐标");
+        assertFalse(mutated.equals(readme), "合成变异没生效：README 里没找到坐标数声明那一处");
+        AssertionError err = assertThrows(AssertionError.class, () -> assertConsistent(mutated, facts()));
+        assertTrue(err.getMessage().contains("99"), "报错没指出被改坏的坐标数：\n" + err.getMessage());
+        assertTrue(err.getMessage().contains("【z-util 钉版】"), "报错没指向 z-util 钉版这条主张：\n" + err.getMessage());
+    }
+
+    @Test
     @DisplayName("守卫生效确认：仓根定位、事实采集与 README 抓取都真的工作")
     void guardItselfWorks() {
         Path root = repoRoot();
@@ -829,6 +1033,10 @@ public class ReadmeClaimsTest {
         assertTrue(f.persistenceMethodCount > 0, "SPI 方法数应为正");
         assertTrue(f.configDefaults.size() >= 1, "配置默认值没采到");
         assertTrue(f.testClassCounts.size() >= 1, "测试类清单没采到");
+        assertFalse(f.rootZUtilVersion.isEmpty(), "根 pom 的 z-util.version 没采到");
+        assertFalse(f.adminZUtilVersion.isEmpty(), "z-wf-admin 的 z-util.version 没采到");
+        assertFalse(f.rootPinnedZUtil.isEmpty(), "根 pom 的 z-util 钉版坐标没采到");
+        assertFalse(f.adminPinnedZUtil.isEmpty(), "z-wf-admin 的 z-util 钉版坐标没采到");
         assertTrue(readme().contains("z-wf"), "读到的 README 不含仓名，仓根定位可能错了");
         // 模块清单里不该有重复（重复会让集合比较失去意义）
         assertEquals(f.modules.size(), new TreeSet<>(f.modules).size(), "模块清单不应有重复");
