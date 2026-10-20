@@ -195,11 +195,12 @@ WorkflowConfiguration back = ZUtilWfBridge.toWorkflowConfiguration(definition);
 
 ### 3.2 节点类型
 
-`START_EVENT` / `END_EVENT` / `USER_TASK` / `SERVICE_TASK` / `SCRIPT_TASK` / `MANUAL_TASK` /
-`SEND_TASK` / `RECEIVE_TASK` / `THROW_EVENT` / `EXCLUSIVE_GATEWAY` / `PARALLEL_GATEWAY` /
-`INCLUSIVE_GATEWAY` / `COMPLEX_GATEWAY` / `EVENT_BASED_GATEWAY` / `INTERMEDIATE_CATCH_EVENT` /
-`LINK_THROW` / `LINK_CATCH` / `BUSINESS_RULE_TASK` / `SUB_PROCESS` / `CALL_ACTIVITY` /
-`TASK` / `BOUNDARY_EVENT`（共 22 种）。
+`START_EVENT` / `END_EVENT` / `TERMINATE_END_EVENT` / `CANCEL_END_EVENT` / `TRANSACTION` /
+`USER_TASK` / `SERVICE_TASK` / `SCRIPT_TASK` / `MANUAL_TASK` / `SEND_TASK` / `RECEIVE_TASK` /
+`THROW_EVENT` / `EXCLUSIVE_GATEWAY` / `PARALLEL_GATEWAY` / `INCLUSIVE_GATEWAY` /
+`COMPLEX_GATEWAY` / `EVENT_BASED_GATEWAY` / `INTERMEDIATE_CATCH_EVENT` / `LINK_THROW` /
+`LINK_CATCH` / `BUSINESS_RULE_TASK` / `SUB_PROCESS` / `CALL_ACTIVITY` / `TASK` /
+`BOUNDARY_EVENT`（共 25 种）。
 
 类型名大小写不敏感（`userTask` / `user-task` / `USER_TASK` 归一到同一个）。
 
@@ -433,14 +434,14 @@ advance() = leave(token) + 沿出线 enter(下一个 token)
 
 ## 5. 持久化
 
-`WfPersistence` SPI（25 个方法）两套实现：
+`WfPersistence` SPI（78 个方法）两套实现：
 
 - `InMemoryWorkflowPersistence` — 零依赖，用于测试与语义参考。
   深拷贝用 **Java 原生序列化**，不用 JSON 往返：`JsonUtil.toJson` 把 `Date` 序列化成
   epoch-millis 的 `Long`，`fromJson` 还原不回 `Date` 会抛
   `Can not set java.util.Date field ... to java.lang.Long`；且原生序列化免疫
   "新增字段忘补 copy 一行"这个漏洞面。
-- `JdbcWorkflowPersistence` — 13 张表（`ZWF_*`）+ 15 个索引 + 乐观锁 CAS。
+- `JdbcWorkflowPersistence` — 13 张表（`ZWF_*`）+ 22 个索引 + 乐观锁 CAS。
   冲突抛 `WfOptimisticLockException`（web 层映射为 HTTP 409），存储故障映射 503。
 
 **持久化形状 ≠ 运行时对象**（`WfDefinitionCodec`）：`WfDefinition` 含 `Date startTime`，
@@ -472,8 +473,8 @@ advance() = leave(token) + 沿出线 enter(下一个 token)
 
 | 接口 | 方法 |
 |---|---|
-| `WfProcessHook` | `onBeforeStart`（可否决）/ `onAfterStart` / `onComplete` |
-| `WfTaskHook` | `onBeforeCreate`（可否决）/ `onAfterCreate` / `onAssigneeChanged` / `onBeforeComplete`（可否决）/ `onAfterComplete` |
+| `WfProcessHook` | `onBeforeStart`（可否决）/ `onAfterStart` / `onComplete` / `onTransition` / `onJobScheduled` / `onJobExecuted` |
+| `WfTaskHook` | `onBeforeCreate`（可否决）/ `onAfterCreate` / `onAssigneeChanged` / `onBeforeComplete`（可否决）/ `onAfterComplete` / `onDeleted` |
 | `WfNotificationHook` | `notifyTaskAssigned` / `notifyApprovalResult` / `notifyOverdue` |
 
 **钩子异常一律不否决流程**，只有显式 `return false` 才否决。
@@ -552,6 +553,7 @@ z.wf.process-path=classpath*:processes/*.bpmn
 z.wf.fail-open=false                 # 条件求值失败时是否放行（默认 false = fail-closed）
 z.wf.auto-initialize-schema=true     # jdbc 模式下自动建表
 z.wf.approved-result=approved        # 结果为该值视为"通过"
+z.wf.history-level=full              # 历史留痕档位（none | activity | audit | full）
 ```
 
 自动部署示例（`z-wf-starter`）：
@@ -566,14 +568,26 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 
 ## 9. 测试
 
-999 个测试，全绿（core 910 / web 16 / admin 73）。
+截至 2026-10-20 的读数（口径：surefire 逐模块自报）：**core 1091 / web 41 / admin 124**，合计 **1256** 条用例。
+
+⚠ 这次读数里**有 16 条 error**，集中在 `WfBatchTest` / `WfDecisionServiceTest` / `WfDmnDecisionGraphTest`，
+根因是**z-util 版本 skew**：本仓把 `z-util.version` 钉在 `1.0.18`，那个版本的 JSON 层还不支持
+「枚举带业务字段」（盘面 z-util 已到 1.2.x，`@EnumValue` 机制在那之后才有），
+于是 `WfBatchOperation.Type` 被当 POJO 序列化，反序列化时找不到枚举名。
+抬 pin 并给 `WfBatchOperation.Type` 的业务字段标 `@EnumValue` 即可解 ——
+但那是**独立的一次依赖升级决定**（z-util 是全组织共用件，抬 pin 要连带看 `z-util-wf-kernel` 对齐），
+不夹在本次 README 收口里，**不要**当成"测试本来就红"放过。
+
+下表的「数量」列是**带日期的快照**（口径：该类的 `@Test` 方法数，与 surefire 逐类自报一致），
+随用例增删而变；README 自守卫**不钉它们**（钉了必漂），改钉各测试类**存在**。
+README 自守卫在 `z-wf-core/src/test/java/com/zifang/z/wf/core/ReadmeClaimsTest.java`。
 
 | 测试类 | 数量 | 覆盖 |
 |---|---|---|
-| `WfDefinitionParserTest` | 17 | XML/JSON 解析、校验器、类型归一、与 z-util-wf 的解析 parity |
+| `WfDefinitionParserTest` | 20 | XML/JSON 解析、校验器、类型归一、与 z-util-wf 的解析 parity |
 | `ZUtilWfBridgeTest` | 14 | 协议往返、fail-closed、已知限制、桥接定义真的能跑完审批 |
-| `JdbcWorkflowPersistenceTest` | 17 | H2 上的建表 / CRUD / 乐观锁 / 查询 |
-| `InMemoryWorkflowPersistenceTest` | 11 | 内存存储语义、深拷贝隔离 |
+| `JdbcWorkflowPersistenceTest` | 63 | H2 上的建表 / CRUD / 乐观锁 / 查询 |
+| `InMemoryWorkflowPersistenceTest` | 19 | 内存存储语义、深拷贝隔离 |
 | `WfEngineEndToEndTest` | 18 | 线性 / 排他 / 并行 / 走默认流 四种审批链 |
 | **`WfNodeTypeCoverageTest`** | **16** | **14 种节点类型的实际运行行为**（不是"能解析"） |
 | **`WfHookDispatchAuditTest`** | **15** | **11 个扩展点回调逐个验证真的会触发** |
@@ -585,12 +599,12 @@ z.wf.approved-result=approved        # 结果为该值视为"通过"
 | **`WfJobPriorityTest`** | **10** | job 优先级从节点拷贝、两套存储实现同一把尺子、存量库补列、更新时不抹掉、排序是开关 |
 | **`WfComplexGatewayThresholdTest`** | **11** | 阈值放行只合并已抵达的（不误杀在跑的任务）、晚到令牌被消费掉且留痕、不配阈值行为不变、codec 往返、4 类非法配置部署期挡住 |
 | **`WfJobTriggerTest`** | **9** | 只有时间触发型/异步型可提前触发；订阅型、事件网关竞速分支、外部任务三类**分别**说清为什么不行；job 不存在要报错；留痕要点破「停留超时」不适用、且「该响没响」不写假记录 |
-| **`WfTerminateEndEventTest`** | **9** | 终止结束事件：进程级终止整个实例、子流程级终止不带走父流程、待办作废/job 撤销/留痕、「正常结束+终止并存」合法、两条部署期 ERROR |
+| **`WfTerminateEndEventTest`** | **10** | 终止结束事件：进程级终止整个实例、子流程级终止不带走父流程、待办作废/job 撤销/留痕、「正常结束+终止并存」合法、两条部署期 ERROR |
 | **`WfDmnDecisionGraphTest`** | **17** | 决策图：声明顺序不影响结果、依赖边活过两种持久化、成环（文件内 / 跨文件 / 自依赖）在部署期挡住且不留半套、上游 0 行与多行不停下来、同名变量冲突 |
-| **`WfVariableServiceTest`** | **12** | 变量读写、批量原子性、审计留痕、终态拒绝 |
-| **`UnsupportedBpmnElementTest`** | **7** | 未支持元素不许静默退化（XML + JSON 两条入口） |
+| **`WfVariableServiceTest`** | **18** | 变量读写、批量原子性、审计留痕、终态拒绝 |
+| **`UnsupportedBpmnElementTest`** | **10** | 未支持元素不许静默退化（XML + JSON 两条入口） |
 | `WfAdminEndToEndTest` | 6 | Spring 全栈 + JDBC 落库 + 示例流程端到端 |
-| `WfWebApiTest` | 67 | **真实 HTTP**（`RANDOM_PORT` 起容器）：VO 边界、分页 total、异常→状态码、变量端点 |
+| `WfWebApiTest` | 73 | **真实 HTTP**（`RANDOM_PORT` 起容器）：VO 边界、分页 total、异常→状态码、变量端点 |
 | `WfJobControllerTest` | 10 | job 运维端点的路径/参数/状态码/响应字段；`triggered=false` 仍是 200；两个 job 端点的 id 字段名一致 |
 
 > 加粗的那几个是**行为审计**而非功能测试。本项目有过三次"实现了、注册了、
