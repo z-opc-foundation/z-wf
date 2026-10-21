@@ -244,4 +244,152 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!--
+            central：发 Maven Central 的发布链（Central Portal 新接口）。
+            配置逐项对齐 z-lc / z-msg 已验证的那条链：
+              ① distributionManagement 指 Central Portal；
+              ② maven-deploy-plugin skip=true —— 真正的上传由
+                 central-publishing-maven-plugin（extensions=true）接管，
+                 走「打包 bundle → 上传 → autoPublish」这条路；
+              ③ source / javadoc 挂件 —— 中央要求每个发布件都带 sources + javadoc；
+              ④ gpg 签名，pinentry-mode loopback（配合仓内密钥环 $PWD/.gnupg）；
+              ⑤ excludeArtifacts 点名 z-wf-admin：它是独立可启动应用
+                 （自带 spring-boot repackage 的 fat jar + 前端构建），
+                 本仓 pom 与 README 都写明「永不上 Maven Central」。
+                 ⚠ 本插件不认 maven.deploy.skip（z-wf-admin 自己那份 skip=true 拦不住它），
+                 所以必须在这里点名排除，否则 fat jar 会被一起 bundle 上去。
+
+            发布口径（对齐 z-lc 的做法）：
+              根聚合 pom 本身也是发布件 —— 坐标 io.github.yuku123:z-wf 的 1.x 是 Camunda 线，
+              2.x 是自研线，这条「接续」关系就靠根 pom 落在架上体现；
+              子模块 z-wf-core / z-wf-web / z-wf-starter 三个库件随同一 bundle 一起发。
+              根 pom 是 packaging=pom ⇒ 它只有 .pom 件，jar/sources/javadoc 在三个库件上。
+        -->
+        <profile>
+            <id>central</id>
+            <properties>
+                <maven.javadoc.skip>false</maven.javadoc.skip>
+                <central.gpg.skip>false</central.gpg.skip>
+            </properties>
+            <distributionManagement>
+                <repository>
+                    <id>central</id>
+                    <url>https://central.sonatype.com</url>
+                </repository>
+                <snapshotRepository>
+                    <id>central</id>
+                    <url>https://central.sonatype.com</url>
+                </snapshotRepository>
+            </distributionManagement>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-deploy-plugin</artifactId>
+                        <version>3.1.4</version>
+                        <configuration>
+                            <skip>true</skip>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>3.3.0</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>3.11.2</version>
+                        <configuration>
+                            <doclint>none</doclint>
+                            <failOnError>false</failOnError>
+                            <failOnWarnings>false</failOnWarnings>
+                            <quiet>true</quiet>
+                            <!-- Java 口径由 parent 的 pluginManagement / properties 下发
+                                 （z-boot-parent:1.1.0 里 maven.compiler.source=8） -->
+                            <source>${maven.compiler.source}</source>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.2.7</version>
+                        <configuration>
+                            <skip>${central.gpg.skip}</skip>
+                            <gpgArguments>
+                                <arg>--pinentry-mode</arg>
+                                <arg>loopback</arg>
+                                <arg>--no-tty</arg>
+                            </gpgArguments>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.7.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <tokenAuth>true</tokenAuth>
+                            <autoPublish>true</autoPublish>
+                            <excludeArtifacts>
+                                <excludeArtifact>z-wf-admin</excludeArtifact>
+                            </excludeArtifacts>
+                            <waitUntil>uploaded</waitUntil>
+                            <waitMaxTime>1800</waitMaxTime>
+                            <waitPollingInterval>10</waitPollingInterval>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- 真发前的形状检查：同一套 distributionManagement，只跳 javadoc 与签名。
+             与 central 一起开（-Pcentral,central-dryrun）时后者的 properties 覆盖 skip 两格。 -->
+        <profile>
+            <id>central-dryrun</id>
+            <properties>
+                <maven.javadoc.skip>true</maven.javadoc.skip>
+                <central.gpg.skip>true</central.gpg.skip>
+            </properties>
+            <distributionManagement>
+                <repository>
+                    <id>central</id>
+                    <url>https://central.sonatype.com</url>
+                </repository>
+                <snapshotRepository>
+                    <id>central</id>
+                    <url>https://central.sonatype.com</url>
+                </snapshotRepository>
+            </distributionManagement>
+        </profile>
+    </profiles>
 </project>
