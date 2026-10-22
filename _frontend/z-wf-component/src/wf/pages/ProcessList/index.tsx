@@ -258,7 +258,17 @@ const ProcessList: React.FC = () => {
                         dataSource={data}
                         rowKey="id"
                         loading={loading}
-                        pagination={false}
+                        // 分页按 lead 008 §2 规则 2 补齐四件套（原来只有 pagination={false}）：
+                        // 流程定义是用户自己新建的（页头「新建流程」按钮），条数会增长，
+                        // 不能按「≤10 行且不变」豁免。
+                        // 这页页头已经自带搜索框（Input「搜索流程名称」），所以不接基座
+                        // ListTable 的 searchKeys —— 否则页面上会出现两个搜索框。
+                        pagination={{
+                            pageSize: 10,
+                            showSizeChanger: true,
+                            pageSizeOptions: ['10', '20', '50', '100'],
+                            showTotal: (total) => `共 ${total} 条`,
+                        }}
                         scroll={{x: 1400}}
                         locale={{
                             emptyText: (
