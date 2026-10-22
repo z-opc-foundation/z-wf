@@ -54,12 +54,26 @@ MySQL 上「索引已存在」是 1061 Duplicate key name，而「建索引失�
 initialize() 成功，耗时 ~400ms
 13 张表（ZWF_DEFINITION/PROCESS/EXECUTION/TASK/ACTIVITY/COMMENT/JOB/
         COMPENSATION/BATCH/BATCH_ELEMENT/INCIDENT_HISTORY/FILTER/DECISION）
-29 个索引全部真建出来（逐表核对 information_schema.STATISTICS，不是靠"没报错"推断）
+22 个二级索引全部真建出来（逐表核对 information_schema.STATISTICS，不是靠"没报错"推断）
 第二次 initialize() 成功（幂等）
 复核：带 DEFAULT_GENERATED / on update 的 TIMESTAMP 列数 = 0（应为 0）
 ```
-> ⚠ 日志里的「13 张表，22 条索引」与库里的 **29** 个索引**不矛盾**：
-> 22 = 显式 `CREATE INDEX` 语句数，29 = 库里实际的非主键索引数（差额 7 来自列上的 `UNIQUE` 约束）。
+> **索引口径（2026-10-22 订正，以真库为准）**：
+> | 口径 | 数量 | 怎么数的 |
+> |---|---|---|
+> | 表 | 13 | `zwf_*` 表 |
+> | **二级索引（验收口径）** | **22** | 非主键索引名去重后计数 |
+> | 主键 | 13 | 每表一个 PRIMARY |
+> | 索引名合计 | 35 | 22 + 13 |
+>
+> ⚠ **此前本手册写的「29 个索引」是误算，已作废**。误算成因：`information_schema.STATISTICS`
+> 是**一列一行**（复合索引按列数重复出现），直接数行会把复合索引算多次。
+> 正解是 `group by table_name, index_name` 后数索引**名**。
+> ⚠ 此前那句「29 − 22 = 差额 7 来自列上的 UNIQUE 约束」**也是错的**：
+> 22 个二级索引里**只有 1 个**是 UNIQUE（`UDX_WF_INCHIST_JOB`），
+> 其余 21 个是非唯一索引。
+> ✅ 交叉验证：源码 `JdbcWorkflowPersistence` 里 `ddl.add("CREATE INDEX …")` **恰好 22 条**
+> （其中 1 条 `CREATE UNIQUE INDEX`）⇒ **源码语句数 = 库中索引数 = 22**，两侧对齐。
 
 ### 0.2 ⚠ 库不需要手工建
 
@@ -98,6 +112,49 @@ JDBC URL 的 host **不写**在清单里，而是整条走 `secretKeyRef`（`ali
 `ZWF_JOB` 表里有定时器型 job 在跑。滚动更新会出现「新旧两个实例同时扫同一批到期 job」
 ⇒ **同一 job 被执行两次**。所以 `strategy.type: Recreate`，`replicas: 1`。
 
+### 0.6 🔴 入站鉴权 + 可观测性（2026-10-22 上线，TASK-20261022-024）
+
+**背景**：z-wf 于 2026-10-22 08:45 首次上线，通过 NodePort `31887` 裸暴露在集群内网，
+而它**从设计上就没有任何认证层**（全仓 grep：`HandlerInterceptor` / `OncePerRequestFilter` /
+`SecurityFilterChain` / `@NoLogin` 均 0 命中）⇒ 首次上线实测：
+**9 条读端点匿名可读、20 条写端点全部已注册且闸门不在拦**。
+
+**为什么不能靠主壳 SSO 闸门**：主壳闸门（z-ctc 的 `SsoInterceptor`）是**进程内**拦截器，
+挂在 z-ops / z-opc 自己的应用里。z-wf 是独立进程、不经网关、不挂那个闸门
+⇒ 「把路径加进 `sso.intercept-paths`」对它**无效**。
+
+**现在的做法**：z-wf-admin 的 Web MVC 层自带一道入站闸（`WfAuthInterceptor`）：
+
+| 项 | 口径 |
+|---|---|
+| 受保护面 | `/api/**`（业务接口全部） |
+| 免鉴权面 | ① `/api/wf/health/probe`（**探针专用**，只回 status/engine）② `/error` ③ 静态资源与接口文档 |
+| 凭据通道 | `Authorization: Bearer <token>` / 裸 `Authorization: <token>` / Cookie `sso_token`、`zctc_token`（与主壳同口径） |
+| 凭据来源 ① | **服务令牌**：`Z_WF_AUTH_TOKENS`（逗号分隔，元素形如 `name:secret`；`name` 只进审计日志） |
+| 凭据来源 ② | **主壳 SSO 票据**：`Z_WF_SSO_JWT_SECRET`（与 z-ctc 同一枚 HS256 密钥 ⇒ z-wf **本地离线验签**） |
+| 没带凭据 / 凭据无效 | **401** + JSON 信封（不是 HTML） |
+| **一个凭据来源都没配** | **503** + JSON 信封 —— **fail-closed**，不是 401，更不是放行 |
+| 审计 | 应用层 `[WF-ACCESS]` 审计行（凭据名 + 路径 + 状态码 + 耗时 + 来源 IP）+ Tomcat access log |
+
+> ⚠ **为什么 SSO 票据是「离线验签」而不是回调 z-ctc**：z-ctc 有 `GET /api/ctc/authn/verify`
+> （服务端只验签不查库），本可以远端调用；但实测本集群的 NetworkPolicy **确实生效** ——
+> z-wf 的 Pod 访问 z-ctc 的 ClusterIP **超时**，访问自己同 ns 的正常
+> ⇒ z-ctc ns 的 netpol 没放行 z-wf 的 Pod，远端验签在当前拓扑下不可用。
+> 离线验签顺带去掉了「4A 中心抖一下 ⇒ 流程引擎全挂」这个故障域。
+
+> ⚠ **探针路径为什么从 `/api/wf/health` 换成 `/api/wf/health/probe`**：
+> kubelet 的 httpGet 探针**带不了自定义请求头**（`httpHeaders` 只能写字面量、不能引用 Secret）
+> ⇒ 鉴权上线后探针带不来 Authorization。而 `/api/wf/health` 在验收口径的 **17 条受测读路径**里，
+> 豁免它 = 验收指标 ①（匿名可读数 = 0）直接不成立。
+> ⇒ 另开一条只回 `status/engine`、**不含业务数据**的探针路径。
+> **别把探针改回去。**
+
+> ⚠ **可观测性为什么要两层**：Tomcat access log 记「连接层」（来源 IP / UA / 状态码 / 耗时）；
+> 应用层 `[WF-ACCESS]` 审计行记「用的哪个凭据 + 调了哪个端点」。
+> 首日上线时 z-wf **没有任何访问日志** ⇒ Pod 里那组 08:58 的请求
+> （`MissingServletRequestParameterException: userId` / `任务已完成或已作废`）
+> 至今**无法证明也无法排除**是被谁发的 —— 这正是本项的由来。
+
 ---
 
 ## 1. 构建镜像
@@ -112,29 +169,54 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
 
 # ⚠ Dockerfile 第一阶段要能解析到 parent（z-boot-parent:1.1.0，在 repo1）与兄弟仓件。
 #   离线构建先确保 ~/.m2 里有；否则先 mvn -o -DskipTests install 把本仓件灌进本地仓。
-docker build --platform linux/amd64 -t z-wf:1 .
+docker build --platform linux/amd64 -t z-wf:2 .
 ```
 
-**tag 必须是裸 tag**（`z-wf:1`），**不许带仓库前缀** ——
-`k3s ctr images import` 灌进来后镜像名就是 `docker.io/library/z-wf:1`，
+**tag 必须是裸 tag**（`z-wf:2`），**不许带仓库前缀** ——
+`ctr images import` 灌进来后镜像名就是 `docker.io/library/z-wf:2`，
 清单里写带 Nexus 前缀的 tag ⇒ 名字对不上 ⇒ `ErrImageNeverPull`。
 （这条坑记在 `z-opc/deploy/kubernetes/04-main.yaml` 头部，z-ops 同样。）
+
+> ⚠ **2026-10-22 首次上线实测：容器内现编会把部署绑架在依赖下载上。**
+> 根 Dockerfile 的第一阶段（`maven:3.9.9-eclipse-temurin-8`）要在**容器里**从 repo1
+> 重新解析整棵依赖树 —— 实测在 zifang001 上跑这条，`.m2` 15 分钟只涨到 108M 就卡住不动。
+> ⇒ **推荐用 runtime-only 路线**：[`../Dockerfile.runtime`](../Dockerfile.runtime)
+> —— 本地离线打 jar（`mvn -o … package`，18 秒）再 COPY 进镜像，
+> 镜像内容与根 Dockerfile 走完 stage1+stage2 **等价**，差别只在「编译发生在哪台机器」。
+> ⚠ 那个文件叫 `Dockerfile.runtime` 而不是 `Dockerfile.jar`：本仓 `.gitignore` 里有 `*.jar`，
+> **`Dockerfile.jar` 会被 git 当二进制包忽略掉**（文件名以 `.jar` 结尾即命中）。
 
 ### 1.2 喂进 containerd（两个节点都要喂）
 
 ```bash
-docker save z-wf:1 | gzip -1 > /home/zifang/zopcimg/z-wf-1.tar.gz
+docker save z-wf:2 | gzip -1 > /home/zifang/zopcimg/z-wf-2.tar.gz
+
+# ⚠ ctr 必须显式指定 address 与 namespace，否则会灌进错误的 containerd / 错误的 ns：
+#    --address /run/k3s/containerd/containerd.sock  --namespace k8s.io
+#    （k3s ctr 包装脚本默认带了这两个参数；直接调 ctr 时必须自己写。）
 
 # 节点 zifang001（.231，有 docker）：
-cat z-wf-1.tar.gz | sudo -n k3s ctr images import -
+cat z-wf-2.tar.gz | sudo -n ctr --address /run/k3s/containerd/containerd.sock \
+  --namespace k8s.io images import -
 
 # 节点 zifang002（.136，pod 可能落这儿，**无 docker**）：
-scp -3 z-wf-1.tar.gz zifang@192.168.31.136:/home/zifang/zopcimg/
-ssh zifang@192.168.31.136 'cat /home/zifang/zopcimg/z-wf-1.tar.gz | sudo -n k3s ctr images import -'
+scp -3 z-wf-2.tar.gz zifang@192.168.31.136:/home/zifang/zopcimg/
+ssh zifang@192.168.31.136 'cat /home/zifang/zopcimg/z-wf-2.tar.gz | sudo -n ctr --address /run/k3s/containerd/containerd.sock --namespace k8s.io images import -'
 ```
 
 ⚠ **必须是 `cat` 管道** —— `ctr images import -` 从 stdin 读，直接喂文件会报 `unrecognized image format`。
 ⚠ **两个节点都要喂**：未调度前不知道 pod 落谁家，少一份就 `ErrImageNeverPull`。
+⚠ **.231 没有免密 sudo** ⇒ 灌镜像要走「搬运工」容器（容器内 chroot 到宿主再调 ctr）：
+```bash
+ssh zifang@192.168.31.231 'docker run --rm --entrypoint sh --privileged -v /:/host z-ops:272 -c \
+  "chroot /host /usr/local/bin/ctr --address /run/k3s/containerd/containerd.sock --namespace k8s.io images import /home/zifang/zopcimg/z-wf-2.tar.gz"'
+```
+⚠ **灌完必须用 kubelet 视角复核**（`ctr images list` 看到的是 containerd 自己的账本，
+不等于 kubelet 能用它）：
+```bash
+kubectl -n z-wf debug node/zifang001 -it --image=busybox -- chroot /host crictl images | grep z-wf
+# 期望：docker.io/library/z-wf:2 / linux/amd64 / io.cri-containerd.image=managed
+```
 
 ---
 
@@ -154,6 +236,26 @@ kubectl -n z-opc get secret aliyun-db -o yaml | \
 # 3) dry-run 校验
 kubectl apply --dry-run=client -f z-wf/deploy/kubernetes/z-wf.yaml
 
+# 3.1) 🔴 灌入站鉴权的 Secret（2026-10-22，TASK-20261022-024）
+#     ⚠ 不灌也能起（清单里 secretKeyRef 是 optional:true），
+#       但**所有 /api/** 会 fail-closed 返 503 —— 这是刻意的，不是故障。
+#     ⚠ token 只在本机终端生成，**不要**写进任何文件、不要提交进 git。
+TOKEN=$(openssl rand -hex 32)
+kubectl -n z-wf create secret generic z-wf-auth \
+  --from-literal=auth-tokens="zteam:$TOKEN" \
+  --dry-run=client -o yaml | kubectl apply -f -
+unset TOKEN
+#   可选：让主壳的 SSO 登录票据也能直接调 z-wf（需要 z-ctc 那枚 HS256 密钥）。
+#   ⚠ z-ctc 的密钥是**源码里的硬编码常量**（z-ctc-sso 的 SsoAutoConfiguration#jwtUtil），
+#     属 z-ctc 仓的既有账，不在本手册范围；下面从源码取，**不把明文写进本仓**：
+#   SSO_SECRET=$(grep -o 'new JwtUtil("[^"]*")' \
+#     <z-ctc 仓>/z-ctc-sso/src/main/java/com/zifang/ctc/sso/config/SsoAutoConfiguration.java \
+#     | sed 's/.*"\(.*\)".*/\1/')
+#   kubectl -n z-wf create secret generic z-wf-auth \
+#     --from-literal=sso-jwt-secret="$SSO_SECRET" \
+#     --dry-run=client -o yaml | kubectl apply -f -
+#   unset SSO_SECRET
+
 # 4) 正式部署
 kubectl apply -f z-wf/deploy/kubernetes/z-wf.yaml
 
@@ -171,23 +273,41 @@ Secret 补上后 Pod 不会自动重建，**要 `kubectl -n z-wf rollout restart
 |---|---|---|
 | Namespace | `z-wf` | 独立 ns |
 | Service (ClusterIP) | `z-wf-admin` | 集群内调用：`http://z-wf-admin.z-wf.svc.cluster.local:8080` |
-| Service (NodePort) | `z-wf-admin-np` | 排障直连：`192.168.31.136:31887`（31887 实测未占用） |
+| Service (NodePort) | `z-wf-admin-np` | 排障直连：`192.168.31.136:31887`（31887 实测未占用）—— **受鉴权保护**，见 §0.6 |
 | Deployment | `z-wf-admin` | 单副本 + Recreate |
+| NetworkPolicy | `netpol-denyall-ingress` | 入站白名单（同 ns + 调用方 ns + 节点/LAN 段），见 §0.6 |
+
+### 2.1 `z-wf-admin-np` 这个 NodePort 的存废（2026-10-22 决策）
+
+**决策：保留（常驻排障口），但必须受鉴权 + 受 NetworkPolicy 约束。**
+
+| 依据 | 说明 |
+|---|---|
+| 它的用途 | 宿主机排障直连（§3 的 L3 层）。z-wf 是中间件，板间调用走 ClusterIP 就够 |
+| 常驻的前提 | 「有闸门」—— NodePort 与 ClusterIP 走**同一个进程**，应用层鉴权对两者一视同仁 ⇒ 保留它不会多开暴露面 |
+| 为什么不撤 | 撤除动作需要 `kubectl delete`（本卡禁止 kubectl 写操作），且端口收敛归 `TASK-20261021-013` 统一排期 |
+| 撤除条件 | ① 该 netpol 生效且探针/排障改走 `kubectl exec` + `kubectl port-forward` ② `TASK-20261021-013` 排到 z-wf |
+| 复核口径 | 保留期间，NodePort 上的 `/api/**` 匿名必须不可读（§3 的 L4 验收） |
+
 
 ---
 
 ## 3. 验证（三层，逐层收紧）
 
+> ⚠ 2026-10-22 起：`/api/**` 全部要凭据（§0.6）⇒ 下面 L2/L3 的业务调用**必须带 Authorization**。
+> 探针路径（`/api/wf/health/probe`）免鉴权，是免凭据的唯一「业务口径」入口。
+
 ```bash
-# L1 容器内健康（该端点真查库）
-kubectl -n z-wf exec deploy/z-wf-admin -- wget -q -O- http://127.0.0.1:8080/api/wf/health
+# L1 容器内健康（该端点真查库；免鉴权的探针路径）
+kubectl -n z-wf exec deploy/z-wf-admin -- wget -q -O- http://127.0.0.1:8080/api/wf/health/probe
 
 # L2 集群内可达（从 z-opc 容器里调 —— 这才是「中间件可被调用」的判据）
 kubectl -n z-opc exec deploy/z-opc-main -- \
-  wget -q -O- http://z-wf-admin.z-wf.svc.cluster.local:8080/api/wf/health
+  wget -q -O- http://z-wf-admin.z-wf.svc.cluster.local:8080/api/wf/health/probe
 
-# L3 宿主机直连
-curl -s http://192.168.31.136:31887/api/wf/health
+# L3 宿主机直连（排障口；已受鉴权 ⇒ 业务调用要带凭据）
+curl -s http://192.168.31.136:31887/api/wf/health/probe
+curl -s -H "Authorization: Bearer $TOKEN" http://192.168.31.136:31887/api/wf/definitions
 ```
 
 **通过判据**：
@@ -195,17 +315,40 @@ curl -s http://192.168.31.136:31887/api/wf/health
 | 检查 | 期望 | 不符合时 |
 |---|---|---|
 | Pod Ready | 1/1 Ready，restarts=0 | 看日志有没有「建表失败」 |
-| `/api/wf/health` | `status: UP`（含 db 组件） | DOWN ⇒ 库连不上或表没建成 |
+| `/api/wf/health/probe` | `status: UP`（含 db 组件） | DOWN ⇒ 库连不上或表没建成 |
 | 库里 13 张表 | `ZWF_*` 全在 | 查 `Z_WF_AUTO_INITIALIZE_SCHEMA` 与日志 |
-| 索引 | 29 个真建出来（`SHOW INDEX FROM ZWF_PROCESS`） | 若缺，说明 DDL 中途失败 |
+| 索引 | **22 个二级索引真建出来**（`SELECT COUNT(DISTINCT index_name) FROM information_schema.STATISTICS WHERE table_schema='oc' AND table_name LIKE 'zwf%' AND index_name<>'PRIMARY'` ⇒ 22） | 若缺，说明 DDL 中途失败 |
 | 接口文档 | `/doc.html` 可打开 | Knife4j 起没起来 |
+
+### 3.1 🔴 L4 鉴权验收（2026-10-22，TASK-20261022-024）
+
+**口径（三条，缺一不可）**：
+
+| # | 检查 | 期望 |
+|---|---|---|
+| ① | 17 条读路径 × 2 节点 × 3 次**匿名 GET** | **匿名可读数 = 0**（全部 401/503，且响应体是 JSON） |
+| ② | 20 条写路径的 **OPTIONS**（只探注册性，不下发写请求） | `Allow` **不得再含 POST/PUT/DELETE** |
+| ③ | 业务信封判据 | 响应必须是 **JSON**，**不是** SPA 兜底 HTML |
+
+> ⚠ **③ 是最容易假绿的地方**：`z-wf` 的 `WfWebMvcConfig` 会对未知路径返 `index.html`
+> ⇒ 只看 HTTP 200 会把「返回了一段 HTML」读成「接口正常」。
+> ⚠ 另一个坑：`/actuator/health` 对 z-wf 会落到 SPA 回落页返 **200 HTML** ⇒ **不是健康信号**；
+> 真实健康路径是 `/api/wf/health/probe`（返 JSON）。
+
+复算脚本（只读；只发 GET 与 OPTIONS，不下发任何写请求）：
+
+```bash
+# 产物与脚本：z-opc-foundation-lead/002_项目需求/003_定时任务空间/evidence/TASK-20261022-024/
+python3 verify_zwf_auth.py --base http://192.168.31.231:31887 --base http://192.168.31.136:31887
+```
 
 **跑一次真业务**（人工审批流，验 token 执行树）：
 
 ```bash
 # 流程定义是 classpath 内置的两个示例（z.wf.deploy-on-startup=true 会自动部署）
-curl -s http://192.168.31.136:31887/api/wf/definitions | head -c 800
-curl -s 'http://192.168.31.136:31887/api/approval-center/tasks/todo?userId=ceo'
+curl -s -H "Authorization: Bearer $TOKEN" http://192.168.31.136:31887/api/wf/definitions | head -c 800
+curl -s -H "Authorization: Bearer $TOKEN" \
+  'http://192.168.31.136:31887/api/approval-center/tasks/todo?userId=ceo'
 ```
 
 ---
@@ -264,7 +407,7 @@ kubectl delete -f z-wf/deploy/kubernetes/z-wf.yaml
 |---|---|---|
 | DDL 方言缺陷定位 | ✅ | 真 MySQL 8.0.46 实跑：`CLOB` 与 `CREATE INDEX IF NOT EXISTS` 均 ERROR 1064 |
 | DDL 修复 | ✅ | `WfDdlDialect`；H2 侧一字不改 |
-| MySQL 建表 | ✅ | 13 张表 + 29 索引，321ms |
+| MySQL 建表 | ✅ | 13 张表 + 22 个二级索引，321ms |
 | 幂等 | ✅ | 第二次 `initialize()` 成功 |
 | H2 回归 | ✅ | z-wf-core **1102/1102** 全绿（原 1093 + 新增 9） |
 | 清单语法 | ✅ | `kubectl apply --dry-run=client` 4 资源全过 |

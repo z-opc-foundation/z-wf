@@ -154,7 +154,43 @@ spec:
             # ===== z-wf 引擎 =====
             - name: Z_WF_ENABLED
               value: "true"
-            # 生产走 jdbc（内存版重启即丢）
+            # ===== 入站鉴权（2026-10-22，TASK-20261022-024）=====
+            # z-wf **不经网关、不挂主壳 SSO 闸门** ⇒ 它必须自带入站鉴权：
+            # 2026-10-22 首次上线时 9 条读端点匿名可读、20 条写端点全部已注册。
+            # 改法是应用层拦截器（z-wf-admin 的 WfAuthInterceptor），
+            # 「把路径加进主壳 sso.intercept-paths」对它**无效**。
+            #
+            # ⚠ 两枚凭据都从 Secret 注入，**清单里不留明文**：
+            #   z-wf-auth / auth-tokens      服务令牌（机器对机器：z-team AI 领活、z-ops 派发）
+            #                                元素形如 name:secret（name 只进审计日志）
+            #   z-wf-auth / sso-jwt-secret   主壳 SSO 票据的 HS256 密钥（与 z-ctc 同一枚）
+            #                                ⇒ 主壳同口径的 Authorization: Bearer <jwt>
+            #                                  或 Cookie sso_token / zctc_token 可直接调 z-wf
+            # ⚠ optional: true：Secret 没灌时容器照常起（不因缺 Secret 而 CrashLoop），
+            #   但**所有 /api/** 会 fail-closed 返 503（fail-closed，不是放行）。
+            #   灌 Secret 的步骤见 deploy/kubernetes/README.md §3.1。
+            - name: Z_WF_AUTH_ENABLED
+              value: "true"
+            - name: Z_WF_AUTH_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: z-wf-auth
+                  key: auth-tokens
+                  optional: true
+            - name: Z_WF_SSO_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: z-wf-auth
+                  key: sso-jwt-secret
+                  optional: true
+            # ===== 访问日志（可观测性）=====
+            # Tomcat access log 记「连接层」（来源 IP/UA/状态码/耗时）；
+            # 应用层的 [WF-ACCESS] 审计行记「用的哪个凭据 + 调了哪个端点」——
+            # 后者才是「事后可归因」的那一层。
+            - name: Z_WF_ACCESS_LOG_ENABLED
+              value: "true"
+            - name: Z_WF_ACCESS_LOG_DIR
+              value: /tmp/zwf-tmp            # 生产走 jdbc（内存版重启即丢）
             - name: Z_WF_PERSISTENCE
               value: jdbc
             # schema 自动建表：本仓没有独立 DDL 脚本（DDL 内嵌在 JdbcWorkflowPersistence），
@@ -188,18 +224,27 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp/zwf-tmp
-          # 探针打 /api/wf/health：**该端点真查一次库**（不是只报进程活着），
+          # 探针打 /api/wf/health/probe：**该端点真查一次库**（不是只报进程活着），
           # 存储不可用时 status 变 DOWN ⇒ 「静默降级到内存实现」会被探针发现。
+          #
+          # ⚠ 2026-10-22（TASK-20261022-024）：探针路径从 /api/wf/health 换成
+          #   /api/wf/health/probe。原因是入站鉴权上线后 /api/wf/** 全部要凭据，
+          #   而 **kubelet 的 httpGet 探针带不了自定义请求头**
+          #   （httpHeaders 只能写字面量、不能引用 Secret）⇒ 探针带不来 Authorization。
+          #   /api/wf/health/probe 是专给探针的免鉴权端点，只回 status/engine，
+          #   **不含**流程定义数、实例列表等业务数据。
+          #   ⚠ 别把探针改回 /api/wf/health：那条路径在验收口径的 17 条受测读路径里，
+          #     豁免它 = 验收指标 ①（匿名可读数 = 0）直接不成立。
           readinessProbe:
             httpGet:
-              path: /api/wf/health
+              path: /api/wf/health/probe
               port: 8080
             initialDelaySeconds: 30
             periodSeconds: 15
             failureThreshold: 8
           livenessProbe:
             httpGet:
-              path: /api/wf/health
+              path: /api/wf/health/probe
               port: 8080
             # 启动比 z-ops 慢：要先连库 + 建 13 张表 + 部署流程定义
             initialDelaySeconds: 120
@@ -208,3 +253,61 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
+
+---
+# ===== NetworkPolicy =====
+# 2026-10-22（TASK-20261022-024）：z-wf 此前**没有任何** NetworkPolicy，
+# 而它是当天新增的 NodePort 暴露面（31887）。本条把入站来源收成白名单。
+#
+# ⚠ 本集群的 NetworkPolicy **确实生效**（实测，不是"写了就算"）：
+#   z-wf 的 Pod 访问 z-ctc 的 ClusterIP（z-ctc-admin.z-ctc.svc.cluster.local:8888）
+#   **超时**，而访问自己同 ns 的 ClusterIP 正常
+#   ⇒ z-ctc ns 的 netpol 没有放行 z-wf 的 Pod，跨 ns 的 pod→pod 被拦住了。
+#   （另：kube-system 里**没有** CNI/netpol 的 Pod —— 生效的是 k3s 内置的
+#     kube-router netpol controller，不是独立 Deployment，别去 kube-system 里找。）
+#
+# 口径与 z-ops / z-ctc / z-opc 的 netpol-denyall-ingress 保持同族（TASK-20261021-036）。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: netpol-denyall-ingress
+  namespace: z-wf
+  labels:
+    zopc.foundation/batch: "4"
+    zopc.foundation/purpose: min-deny-all-ingress
+    zopc.foundation/task: TASK-20261022-024
+spec:
+  podSelector: {}          # 覆盖 ns 内全部 Pod（含 z-wf-admin）
+  policyTypes:
+    - Ingress
+  ingress:
+    # ① 同 ns 内部互访
+    - from:
+        - podSelector: {}
+    # ② 集群内的调用方（板与板之间只有 HTTP 边界）：
+    #    z-opc 主壳 / z-team（AI 领活的机器领活契约）/ z-ops / z-ctc
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: z-opc
+          podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: z-team
+          podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: z-ops
+          podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: z-ctc
+          podSelector: {}
+    # ③ 节点 / 宿主机侧：kubelet 探针（源 IP 是节点 IP）+ 宿主机排障直连 NodePort
+    #    ⚠ 这一条不能省：省了 kubelet 探针会被自己的 netpol 挡住 ⇒ Pod 永远 NotReady。
+    - from:
+        - ipBlock:
+            cidr: 192.168.31.0/24
+      ports:
+        - port: 8080
+          protocol: TCP
