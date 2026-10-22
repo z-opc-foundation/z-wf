@@ -390,22 +390,48 @@ public class JdbcWorkflowPersistence implements WfPersistence {
             connection = dataSource.getConnection();
             Statement statement = connection.createStatement();
             try {
-                for (String sql : ddl) {
+                // 方言适配：H2 侧一字不改（现有单测全部建在 H2 上），
+                // MySQL 侧把 H2 扩展语法翻译成 MySQL 8.0 能吃的写法。
+                // 详见 WfDdlDialect 的类注释（那里记了实测证据）。
+                String productName = WfDdlDialect.detectProductName(connection.getMetaData());
+                boolean mysql = WfDdlDialect.isMySQL(productName);
+                if (mysql) {
+                    log.info("检测到 MySQL 家族数据源 [{}]，DDL 走 MySQL 方言适配", productName);
+                }
+                int tableCount = 0;
+                int indexCount = 0;
+                for (String rawSql : ddl) {
+                    String sql = WfDdlDialect.isIndexCreate(rawSql)
+                            ? WfDdlDialect.buildIndexCreate(rawSql, mysql)
+                            : WfDdlDialect.translateCreateTable(rawSql, mysql);
+                    if (WfDdlDialect.isIndexCreate(rawSql)) {
+                        // MySQL 没有 CREATE INDEX IF NOT EXISTS ⇒ 先查元数据再建。
+                        // 不用「捕获 1061 忽略」：那样会把真正的建索引失败（列名写错等）
+                        // 一起吞掉 ⇒ 索引悄悄没建 ⇒ 后续查询退化成全表扫且无任何报错。
+                        String indexName = WfDdlDialect.extractIndexName(rawSql);
+                        if (mysql && indexName != null) {
+                            String tableName = extractIndexTable(rawSql);
+                            if (tableName != null
+                                    && WfDdlDialect.indexExists(connection.getMetaData(),
+                                            null, null, tableName, indexName)) {
+                                log.debug("索引已存在，跳过: {}", indexName);
+                                indexCount++;
+                                continue;
+                            }
+                        }
+                        indexCount++;
+                    } else {
+                        tableCount++;
+                    }
                     statement.execute(sql);
                 }
+                // 表数自己数，而不是 ddl.size() 减一个写死的偏移：
+                // 那个偏移是当初按"只有索引没有表"倒推出来的，
+                // 每加一张表就得记得改一次，忘了就只是日志里少一个数字 —— 不报错
+                log.info("JDBC 持久化初始化完成（{} 张表，{} 条索引）", tableCount, indexCount);
             } finally {
                 statement.close();
             }
-            // 表数自己数，而不是 ddl.size() 减一个写死的偏移：
-            // 那个偏移是当初按"只有索引没有表"倒推出来的，
-            // 每加一张表就得记得改一次，忘了就只是日志里少一个数字 —— 不报错
-            int tableCount = 0;
-            for (String sql : ddl) {
-                if (sql.startsWith("CREATE TABLE")) {
-                    tableCount++;
-                }
-            }
-            log.info("JDBC 持久化初始化完成（{} 张表，{} 条索引）", tableCount, ddl.size() - tableCount);
             addDelegateChainColumnIfMissing(connection);
             addProcessNameColumnIfMissing(connection);
             addTaskSuspendedColumnIfMissing(connection);
@@ -418,6 +444,31 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         } finally {
             close(connection);
         }
+    }
+
+    /**
+     * 从建索引语句里取表名。
+     *
+     * <p>形如 {@code CREATE INDEX IF NOT EXISTS IDX_X ON ZWF_PROCESS (BUSINESS_KEY)}
+     * ⇒ 返回 {@code ZWF_PROCESS}。
+     *
+     * @return 表名；解析不出时返回 {@code null}
+     */
+    private static String extractIndexTable(String sql) {
+        if (sql == null) {
+            return null;
+        }
+        int onIdx = sql.toUpperCase(java.util.Locale.ROOT).indexOf(" ON ");
+        if (onIdx < 0) {
+            return null;
+        }
+        String rest = sql.substring(onIdx + 4).trim();
+        int paren = rest.indexOf('(');
+        if (paren >= 0) {
+            rest = rest.substring(0, paren);
+        }
+        rest = rest.trim();
+        return rest.isEmpty() ? null : rest;
     }
 
     /**
