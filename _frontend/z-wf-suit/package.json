@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@yuku123/z-wf-component": "^0.1.0",
-    "@yuku123/z-frontend-common": "^1.0.0",
+    "@yuku123/z-frontend-common": "^1.1.3",
     "@logicflow/core": "^2.0.0",
     "@logicflow/extension": "^2.0.0",
     "dayjs": "^1.11.10",
