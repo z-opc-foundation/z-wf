@@ -1,0 +1,78 @@
+# ============================================================
+# z-wf runtime-only 镜像 —— 从**已打好的 jar** 构建
+# ============================================================
+# 为什么有第二个 Dockerfile：
+#
+#   根 Dockerfile 的第一阶段（maven:3.9.9-eclipse-temurin-8）要**在容器里**
+#   从 repo1 重新解析整棵依赖树。2026-10-22 实测：在 zifang001 上跑这条，
+#   依赖下载极慢（.m2 15 分钟只涨到 108M，jackson 那批就卡了 15 分钟没动），
+#   且构建机能否直连 repo1 本身就不稳定 ⇒ **部署被依赖下载绑架**。
+#
+#   而 jar 本身可以在**本地**用离线仓打出来：
+#       mvn -o -pl z-wf-admin -am clean package -DskipTests
+#   本地 ~/.m2 已经是全的（z-wf-core/web/starter 的 1102 个单测就在这上面跑），
+#   离线打包只要 18 秒，且**保证编出来的就是当前工作区的代码**。
+#
+#   ⇒ 本文件 = 根 Dockerfile 的 **stage 2 原样搬过来**（同基础镜像、同非 root
+#     用户、同 healthcheck、同 ENTRYPOINT、同 JVM 默认参数），
+#     只是把「容器内现编」换成「容器外编好、COPY 进来」。
+#
+#   ⇒ 产出的镜像与根 Dockerfile 走完 stage1+stage2 的镜像**内容等价**，
+#     差别只在「编译发生在哪台机器」这一条 provenance 上。
+#
+# 用法（构建机 = 有 docker 的 zifang001 / 192.168.31.231）：
+#
+#   # 1) 本地打 jar（macOS / 任何有 JDK8 + 全量 ~/.m2 的机器）
+#   export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
+#   cd z-wf && mvn -o -pl z-wf-admin -am clean package -DskipTests -Dmaven.javadoc.skip=true
+#
+#   # 2) 把 jar 放进构建上下文
+#   mkdir -p /home/zifang/zopc-build/z-wf-jar
+#   cp z-wf-admin/target/z-wf-admin-*-exec.jar /home/zifang/zopc-build/z-wf-jar/z-wf-admin.jar
+#   cp deploy/Dockerfile.jar /home/zifang/zopc-build/z-wf-jar/Dockerfile
+#
+#   # 3) 构建（tag 必须是裸 tag，禁 Nexus 前缀 —— 见 deploy/kubernetes/README.md §1）
+#   cd /home/zifang/zopc-build/z-wf-jar
+#   docker build --platform linux/amd64 -t z-wf:1 .
+#
+# ⚠ 基础镜像拉不动时走镜像加速（拉完 tag 回原名，digest 不变 ⇒ 基底不变）：
+#     docker pull docker.m.daocloud.io/library/eclipse-temurin:8-jre
+#     docker tag  docker.m.daocloud.io/library/eclipse-temurin:8-jre eclipse-temurin:8-jre
+# ============================================================
+
+FROM eclipse-temurin:8-jre
+
+LABEL maintainer="zifang"
+LABEL description="z-wf - Self-developed Workflow Engine (runtime-only build: jar built outside the image)"
+
+# 时区 + wget（healthcheck 用）
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata wget && \
+    ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+    echo "Asia/Shanghai" > /etc/timezone && \
+    apt-get remove -y tzdata && \
+    apt-get autoremove -y && \
+    apt-get clean
+
+# 创建非 root 用户（与根 Dockerfile stage 2 同 uid）
+RUN useradd --system --uid 10001 zwf
+
+WORKDIR /app
+
+COPY z-wf-admin.jar /app/z-wf-admin.jar
+
+RUN mkdir -p /app/logs && chown -R zwf:zwf /app
+USER 10001
+
+# 端口: 8080 (审批中心 REST API)
+EXPOSE 8080
+
+# 健康检查 (WfHealthController = /api/wf/health, 兼容 SERVER_CONTEXT_PATH 前缀)
+# 这个端点会真查一次库（不是只报"进程活着"），存储不可用时 status 会变 DOWN
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD wget -q -O- "http://127.0.0.1:8080${SERVER_CONTEXT_PATH:-}/api/wf/health" || exit 1
+
+# JVM 默认参数 (可在 docker run -e JVM_OPTS=... 覆盖)
+ENV JVM_OPTS="-Xms512m -Xmx1024m -XX:+UseG1GC"
+
+# 启动入口类: com.zifang.z.wf.admin.WfAdminApplication
+ENTRYPOINT ["sh", "-c", "exec java $JVM_OPTS -jar /app/z-wf-admin.jar --spring.main.banner-mode=off"]
