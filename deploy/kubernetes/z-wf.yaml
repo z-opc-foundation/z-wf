@@ -110,7 +110,16 @@ spec:
       containers:
         - name: z-wf
           # 镜像不进 registry：本地 build + docker save + k3s ctr images import
-          image: z-wf:2
+          #
+          # ⚠ 2026-10-22 18:0x 订正：镜像 **z-wf:2 → z-wf:3**
+          #   z-wf:2 是 08:54 构建的**旧 jar**，里面**没有**入站鉴权代码
+          #   （实测运行中 jar 里 `WfAuthInterceptor` / `health/probe` 命中数都是 0）。
+          #   ⇒ 用旧镜像带这份清单 = 探针打 `/api/wf/health/probe`（旧镜像没有）⇒ 404
+          #     ⇒ readiness 恒失败 ⇒ **域挂**；且鉴权 env 也不生效（代码不在）⇒ 假安全感。
+          #   ⇒ 必须**重建镜像**（本地打 jar → deploy/Dockerfile.runtime → --platform linux/amd64）。
+          #   ⇒ 用**新 tag**（:3）而不是覆盖 :2 —— 同 tag 覆盖后旧 digest 会被 GC，
+          #     覆盖前先另存 tar 才能回滚；新 tag 则天然留住了 :2 作回滚锚点。
+          image: z-wf:3
           imagePullPolicy: Never
           ports:
             - name: http

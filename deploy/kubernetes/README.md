@@ -169,6 +169,9 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
 
 # ⚠ Dockerfile 第一阶段要能解析到 parent（z-boot-parent:1.1.0，在 repo1）与兄弟仓件。
 #   离线构建先确保 ~/.m2 里有；否则先 mvn -o -DskipTests install 把本仓件灌进本地仓。
+# ⚠ 现役走的是 **runtime-only** 路线（见下面的 2026-10-22 18:0x 记录）：
+#   ① 本地离线打 jar ② COPY 进 runtime 镜像 ③ 喂节点
+#   根 Dockerfile（容器内现编）会把部署绑架在依赖下载上，别用。
 docker build --platform linux/amd64 -t z-wf:2 .
 ```
 
@@ -176,6 +179,30 @@ docker build --platform linux/amd64 -t z-wf:2 .
 `ctr images import` 灌进来后镜像名就是 `docker.io/library/z-wf:2`，
 清单里写带 Nexus 前缀的 tag ⇒ 名字对不上 ⇒ `ErrImageNeverPull`。
 （这条坑记在 `z-opc/deploy/kubernetes/04-main.yaml` 头部，z-ops 同样。）
+
+> ⚠ **2026-10-22 18:0x：现役 tag = `z-wf:3`，且必须「用新 tag」而不是覆盖旧 tag。**
+> `z-wf:2` 是 08:54 构建的**旧 jar**（实测运行中 jar 里 `WfAuthInterceptor` / `health/probe`
+> 命中数都是 **0** ⇒ 里面没有入站鉴权代码）⇒ 拿旧镜像带本清单 = 探针打
+> `/api/wf/health/probe`（旧镜像没有）⇒ **404 ⇒ readiness 恒失败 ⇒ 域挂**，
+> 且 5 个鉴权 env 一行都不生效（代码不在）⇒ **假安全感**。
+> ⇒ **改代码后必须重建镜像**，不能只改清单。
+> ⇒ **用新 tag（`:3`）而不是覆盖 `:2`**：同 tag 覆盖后旧 digest 会被 GC，
+> 覆盖前先另存 tar 才能回滚；新 tag 天然留住旧 tag 作回滚锚点。
+>
+> runtime-only 的实际命令（2026-10-22 18:0x 实测通过）：
+> ```bash
+> # ① 本地离线打 jar（11.7s）
+> cd z-wf && export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
+> mvn -o -pl z-wf-admin -am clean package -DskipTests -Dmaven.javadoc.skip=true
+> # ② 组装构建上下文（jar 要叫 z-wf-admin.jar）
+> mkdir -p /tmp/zwf-build && cp z-wf-admin/target/z-wf-admin-*-exec.jar /tmp/zwf-build/z-wf-admin.jar
+> cp deploy/Dockerfile.runtime /tmp/zwf-build/Dockerfile
+> # ③ 构建（BASE_IMAGE 可覆盖成国内镜像源；集群两节点是 amd64 ⇒ --platform 必须写）
+> cd /tmp/zwf-build && docker build --platform linux/amd64 \
+>   --build-arg BASE_IMAGE=docker.1ms.run/library/eclipse-temurin:8-jre -t z-wf:3 .
+> # ④ 落盘 + 两端 md5 对账 + 按文件路径 import（别用管道，见 §2）
+> docker save z-wf:3 -o /tmp/z-wf-3.tar && md5 -q /tmp/z-wf-3.tar
+> ```
 
 > ⚠ **2026-10-22 首次上线实测：容器内现编会把部署绑架在依赖下载上。**
 > 根 Dockerfile 的第一阶段（`maven:3.9.9-eclipse-temurin-8`）要在**容器里**从 repo1
@@ -189,7 +216,7 @@ docker build --platform linux/amd64 -t z-wf:2 .
 ### 1.2 喂进 containerd（两个节点都要喂）
 
 ```bash
-docker save z-wf:2 | gzip -1 > /home/zifang/zopcimg/z-wf-2.tar.gz
+docker save z-wf:3 | gzip -1 > /home/zifang/zopcimg/z-wf-3.tar.gz
 
 # ⚠ ctr 必须显式指定 address 与 namespace，否则会灌进错误的 containerd / 错误的 ns：
 #    --address /run/k3s/containerd/containerd.sock  --namespace k8s.io
@@ -215,7 +242,7 @@ ssh zifang@192.168.31.231 'docker run --rm --entrypoint sh --privileged -v /:/ho
 不等于 kubelet 能用它）：
 ```bash
 kubectl -n z-wf debug node/zifang001 -it --image=busybox -- chroot /host crictl images | grep z-wf
-# 期望：docker.io/library/z-wf:2 / linux/amd64 / io.cri-containerd.image=managed
+# 期望：docker.io/library/z-wf:3 / linux/amd64 / io.cri-containerd.image=managed
 ```
 
 ---
@@ -319,6 +346,25 @@ curl -s -H "Authorization: Bearer $TOKEN" http://192.168.31.136:31887/api/wf/def
 | 库里 13 张表 | `ZWF_*` 全在 | 查 `Z_WF_AUTO_INITIALIZE_SCHEMA` 与日志 |
 | 索引 | **22 个二级索引真建出来**（`SELECT COUNT(DISTINCT index_name) FROM information_schema.STATISTICS WHERE table_schema='oc' AND table_name LIKE 'zwf%' AND index_name<>'PRIMARY'` ⇒ 22） | 若缺，说明 DDL 中途失败 |
 | 接口文档 | `/doc.html` 可打开 | Knife4j 起没起来 |
+
+### 3.0 ✅ 2026-10-22 18:0x 已执行（发版 + 灌 Secret + apply + 验收）
+
+| 步骤 | 结果 |
+|---|---|
+| 重建镜像 | `z-wf:3`（config digest `sha256:d0fd5250c0411…`），tar md5 `bce09312c09a77a6efe0f72b3db76af8` 两端对账，两节点均 import |
+| 灌 Secret | `z-wf-auth`：`auth-tokens`（`zteam:` / `zops:` 两枚服务令牌）+ `sso-jwt-secret`（z-ctc 同一枚 HS256 密钥，运行时从源码取，**不落本仓**） |
+| apply | Deployment 镜像 `:2`→`:3` + 5 个 env + 探针路径改；**新建** `netpol-denyall-ingress`；ns / 两个 svc unchanged；策略 Recreate（单副本，短暂不可用） |
+| 线上终态 | 新 Pod `z-wf-admin-56bfc444bc-vw4rw` **1/1 Ready / 0 重启**，旧 Pod 已下线，imageID = 本地构建产物 |
+| 匿名读（`.231`） | 20/20 路径 **401** + JSON 信封；`Allow` 只有 `OPTIONS`；SPA HTML 兜底 **0** ⇒ 三条口径 **PASS** |
+| 带凭据读（`.231`） | 20/20 路径 **200**，`Allow` 正确带上 POST/DELETE ⇒ 端点仍注册可用 |
+| SSO 票据 | `Authorization: Bearer <jwt>` **200**（返回真实流程定义）；`Cookie: sso_token=<jwt>` **200** |
+| 免鉴权探针 | `/api/wf/health/probe` → 200 JSON `{"data":{"status":"UP","engine":"z-wf"}…}` |
+| 集群内 ClusterIP | z-opc Pod → `z-wf-admin.z-wf.svc…`：探针 200 / 业务 API 401 ⇒ netpol 白名单生效 |
+
+> ⚠ **`.136` 节点的 NodePort 整体不可用**（节点级，与本清单无关）⇒
+> 该节点上 20 条路径读数是「**连接被拒**」而不是 401
+> ⇒ **「探不通」要分清「连不上」与「连上了但被拒」**，两者在验收里含义完全不同。
+> 详见 lead 仓 `TASK-20261022-049`。
 
 ### 3.1 🔴 L4 鉴权验收（2026-10-22，TASK-20261022-024）
 

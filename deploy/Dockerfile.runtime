@@ -38,9 +38,15 @@
 # ⚠ 基础镜像拉不动时走镜像加速（拉完 tag 回原名，digest 不变 ⇒ 基底不变）：
 #     docker pull docker.m.daocloud.io/library/eclipse-temurin:8-jre
 #     docker tag  docker.m.daocloud.io/library/eclipse-temurin:8-jre eclipse-temurin:8-jre
-# ============================================================
-
-FROM eclipse-temurin:8-jre
+#
+# ⚠ 2026-10-22 补：BASE_IMAGE 可覆盖（与 z-observer / z-indexer 的 Dockerfile 同一口径）。
+#   集群两节点是 amd64，而开发机常是 arm64 ⇒ 直接 `FROM eclipse-temurin:8-jre` + `--platform
+#   linux/amd64` 会去远端拉 amd64 变体（国内慢）；覆盖成国内镜像源的**同一个上游镜像**
+#   可复用本地层、且基底内容不变：
+#     docker build --platform linux/amd64 \
+#       --build-arg BASE_IMAGE=docker.1ms.run/library/eclipse-temurin:8-jre -t z-wf:3 .
+ARG BASE_IMAGE=eclipse-temurin:8-jre
+FROM ${BASE_IMAGE}
 
 LABEL maintainer="zifang"
 LABEL description="z-wf - Self-developed Workflow Engine (runtime-only build: jar built outside the image)"
@@ -66,10 +72,15 @@ USER 10001
 # 端口: 8080 (审批中心 REST API)
 EXPOSE 8080
 
-# 健康检查 (WfHealthController = /api/wf/health, 兼容 SERVER_CONTEXT_PATH 前缀)
-# 这个端点会真查一次库（不是只报"进程活着"），存储不可用时 status 会变 DOWN
+# 健康检查 (WfHealthController = /api/wf/health/probe)
+# ⚠ 2026-10-22 订正：入站鉴权开启后，**/api/** 全部受保护（fail-closed 401/503），
+#   原写的 /api/wf/health 已落进保护面 ⇒ 这个 healthcheck 会恒失败。
+#   真正免鉴权的健康路径是 /api/wf/health/probe
+#   （z.wf.auth.exclude-paths=/api/wf/health/probe,/error），与部署清单的探针同一条。
+#   ⚠ k8s 不看 Docker HEALTHCHECK（用自己的 probes），但本地 docker run / 镜像自检会看 ⇒ 必须改。
+#   这个端点会真查一次库（不是只报"进程活着"），存储不可用时 status 会变 DOWN
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD wget -q -O- "http://127.0.0.1:8080${SERVER_CONTEXT_PATH:-}/api/wf/health" || exit 1
+    CMD wget -q -O- "http://127.0.0.1:8080${SERVER_CONTEXT_PATH:-}/api/wf/health/probe" || exit 1
 
 # JVM 默认参数 (可在 docker run -e JVM_OPTS=... 覆盖)
 ENV JVM_OPTS="-Xms512m -Xmx1024m -XX:+UseG1GC"
