@@ -1,4 +1,4 @@
-import { ApartmentOutlined, CheckSquareOutlined, ClockCircleOutlined, DashboardOutlined, FileDoneOutlined, HomeOutlined, ProfileOutlined, UnorderedListOutlined } from '@ant-design/icons'
+import { ApartmentOutlined, CheckSquareOutlined, ClockCircleOutlined, DashboardOutlined, FileDoneOutlined, HomeOutlined, ProfileOutlined, ReadOutlined, UnorderedListOutlined } from '@ant-design/icons'
 import Dashboard from './wf/pages/Dashboard'
 import TodoList from './wf/pages/TodoList'
 import DoneList from './wf/pages/DoneList'
@@ -19,6 +19,7 @@ export {default as ProcessList} from './wf/pages/ProcessList'
 export {default as ProcessDesigner} from './wf/pages/ProcessDesigner'
 import HomePage from './pages/HomePage'
 import WorkflowApp from './pages/WorkflowApp.jsx'
+import ComponentDocPage from './pages/ComponentDoc'
 
 /** 菜单 + 路由清单（lead 008 §10/§14/§16 批量落地）。App 壳在 suit 侧组装。 */
 export const appMeta = { title: 'z-wf 流程中心', short: 'z-wf' }
@@ -32,6 +33,7 @@ export const menuItems = [
     { key: '/z-wf/workflow/processes', label: '流程定义', icon: <ProfileOutlined /> },
     { key: '/z-wf/workflow/designer', label: '流程设计', icon: <ApartmentOutlined /> },
     { key: '/z-wf/workflow/process', label: '流程详情', icon: <FileDoneOutlined /> },
+    { key: '/z-wf/docs', label: '组件文档', icon: <ReadOutlined /> },
 ]
 
 export const routes = [
@@ -44,8 +46,11 @@ export const routes = [
     { path: '/z-wf/workflow/designer/:id', Component: ProcessDesigner },
     { path: '/z-wf/workflow/process/:processInstanceId', Component: ProcessDetail },
     { path: '/z-wf/workflow/task/:taskId', Component: TaskDetail },
+    { path: '/z-wf/docs', Component: ComponentDocPage },
     { path: '/z-wf/:rest*', Component: WorkflowApp },
 ]
 
 export { default as HomePage } from './pages/HomePage'
 export { default as LoginPage } from './pages/LoginPage'
+// 主壳接线用：文档页统一以 ComponentDocPage 这个名字从主入口导出。
+export { default as ComponentDocPage } from './pages/ComponentDoc'
