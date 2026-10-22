@@ -98,6 +98,29 @@ class WfDdlDialectTest {
     }
 
     @Test
+    @DisplayName("TIMESTAMP ⇒ TIMESTAMP NULL 只在 MySQL 模式下替换（零日期默认值会让建表失败）")
+    void timestampTranslation() {
+        String ddl = "CREATE TABLE IF NOT EXISTS T (START_TIME TIMESTAMP, END_TIME TIMESTAMP)";
+        assertEquals(ddl, WfDdlDialect.translateCreateTable(ddl, false),
+                "非 MySQL 应一字不改（H2 的 TIMESTAMP 本来就没有零日期默认值）");
+        assertEquals("CREATE TABLE IF NOT EXISTS T (START_TIME TIMESTAMP NULL, END_TIME TIMESTAMP NULL)",
+                WfDdlDialect.translateCreateTable(ddl, true),
+                "MySQL 必须把裸 TIMESTAMP 显式写成 TIMESTAMP NULL");
+    }
+
+    @Test
+    @DisplayName("TIMESTAMP 翻译不碰已带限定的列（NOT NULL / DEFAULT）与非列名位置")
+    void timestampTranslationKeepsQualifiedColumns() {
+        String ddl = "CREATE TABLE IF NOT EXISTS T (A TIMESTAMP NOT NULL, B TIMESTAMP DEFAULT NULL, C VARCHAR(16))";
+        assertEquals(ddl, WfDdlDialect.translateCreateTable(ddl, true),
+                "已带 NOT NULL / DEFAULT 的列不该被改写");
+        String withLiteral = "CREATE TABLE IF NOT EXISTS T (A TIMESTAMP, NOTE VARCHAR(64) DEFAULT 'TIMESTAMP')";
+        assertEquals("CREATE TABLE IF NOT EXISTS T (A TIMESTAMP NULL, NOTE VARCHAR(64) DEFAULT 'TIMESTAMP')",
+                WfDdlDialect.translateCreateTable(withLiteral, true),
+                "字符串字面量里的 TIMESTAMP 不能被当成列类型改写");
+    }
+
+    @Test
     @DisplayName("索引语句：MySQL 下去掉 IF NOT EXISTS，H2 下原样")
     void indexCreateTranslation() {
         String ddl = "CREATE INDEX IF NOT EXISTS IDX_A ON T (C)";

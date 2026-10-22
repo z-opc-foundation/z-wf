@@ -79,10 +79,11 @@ final class WfDdlDialect {
     /**
      * 把一条建表语句翻译成目标方言可执行的写法。
      *
-     * <p>只处理两处已知不兼容点，其余语句原样返回：
+     * <p>只处理已知不兼容点，其余语句原样返回：
      * <ul>
      *   <li>{@code CLOB} ⇒ {@code TEXT}（MySQL 把 CLOB 当 TEXT 的同义词，但 8.0 的
      *       解析器在 {@code CLOB} 上直接报 1064 —— 不能依赖同义词，必须换词）。</li>
+     *   <li>{@code TIMESTAMP} ⇒ {@code TIMESTAMP NULL}（**2026-10-22 生产首部署实测**）。</li>
      * </ul>
      *
      * <p>索引语句不在这里翻译 —— 见 {@link #isIndexCreate} 与
@@ -93,7 +94,44 @@ final class WfDdlDialect {
             return sql;
         }
         // 只替换列定义里的 CLOB 类型；不动字符串字面量里的 "CLOB"
-        return sql.replace(" CLOB,", " TEXT,").replace(" CLOB)", " TEXT)");
+        String out = sql.replace(" CLOB,", " TEXT,").replace(" CLOB)", " TEXT)");
+        return translateTimestampColumns(out);
+    }
+
+    /**
+     * 把裸 {@code TIMESTAMP} 列翻译成显式 {@code TIMESTAMP NULL}（MySQL 侧）。
+     *
+     * <p><b>为什么必须加 NULL</b>（2026-10-22 在生产 RDS 上实测，MySQL 8.0.36）：
+     * <ul>
+     *   <li>{@code explicit_defaults_for_timestamp = 0}（本库实测）⇒ 裸 TIMESTAMP 列
+     *       被隐式赋予零日期默认值 {@code '0000-00-00 00:00:00'}；</li>
+     *   <li>而本库 {@code sql_mode} 含 {@code NO_ZERO_DATE} / {@code NO_ZERO_IN_DATE}
+     *       ⇒ 零日期默认值**非法** ⇒ 建表直接报
+     *       {@code SQLSyntaxErrorException: Invalid default value for 'END_TIME'}。</li>
+     * </ul>
+     * 实测复现（同一台生产库）：
+     * <pre>
+     *   CREATE TABLE (A TIMESTAMP, B TIMESTAMP)         =&gt; Invalid default value for 'B'
+     *   CREATE TABLE (A TIMESTAMP NULL, B TIMESTAMP NULL) =&gt; 建表成功
+     * </pre>
+     * ⇒ 报错总落在**第二个** TIMESTAMP 列上：MySQL 只给**第一张**表里的第一个 TIMESTAMP 列
+     * 自动 {@code DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP}，其余列拿零日期。
+     *
+     * <p><b>顺带避开第二个坑</b>：{@code explicit_defaults_for_timestamp=0} 时，
+     * 表里的第一个 TIMESTAMP 列会被自动加上
+     * {@code DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP}
+     * ⇒ 任何一次 UPDATE 都会把它改写成当前时间（START_TIME 会被悄悄覆盖成"最后一次更新的时间"）。
+     * 显式写 {@code NULL} 就把它固定成"无默认值、无自动更新"，与 H2 侧语义一致。
+     *
+     * <p>只处理 {@code <列名> TIMESTAMP} 这种**裸列**形态；已带 {@code NULL} /
+     * {@code NOT NULL} / {@code DEFAULT} 的写法不碰。
+     */
+    static String translateTimestampColumns(String sql) {
+        if (sql == null) {
+            return null;
+        }
+        // 匹配：列名 + 空白 + TIMESTAMP + 紧跟逗号或右括号（不带 NOT NULL / DEFAULT / NULL 等限定）
+        return sql.replaceAll("(?i)(\\b[A-Z_][A-Z0-9_]*\\s+)TIMESTAMP(\\s*[,)])", "$1TIMESTAMP NULL$2");
     }
 
     /**

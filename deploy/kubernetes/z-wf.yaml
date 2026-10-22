@@ -110,7 +110,7 @@ spec:
       containers:
         - name: z-wf
           # 镜像不进 registry：本地 build + docker save + k3s ctr images import
-          image: z-wf:1
+          image: z-wf:2
           imagePullPolicy: Never
           ports:
             - name: http

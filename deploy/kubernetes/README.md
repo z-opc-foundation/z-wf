@@ -11,7 +11,7 @@
 2026-10-21 实测：z-wf 的代码是齐的（Dockerfile / docker-compose / 独立 admin / RPC 契约都在），
 但**从未在集群里跑过**。下面是踩过或验过的坑。
 
-### 0.1 ⚠ DDL 方言（已修，但要知道它曾经是坏的）
+### 0.1 ⚠ DDL 方言（已修两轮；**第二个坑是 2026-10-22 首次部署时才发现的**）
 
 `JdbcWorkflowPersistence.initialize()` 里的建表语句**原本按 H2 写**：
 - `CLOB` —— MySQL 8.0 **语法错**（ERROR 1064）
@@ -21,22 +21,45 @@
 H2 跑得通（全部单测都建在 H2 上），MySQL 则在第一条 `CLOB` 上就炸，
 且 DDL 执行遇错即抛（`WfPersistenceException("建表失败")`）⇒ **容器起不来**。
 
-**已修**：新增 `z-wf-core` 的 `WfDdlDialect`（方言适配层）。
-- H2 侧一字不改（现有 1102 个单测全绿）
+**第一轮修**：新增 `z-wf-core` 的 `WfDdlDialect`（方言适配层）。
+- H2 侧一字不改（现有 1104 个单测全绿）
 - MySQL 侧：`CLOB`→`TEXT`；索引用**「先查 `DatabaseMetaData.getIndexInfo` 再建」**
 
 **为什么索引用「先查后建」而不是「捕获 1061 忽略」**：
 MySQL 上「索引已存在」是 1061 Duplicate key name，而「建索引失败」可能是 1064 语法错或 1072 列不存在。
 两者若都 catch 忽略 ⇒ 索引真的建不出来时没有任何提示 ⇒ **索引悄悄缺失 ⇒ 后续查询全表扫且无任何报错**。
 
-**实测结论**（真 MySQL 8.0.46，非 H2 替身）：
+**第二轮修（2026-10-22 首次部署时暴露）**：`TIMESTAMP` 列在生产库上会**建表失败**。
+- 实测生产 RDS 是 **MySQL 8.0.36**，`sql_mode` 含 `NO_ZERO_DATE` / `NO_ZERO_IN_DATE`，
+  且 **`explicit_defaults_for_timestamp = 0`** ⇒ 裸 `TIMESTAMP` 列被隐式赋予零日期默认值
+  `'0000-00-00 00:00:00'` ⇒ 零日期在 NO_ZERO_DATE 下**非法**
+  ⇒ 建表报 `SQLSyntaxErrorException: Invalid default value for 'END_TIME'`。
+- 报错总落在**第二个** TIMESTAMP 列上：MySQL 只给表里的第一个 TIMESTAMP 列自动
+  `DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`，其余列拿零日期。
+- 真库复现（同一台生产库）：
+  ```
+  CREATE TABLE (A TIMESTAMP, B TIMESTAMP)          => Invalid default value for 'B'
+  CREATE TABLE (A TIMESTAMP NULL, B TIMESTAMP NULL) => 建表成功
+  ```
+- ⇒ `WfDdlDialect` 在 MySQL 侧把裸 `TIMESTAMP` 译成 `TIMESTAMP NULL`。
+  **顺带避开第二个坑**：`explicit_defaults_for_timestamp=0` 时第一个 TIMESTAMP 列会被自动加上
+  `ON UPDATE CURRENT_TIMESTAMP` ⇒ 任何一次 UPDATE 都会把它改写成当前时间
+  （`START_TIME` 会被悄悄覆盖成"最后一次更新的时间"）；显式 `NULL` 把它固定成"无默认值、无自动更新"，
+  与 H2 侧语义一致。
+- ⚠ **踩过的坑**：崩溃重启的旧 Pod 会在你删表之后**再把表建回来**（`CREATE TABLE IF NOT EXISTS`
+  遇到旧表会跳过 ⇒ 新 DDL 不生效）。⇒ 重建表前先把 Deployment 缩到 0，再删表，再拉起来。
+
+**实测结论**（真 MySQL 8.0.36 生产库，非 H2 替身；2026-10-22 首次上线）：
 ```
-initialize() 成功，耗时 321ms
+initialize() 成功，耗时 ~400ms
 13 张表（ZWF_DEFINITION/PROCESS/EXECUTION/TASK/ACTIVITY/COMMENT/JOB/
         COMPENSATION/BATCH/BATCH_ELEMENT/INCIDENT_HISTORY/FILTER/DECISION）
-29 个索引全部真建出来（逐表核对 getIndexInfo，不是靠"没报错"推断）
+29 个索引全部真建出来（逐表核对 information_schema.STATISTICS，不是靠"没报错"推断）
 第二次 initialize() 成功（幂等）
+复核：带 DEFAULT_GENERATED / on update 的 TIMESTAMP 列数 = 0（应为 0）
 ```
+> ⚠ 日志里的「13 张表，22 条索引」与库里的 **29** 个索引**不矛盾**：
+> 22 = 显式 `CREATE INDEX` 语句数，29 = 库里实际的非主键索引数（差额 7 来自列上的 `UNIQUE` 约束）。
 
 ### 0.2 ⚠ 库不需要手工建
 
