@@ -30,7 +30,7 @@ import {
     UserOutlined,
 } from '@ant-design/icons';
 import {approvalApi, designerApi} from '../../services/api';
-import {EmptyState, ErrorState, PageHeader} from '../../ui';
+import {EmptyState, ErrorState, PageHeader} from '@yuku123/z-frontend-common/ui';
 import {ApprovalHistory, Task} from '../../types';
 import dayjs from 'dayjs';
 import styles from './index.module.css';

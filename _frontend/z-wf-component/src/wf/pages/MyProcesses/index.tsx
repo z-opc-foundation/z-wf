@@ -1,16 +1,15 @@
 import React, {useEffect, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
-import {Badge, Button, Card, Input, message, Modal, Space, Table, Typography,} from 'antd';
+import {Badge, Button, message, Modal, Space, Typography,} from 'antd';
 import {
     DeleteOutlined,
     ExclamationCircleOutlined,
     EyeOutlined,
     FileTextOutlined,
     ReloadOutlined,
-    SearchOutlined,
 } from '@ant-design/icons';
 import {approvalApi} from '../../services/api';
-import {EmptyState, ErrorState, PageHeader} from '../../ui';
+import {ErrorState, ListTable, PageHeader} from '@yuku123/z-frontend-common/ui';
 import {PageResult, ProcessInstance} from '../../types';
 import dayjs from 'dayjs';
 import styles from './index.module.css';
@@ -28,7 +27,6 @@ const MyProcesses: React.FC = () => {
         pageNum: 1,
         pageSize: 10,
     });
-    const [searchKeyword, setSearchKeyword] = useState('');
 
     const fetchMyProcesses = async (pageNum = 1, pageSize = 10) => {
         try {
@@ -180,26 +178,49 @@ const MyProcesses: React.FC = () => {
     return (
         <div className={styles.container}>
             <PageHeader title="我发起的流程"/>
-            <Card className={styles.card}>
-                <div className={styles.header}>
-                    <div className={styles.titleSection}>
-                        <Title level={4} className={styles.title}>
-                            <FileTextOutlined className={styles.titleIcon}/>
-                            我发起的流程
-                        </Title>
-                        <span className={styles.subtitle}>
+            {error ? (
+                // ErrorState 的 prop 是 variant（'inline' | 'full'），type 是 antd 4 旧名
+                <ErrorState error={error} onRetry={() => fetchMyProcesses(data.pageNum, data.pageSize)}
+                            variant="inline"/>
+            ) : (
+                /* 服务端分页，不套客户端分页：
+                   - 分页对象保留原样（current/pageSize/total 由后端驱动，翻页重查接口），
+                     只补 §2 规则 2 要求的 pageSizeOptions；
+                   - 过滤框用基座 ListTable 自带的端侧过滤（后端 list 接口没有 keyword 参数，
+                     过滤只作用在当前页已加载的数据上）；
+                   - 空态由基座 <EmptyState/> 承接。 */
+                <ListTable
+                    rows={data.records}
+                    // @ts-ignore
+                    columns={columns}
+                    rowKey="id"
+                    loading={loading}
+                    pagination={{
+                        // @ts-ignore
+                        current: data.pageNum,
+                        pageSize: data.pageSize,
+                        total: data.total,
+                        showSizeChanger: true,
+                        showQuickJumper: true,
+                        pageSizeOptions: ['10', '20', '50', '100'],
+                        showTotal: (total) => `共 ${total} 条`,
+                    }}
+                    onChange={(pagination) => {
+                        fetchMyProcesses(pagination.current, pagination.pageSize);
+                    }}
+                    scroll={{x: 1800}}
+                    cardTitle={
+                        <div className={styles.titleSection}>
+                            <Title level={4} className={styles.title}>
+                                <FileTextOutlined className={styles.titleIcon}/>
+                                我发起的流程
+                            </Title>
+                            <span className={styles.subtitle}>
               共 <strong>{data.total}</strong> 个流程实例
             </span>
-                    </div>
-                    <Space>
-                        <Input
-                            placeholder="搜索流程名称"
-                            prefix={<SearchOutlined/>}
-                            value={searchKeyword}
-                            onChange={(e) => setSearchKeyword(e.target.value)}
-                            style={{width: 240}}
-                            allowClear
-                        />
+                        </div>
+                    }
+                    cardExtra={
                         <Button
                             icon={<ReloadOutlined/>}
                             // @ts-ignore
@@ -207,41 +228,14 @@ const MyProcesses: React.FC = () => {
                         >
                             刷新
                         </Button>
-                    </Space>
-                </div>
-
-                {error ? (
-                    // ErrorState 的 prop 是 variant（'inline' | 'full'），type 是 antd 4 旧名
-                    <ErrorState error={error} onRetry={() => fetchMyProcesses(data.pageNum, data.pageSize)}
-                                variant="inline"/>
-                ) : (
-                    <Table
-                        // @ts-ignore
-                        columns={columns}
-                        dataSource={data.records}
-                        rowKey="id"
-                        loading={loading}
-                        pagination={{
-                            // @ts-ignore
-                            current: data.pageNum,
-                            pageSize: data.pageSize,
-                            total: data.total,
-                            showSizeChanger: true,
-                            showQuickJumper: true,
-                            showTotal: (total) => `共 ${total} 条`,
-                        }}
-                        onChange={(pagination) => {
-                            fetchMyProcesses(pagination.current, pagination.pageSize);
-                        }}
-                        scroll={{x: 1800}}
-                        locale={{
-                            emptyText: (
-                                <EmptyState title="暂无流程实例" description="当前没有流程实例"/>
-                            ),
-                        }}
-                    />
-                )}
-            </Card>
+                    }
+                    searchKeys="processDefinitionName,businessKey,startUserName"
+                    searchPlaceholder="搜索流程名称"
+                    emptyTitle="暂无流程实例"
+                    emptyDescription="当前没有流程实例"
+                    cardProps={{className: styles.card}}
+                />
+            )}
         </div>
     );
 };

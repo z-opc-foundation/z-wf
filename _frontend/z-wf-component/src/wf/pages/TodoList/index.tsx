@@ -1,9 +1,9 @@
 import React, {useEffect, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
-import {Badge, Button, Card, Input, Space, Table, Tag, Tooltip, Typography,} from 'antd';
-import {CheckCircleOutlined, ClockCircleOutlined, ReloadOutlined, SearchOutlined,} from '@ant-design/icons';
+import {Badge, Button, Space, Tag, Tooltip, Typography,} from 'antd';
+import {CheckCircleOutlined, ClockCircleOutlined, ReloadOutlined,} from '@ant-design/icons';
 import {approvalApi} from '../../services/api';
-import {EmptyState, ErrorState, PageHeader} from '../../ui';
+import {ErrorState, ListTable, PageHeader} from '@yuku123/z-frontend-common/ui';
 import {PageResult, Task} from '../../types';
 import dayjs from 'dayjs';
 import styles from './index.module.css';
@@ -20,7 +20,6 @@ const TodoList: React.FC = () => {
         pageNum: 1,
         pageSize: 10,
     });
-    const [searchKeyword, setSearchKeyword] = useState('');
 
     const fetchTodoList = async (pageNum = 1, pageSize = 10) => {
         try {
@@ -158,26 +157,48 @@ const TodoList: React.FC = () => {
     return (
         <div className={styles.container}>
             <PageHeader title="待办任务"/>
-            <Card className={styles.card}>
-                <div className={styles.header}>
-                    <div className={styles.titleSection}>
-                        <Title level={4} className={styles.title}>
-                            <ClockCircleOutlined className={styles.titleIcon}/>
-                            待办任务
-                        </Title>
-                        <span className={styles.subtitle}>
+            {error ? (
+                // @ts-ignore
+                <ErrorState error={error} onRetry={() => fetchTodoList(data.pageNum, data.pageSize)} variant="inline"/>
+            ) : (
+                /* 服务端分页，不套客户端分页：
+                   - 分页对象保留原样（current/pageSize/total 由后端驱动，翻页重查接口），
+                     只补 §2 规则 2 要求的 pageSizeOptions；
+                   - 过滤框用基座 ListTable 自带的端侧过滤（后端 list 接口没有 keyword 参数，
+                     过滤只作用在当前页已加载的数据上）；
+                   - 空态由基座 <EmptyState/> 承接。 */
+                <ListTable
+                    rows={data.records}
+                    // @ts-ignore
+                    columns={columns}
+                    rowKey="id"
+                    loading={loading}
+                    pagination={{
+                        // @ts-ignore
+                        current: data.pageNum,
+                        pageSize: data.pageSize,
+                        total: data.total,
+                        showSizeChanger: true,
+                        showQuickJumper: true,
+                        pageSizeOptions: ['10', '20', '50', '100'],
+                        showTotal: (total) => `共 ${total} 条`,
+                    }}
+                    onChange={(pagination) => {
+                        fetchTodoList(pagination.current, pagination.pageSize);
+                    }}
+                    scroll={{x: 1400}}
+                    cardTitle={
+                        <div className={styles.titleSection}>
+                            <Title level={4} className={styles.title}>
+                                <ClockCircleOutlined className={styles.titleIcon}/>
+                                待办任务
+                            </Title>
+                            <span className={styles.subtitle}>
               共 <strong>{data.total}</strong> 条待办
             </span>
-                    </div>
-                    <Space>
-                        <Input
-                            placeholder="搜索任务名称"
-                            prefix={<SearchOutlined/>}
-                            value={searchKeyword}
-                            onChange={(e) => setSearchKeyword(e.target.value)}
-                            style={{width: 240}}
-                            allowClear
-                        />
+                        </div>
+                    }
+                    cardExtra={
                         <Button
                             icon={<ReloadOutlined/>}
                             // @ts-ignore
@@ -185,40 +206,14 @@ const TodoList: React.FC = () => {
                         >
                             刷新
                         </Button>
-                    </Space>
-                </div>
-
-                {error ? (
-                    // @ts-ignore
-                    <ErrorState error={error} onRetry={() => fetchTodoList(data.pageNum, data.pageSize)} type="inline"/>
-                ) : (
-                    <Table
-                        // @ts-ignore
-                        columns={columns}
-                        dataSource={data.records}
-                        rowKey="id"
-                        loading={loading}
-                        pagination={{
-                            // @ts-ignore
-                            current: data.pageNum,
-                            pageSize: data.pageSize,
-                            total: data.total,
-                            showSizeChanger: true,
-                            showQuickJumper: true,
-                            showTotal: (total) => `共 ${total} 条`,
-                        }}
-                        onChange={(pagination) => {
-                            fetchTodoList(pagination.current, pagination.pageSize);
-                        }}
-                        scroll={{x: 1400}}
-                        locale={{
-                            emptyText: (
-                                <EmptyState title="暂无待办任务" description="当前没有待办任务"/>
-                            ),
-                        }}
-                    />
-                )}
-            </Card>
+                    }
+                    searchKeys="name,processDefinitionName"
+                    searchPlaceholder="搜索任务名称"
+                    emptyTitle="暂无待办任务"
+                    emptyDescription="当前没有待办任务"
+                    cardProps={{className: styles.card}}
+                />
+            )}
         </div>
     );
 };
