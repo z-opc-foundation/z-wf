@@ -133,6 +133,7 @@ JDBC URL 的 host **不写**在清单里，而是整条走 `secretKeyRef`（`ali
 | 凭据来源 ① | **服务令牌**：`Z_WF_AUTH_TOKENS`（逗号分隔，元素形如 `name:secret`；`name` 只进审计日志） |
 | 凭据来源 ② | **主壳 SSO 票据**：`Z_WF_SSO_JWT_SECRET`（与 z-ctc 同一枚 HS256 密钥 ⇒ z-wf **本地离线验签**） |
 | 没带凭据 / 凭据无效 | **401** + JSON 信封（不是 HTML） |
+| ⚠ **带了凭据仍 401 的头号原因** | **`name:secret` 是「配置格式」，请求头只送 secret 部分** —— `name` 只进审计归因，校验时只比对 secret（`WfStaticTokenValidator` 按 `indexOf(':')` 拆名/密后比密）。<br>✅ 正确：`Authorization: Bearer <43 位 secret>` ／ 裸 `Authorization: <secret>` ／ Cookie `sso_token=<secret>`<br>❌ 错误：`Authorization: Bearer zteam:<43 位 secret>`（整串）⇒ **必 401**（2026-10-22 19:0x 实测） |
 | **一个凭据来源都没配** | **503** + JSON 信封 —— **fail-closed**，不是 401，更不是放行 |
 | 审计 | 应用层 `[WF-ACCESS]` 审计行（凭据名 + 路径 + 状态码 + 耗时 + 来源 IP）+ Tomcat access log |
 

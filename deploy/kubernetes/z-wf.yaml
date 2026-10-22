@@ -172,6 +172,9 @@ spec:
             # ⚠ 两枚凭据都从 Secret 注入，**清单里不留明文**：
             #   z-wf-auth / auth-tokens      服务令牌（机器对机器：z-team AI 领活、z-ops 派发）
             #                                元素形如 name:secret（name 只进审计日志）
+            #                                ⚠ name:secret 是**配置格式**；**请求头只送 secret 部分**
+            #                                  （Authorization: Bearer <secret>）——
+            #                                  送整串 name:secret 会得 401（2026-10-22 19:0x 实测）
             #   z-wf-auth / sso-jwt-secret   主壳 SSO 票据的 HS256 密钥（与 z-ctc 同一枚）
             #                                ⇒ 主壳同口径的 Authorization: Bearer <jwt>
             #                                  或 Cookie sso_token / zctc_token 可直接调 z-wf
