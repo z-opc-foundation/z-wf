@@ -251,6 +251,14 @@ spec:
             httpGet:
               path: /api/wf/health/probe
               port: 8080
+            # ⚠ timeoutSeconds 必须**显式写**：不写就是取 Kubernetes 默认值 **1 秒**
+            #   （kubectl explain ...timeoutSeconds：Defaults to 1 second），
+            #   而「删掉该字段」与「写 1」等价，**都修不好**（2026-10-23 TASK-20261023-043）。
+            #   取值 5s 的依据：该端点实测热态 p50=182.7ms / p95=201.8ms / max=202.9ms
+            #   （集群内 20 次采样，2026-10-23），kubelet 侧记录的服务端耗时最高 325ms
+            #   ⇒ 5s ≈ 25×p95、15×实测最高值、5×当初被击穿的 1s 门槛。
+            #   且 5s < periodSeconds(15) ⇒ 不改变探针节奏。
+            timeoutSeconds: 5
             initialDelaySeconds: 30
             periodSeconds: 15
             failureThreshold: 8
@@ -258,7 +266,13 @@ spec:
             httpGet:
               path: /api/wf/health/probe
               port: 8080
+            # ⚠ 同 readiness：**必须显式写 timeoutSeconds**（默认 1s ⇒ 慢路径直接误判存活失败）。
+            #   取值 10s（比 readiness 更宽）：liveness 连续 6 次失败（6×30s=180s）才重启容器，
+            #   一次 GC / 阿里云 RDS 抖动不该把容器换掉 ⇒ 给存活探针留更足的余量。
+            #   10s < periodSeconds(30) ⇒ 不改变探针节奏。
+            timeoutSeconds: 10
             # 启动比 z-ops 慢：要先连库 + 建 13 张表 + 部署流程定义
+            # （实测启动耗时 14.4s，initialDelaySeconds=120 已经很宽裕）
             initialDelaySeconds: 120
             periodSeconds: 30
             failureThreshold: 6
