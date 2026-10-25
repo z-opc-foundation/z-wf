@@ -1,4 +1,4 @@
-import { ApartmentOutlined, CheckSquareOutlined, ClockCircleOutlined, DashboardOutlined, FileDoneOutlined, HomeOutlined, ProfileOutlined, ReadOutlined, UnorderedListOutlined } from '@ant-design/icons'
+import { CheckSquareOutlined, ClockCircleOutlined, DashboardOutlined, HomeOutlined, ProfileOutlined, ReadOutlined, UnorderedListOutlined } from '@ant-design/icons'
 import Dashboard from './wf/pages/Dashboard'
 import TodoList from './wf/pages/TodoList'
 import DoneList from './wf/pages/DoneList'
@@ -31,8 +31,7 @@ export const menuItems = [
     { key: '/z-wf/workflow/done', label: '已办任务', icon: <CheckSquareOutlined /> },
     { key: '/z-wf/workflow/my-processes', label: '我的流程', icon: <UnorderedListOutlined /> },
     { key: '/z-wf/workflow/processes', label: '流程定义', icon: <ProfileOutlined /> },
-    { key: '/z-wf/workflow/designer', label: '流程设计', icon: <ApartmentOutlined /> },
-    { key: '/z-wf/workflow/process', label: '流程详情', icon: <FileDoneOutlined /> },
+    // 流程设计 / 流程详情只吃 URL 参数（designer/:id、process/:processInstanceId），由列表行进入，不做菜单项
     { key: '/z-wf/docs', label: '组件文档', icon: <ReadOutlined /> },
 ]
 

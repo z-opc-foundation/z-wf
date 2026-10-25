@@ -167,7 +167,7 @@ const ProcessDesigner: React.FC = () => {
                 <div className={styles.toolbarLeft}>
                     <Button
                         icon={<ArrowLeftOutlined/>}
-                        onClick={() => navigate('/workflow/processes')}
+                        onClick={() => navigate('/z-wf/workflow/processes')}
                     >
                         返回
                     </Button>

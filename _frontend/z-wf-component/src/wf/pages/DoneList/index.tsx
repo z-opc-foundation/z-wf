@@ -85,7 +85,7 @@ const DoneList: React.FC = () => {
                     <Button
                         type="text"
                         icon={<EyeOutlined/>}
-                        onClick={() => navigate(`/workflow/task/${record.id}`)}
+                        onClick={() => navigate(`/z-wf/workflow/task/${record.id}`)}
                     >
                         查看
                     </Button>

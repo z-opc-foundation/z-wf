@@ -145,7 +145,7 @@ const TodoList: React.FC = () => {
                         type="primary"
                         size="small"
                         icon={<CheckCircleOutlined/>}
-                        onClick={() => navigate(`/workflow/task/${record.id}`)}
+                        onClick={() => navigate(`/z-wf/workflow/task/${record.id}`)}
                     >
                         审批
                     </Button>

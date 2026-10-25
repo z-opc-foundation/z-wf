@@ -91,7 +91,7 @@ const Dashboard: React.FC = () => {
                         />
                         // @ts-ignore
                         <div className={styles.statFooter}>
-                            <Link to="/workflow/todo">
+                            <Link to="/z-wf/workflow/todo">
                                 去处理 <RightOutlined/>
                             </Link>
                         </div>
@@ -108,7 +108,7 @@ const Dashboard: React.FC = () => {
                         />
                         // @ts-ignore
                         <div className={styles.statFooter}>
-                            <Link to="/workflow/done">
+                            <Link to="/z-wf/workflow/done">
                                 查看全部 <RightOutlined/>
                             </Link>
                         </div>
@@ -126,7 +126,7 @@ const Dashboard: React.FC = () => {
                         />
                         // @ts-ignore
                         <div className={styles.statFooter}>
-                            <Link to="/workflow/my-processes">
+                            <Link to="/z-wf/workflow/my-processes">
                                 查看全部 <RightOutlined/>
                             </Link>
                         </div>
@@ -142,7 +142,7 @@ const Dashboard: React.FC = () => {
             待办任务
           </span>
                 }
-                extra={<Link to="/workflow/todo">查看更多</Link>}
+                extra={<Link to="/z-wf/workflow/todo">查看更多</Link>}
                 loading={loading}
                 // @ts-ignore
                 className={styles.todoCard}
@@ -161,7 +161,7 @@ const Dashboard: React.FC = () => {
                                     <Button
                                         type="primary"
                                         size="small"
-                                        onClick={() => navigate(`/workflow/task/${task.id}`)}
+                                        onClick={() => navigate(`/z-wf/workflow/task/${task.id}`)}
                                     >
                                         处理
                                     </Button>,

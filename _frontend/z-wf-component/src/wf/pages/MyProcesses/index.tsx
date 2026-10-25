@@ -156,7 +156,7 @@ const MyProcesses: React.FC = () => {
                         type="primary"
                         size="small"
                         icon={<EyeOutlined/>}
-                        onClick={() => navigate(`/workflow/process/${record.id}`)}
+                        onClick={() => navigate(`/z-wf/workflow/process/${record.id}`)}
                     >
                         详情
                     </Button>
