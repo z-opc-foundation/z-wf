@@ -25,9 +25,19 @@ function NotFound() {
     )
 }
 
-// lead 008 §16：CTC/SSO 接入前的 mock 登录（账号由构建期 VITE_MOCK_USER / VITE_MOCK_PASSWORD 注入）
+// lead 008 §16：CTC/SSO 接入前的 mock 登录。
+// mock 账号不写死在仓里（001 凭证规范）：构建期注入 VITE_MOCK_USER / VITE_MOCK_PASSWORD；
+// 组件是 library 模式构建，模块级 import.meta.env 会被内联成空串 ⇒ 账号由 suit 取值、经 prop 传入。
+const MOCK_AUTH = import.meta.env.VITE_MOCK_USER && import.meta.env.VITE_MOCK_PASSWORD
+    ? {
+        username: import.meta.env.VITE_MOCK_USER,
+        password: import.meta.env.VITE_MOCK_PASSWORD,
+        user: { name: import.meta.env.VITE_MOCK_USER, role: '管理员' },
+    }
+    : null
+
 function LoginRoute() {
-    return <LoginPage />
+    return <LoginPage mockAuth={MOCK_AUTH} />
 }
 
 function ProtectedShell() {
