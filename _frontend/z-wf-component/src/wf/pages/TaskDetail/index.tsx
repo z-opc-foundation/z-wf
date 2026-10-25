@@ -121,7 +121,6 @@ const TaskDetail: React.FC = () => {
     const getActionIcon = (action: string) => {
         switch (action) {
             case 'start':
-                // @ts-ignore
                 return <PlayCircleOutlined className={styles.startIcon}/>;
             case 'complete':
                 return <CheckCircleOutlined className={styles.completeIcon}/>;
@@ -176,11 +175,8 @@ const TaskDetail: React.FC = () => {
             <Card className={styles.card}>
                 <div className={styles.header}>
                     <div className={styles.headerActions}>
-                        // @ts-ignore
                         {task.status === 'pending' && <Badge status="processing" text="待处理"/>}
-                        // @ts-ignore
                         {task.status === 'claimed' && <Badge status="warning" text="处理中"/>}
-                        // @ts-ignore
                         {task.status === 'completed' && <Badge status="success" text="已完成"/>}
                     </div>
                 </div>
@@ -192,11 +188,9 @@ const TaskDetail: React.FC = () => {
                         <Descriptions title="任务信息" bordered column={1} className={styles.descriptions}>
                             <Descriptions.Item label="任务名称">{task.name}</Descriptions.Item>
                             <Descriptions.Item label="任务ID">{task.id}</Descriptions.Item>
-                            // @ts-ignore
                             <Descriptions.Item label="所属流程">{String(task.processDefinitionName)}</Descriptions.Item>
                             <Descriptions.Item label="流程实例ID">{task.processInstanceId}</Descriptions.Item>
                             <Descriptions.Item
-                                // @ts-ignore
                                 label="当前处理人">{task.assigneeName || task.assignee || '-'}</Descriptions.Item>
                             <Descriptions.Item label="任务状态">
                                 {task.status === 'pending' && <Tag color="blue">待处理</Tag>}
@@ -207,12 +201,10 @@ const TaskDetail: React.FC = () => {
                                 {dayjs(task.createTime).format('YYYY-MM-DD HH:mm:ss')}
                             </Descriptions.Item>
                             <Descriptions.Item label="认领时间">
-                                // @ts-ignore
                                 {task.claimTime ? dayjs(String(task.claimTime)).format('YYYY-MM-DD HH:mm:ss') : '-'}
                             </Descriptions.Item>
                             {task.dueTime && (
                                 <Descriptions.Item label="到期时间">
-                                    // @ts-ignore
                                     {dayjs(String(task.dueTime)).format('YYYY-MM-DD HH:mm:ss')}
                                 </Descriptions.Item>
                             )}
@@ -292,7 +284,6 @@ const TaskDetail: React.FC = () => {
                     <div className={styles.rightPanel}>
                         <Card title="审批历史" className={styles.historyCard}>
                             {error ? (
-                                // @ts-ignore
                                 <ErrorState error={error} onRetry={fetchTaskDetail} type="inline"/>
                             ) : history.length > 0 ? (
                                 <Timeline mode="left" className={styles.historyTimeline}>
@@ -314,13 +305,11 @@ const TaskDetail: React.FC = () => {
                             {getActionText(item.action)}
                           </span>
                                                     <span className={styles.historyTime}>
-                            // @ts-ignore
                                                         {dayjs(String(item.createTime)).format('MM-DD HH:mm')}
                           </span>
                                                 </div>
                                                 <div className={styles.historyContent}>
                           <span className={styles.historyUser}>
-                            // @ts-ignore
                             <UserOutlined/> {String(item.assigneeName || item.assignee)}
                           </span>
                                                 </div>

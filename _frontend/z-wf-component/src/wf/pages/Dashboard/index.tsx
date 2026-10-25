@@ -29,7 +29,6 @@ const Dashboard: React.FC = () => {
     const navigate = useNavigate();
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<Error | null>(null);
-    // @ts-ignore
     const [stats, setStats] = useState<DashboardStats>({
         todoCount: 0,
         doneCount: 0,
@@ -75,13 +74,10 @@ const Dashboard: React.FC = () => {
     };
 
     return (
-        // @ts-ignore
         <div className={styles.dashboard}>
             {/* 统计卡片 */}
-            // @ts-ignore
             <Row gutter={16} className={styles.statsRow}>
                 <Col xs={24} sm={8}>
-                    // @ts-ignore
                     <Card loading={loading} className={styles.statCard}>
                         <Statistic
                             title="待办任务"
@@ -89,7 +85,6 @@ const Dashboard: React.FC = () => {
                             prefix={<ClockCircleOutlined className={styles.todoIcon}/>}
                             styles={{content: {color: '#1677ff'}}}
                         />
-                        // @ts-ignore
                         <div className={styles.statFooter}>
                             <Link to="/z-wf/workflow/todo">
                                 去处理 <RightOutlined/>
@@ -98,7 +93,6 @@ const Dashboard: React.FC = () => {
                     </Card>
                 </Col>
                 <Col xs={24} sm={8}>
-                    // @ts-ignore
                     <Card loading={loading} className={styles.statCard}>
                         <Statistic
                             title="已办任务"
@@ -106,7 +100,6 @@ const Dashboard: React.FC = () => {
                             prefix={<CheckCircleOutlined className={styles.doneIcon}/>}
                             styles={{content: {color: '#52c41a'}}}
                         />
-                        // @ts-ignore
                         <div className={styles.statFooter}>
                             <Link to="/z-wf/workflow/done">
                                 查看全部 <RightOutlined/>
@@ -115,16 +108,13 @@ const Dashboard: React.FC = () => {
                     </Card>
                 </Col>
                 <Col xs={24} sm={8}>
-                    // @ts-ignore
                     <Card loading={loading} className={styles.statCard}>
                         <Statistic
                             title="我发起的"
-                            // @ts-ignore
                             value={stats.initiatedCount}
                             prefix={<FileTextOutlined className={styles.initiatedIcon}/>}
                             styles={{content: {color: '#722ed1'}}}
                         />
-                        // @ts-ignore
                         <div className={styles.statFooter}>
                             <Link to="/z-wf/workflow/my-processes">
                                 查看全部 <RightOutlined/>
@@ -144,16 +134,12 @@ const Dashboard: React.FC = () => {
                 }
                 extra={<Link to="/z-wf/workflow/todo">查看更多</Link>}
                 loading={loading}
-                // @ts-ignore
                 className={styles.todoCard}
             >
                 {error ? (
-                    // @ts-ignore
                     <ErrorState error={error} onRetry={fetchDashboardData} type="inline"/>
-                    // @ts-ignore
                 ) : stats.todoList.length > 0 ? (
                     <List
-                        // @ts-ignore
                         dataSource={stats.todoList.slice(0, 5)}
                         renderItem={(task: Task) => (
                             <List.Item
@@ -169,7 +155,6 @@ const Dashboard: React.FC = () => {
                             >
                                 <List.Item.Meta
                                     title={
-                                        // @ts-ignore
                                         <div className={styles.taskTitle}>
                                             <span>{task.name}</span>
                                             <Tag color={getPriorityColor(task.priority)}>
@@ -178,7 +163,6 @@ const Dashboard: React.FC = () => {
                                         </div>
                                     }
                                     description={
-                                        // @ts-ignore
                                         <div className={styles.taskDesc}>
                                             <span>流程: {String(task.processDefinitionName)}</span>
                                             <span>创建时间: {task.createTime}</span>

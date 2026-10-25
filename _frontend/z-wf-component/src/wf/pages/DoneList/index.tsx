@@ -98,7 +98,6 @@ const DoneList: React.FC = () => {
         <div className={styles.container}>
             {error ? (
                 // ErrorState 的 prop 是 variant（'inline' | 'full'），type 是 antd 4 旧名
-                // @ts-ignore
                 <ErrorState error={error} onRetry={() => fetchDoneList(data.pageNum, data.pageSize)}
                             variant="inline"/>
             ) : (
@@ -110,12 +109,10 @@ const DoneList: React.FC = () => {
                    - 空态由基座 <EmptyState/> 承接。 */
                 <ListTable
                     rows={data.records}
-                    // @ts-ignore
                     columns={columns}
                     rowKey="id"
                     loading={loading}
                     pagination={{
-                        // @ts-ignore
                         current: data.pageNum,
                         pageSize: data.pageSize,
                         total: data.total,
@@ -141,7 +138,6 @@ const DoneList: React.FC = () => {
                     cardExtra={
                         <Button
                             icon={<ReloadOutlined/>}
-                            // @ts-ignore
                             onClick={() => fetchDoneList(data.pageNum, data.pageSize)}
                         >
                             刷新

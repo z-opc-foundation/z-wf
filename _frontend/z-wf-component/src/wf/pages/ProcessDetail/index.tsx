@@ -16,7 +16,6 @@ import dayjs from 'dayjs';
 import styles from './index.module.css';
 
 const {Title, Text} = Typography;
-// @ts-ignore
 const {Step} = Steps;
 
 const ProcessDetail: React.FC = () => {
@@ -72,7 +71,6 @@ const ProcessDetail: React.FC = () => {
     const getActionIcon = (action: string) => {
         switch (action) {
             case 'start':
-                // @ts-ignore
                 return <PlayCircleOutlined className={styles.startIcon}/>;
             case 'complete':
                 return <CheckCircleOutlined className={styles.completeIcon}/>;
@@ -140,7 +138,6 @@ const ProcessDetail: React.FC = () => {
                     <Descriptions.Item label="流程实例ID">{process.id}</Descriptions.Item>
                     <Descriptions.Item label="业务标识">{process.businessKey || '-'}</Descriptions.Item>
                     <Descriptions.Item label="状态">{getStatusTag(process.status)}</Descriptions.Item>
-                    // @ts-ignore
                     <Descriptions.Item label="发起人">{String(process.startUserName || '系统')}</Descriptions.Item>
                     <Descriptions.Item label="发起时间">
                         {dayjs(process.startTime).format('YYYY-MM-DD HH:mm:ss')}
@@ -153,11 +150,8 @@ const ProcessDetail: React.FC = () => {
                             <Descriptions.Item label="总耗时">
                                 {(() => {
                                     const duration = process.duration || 0;
-                                    // @ts-ignore
                                     const days = Math.floor(duration / 86400000);
-                                    // @ts-ignore
                                     const hours = Math.floor((duration % 86400000) / 3600000);
-                                    // @ts-ignore
                                     const minutes = Math.floor((duration % 3600000) / 60000);
                                     if (days > 0) return `${days}天${hours}小时`;
                                     if (hours > 0) return `${hours}小时${minutes}分钟`;
@@ -173,7 +167,6 @@ const ProcessDetail: React.FC = () => {
                 <div className={styles.timelineSection}>
                     <Title level={5}>审批历史</Title>
                     {error ? (
-                        // @ts-ignore
                         <ErrorState error={error} onRetry={fetchProcessDetail} type="inline"/>
                     ) : history.length > 0 ? (
                         <Timeline mode="left" className={styles.timeline}>
@@ -198,12 +191,10 @@ const ProcessDetail: React.FC = () => {
                                         </div>
                                         <div className={styles.timelineContent}>
                       <span className={styles.timelineUser}>
-                        // @ts-ignore
                         <UserOutlined/> {String(item.assigneeName || item.assignee)}
                       </span>
                                             <span className={styles.timelineTime}>
                         <ClockCircleOutlined/>{' '}
-                                                // @ts-ignore
                                                 {dayjs(String(item.createTime)).format('YYYY-MM-DD HH:mm:ss')}
                       </span>
                                             {item.duration && (

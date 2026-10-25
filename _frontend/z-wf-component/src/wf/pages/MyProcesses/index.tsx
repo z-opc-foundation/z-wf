@@ -62,7 +62,6 @@ const MyProcesses: React.FC = () => {
                     message.success('删除成功');
                     fetchMyProcesses();
                 } catch (error) {
-                    // @ts-ignore
                     message.error('删除失败');
                 }
             },
@@ -190,12 +189,10 @@ const MyProcesses: React.FC = () => {
                    - 空态由基座 <EmptyState/> 承接。 */
                 <ListTable
                     rows={data.records}
-                    // @ts-ignore
                     columns={columns}
                     rowKey="id"
                     loading={loading}
                     pagination={{
-                        // @ts-ignore
                         current: data.pageNum,
                         pageSize: data.pageSize,
                         total: data.total,
@@ -222,7 +219,6 @@ const MyProcesses: React.FC = () => {
                     cardExtra={
                         <Button
                             icon={<ReloadOutlined/>}
-                            // @ts-ignore
                             onClick={() => fetchMyProcesses(data.pageNum, data.pageSize)}
                         >
                             刷新

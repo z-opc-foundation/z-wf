@@ -35,7 +35,7 @@ const ProcessList: React.FC = () => {
         try {
             setLoading(true);
             const result = await approvalApi.getProcessDefinitions();
-            setData(result);
+            setData(Array.isArray(result) ? result : []);
         } catch (error) {
             console.error('获取流程列表失败:', error);
             setError(error as Error);
@@ -122,7 +122,6 @@ const ProcessList: React.FC = () => {
                     <BranchesOutlined className={styles.processIcon}/>
                     <div className={styles.nameInfo}>
                         <span className={styles.name}>{text}</span>
-                        // @ts-ignore
                         <span className={styles.key}>{String(record.key)}</span>
                     </div>
                 </div>
@@ -248,11 +247,9 @@ const ProcessList: React.FC = () => {
                 </div>
 
                 {error ? (
-                    // @ts-ignore
                     <ErrorState error={error} onRetry={fetchProcessList} type="inline"/>
                 ) : (
                     <Table
-                        // @ts-ignore
                         columns={columns}
                         dataSource={data}
                         rowKey="id"
@@ -274,7 +271,6 @@ const ProcessList: React.FC = () => {
                                 <EmptyState
                                     title="暂无流程定义"
                                     description="当前没有流程定义"
-                                    // @ts-ignore
                                     action={
                                         <Button type="primary" icon={<PlusOutlined/>} onClick={handleCreate}>
                                             新建流程

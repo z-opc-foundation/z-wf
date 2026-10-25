@@ -75,14 +75,10 @@ const TodoList: React.FC = () => {
             render: (text: string, record: Task) => (
                 <div className={styles.taskName}>
                     <span className={styles.name}>{text}</span>
-                    // @ts-ignore
                     {isOverdue(String(record.dueTime)) && (
-                        // @ts-ignore
                         <Tag color="red" size="small">已逾期</Tag>
                     )}
-                    // @ts-ignore
                     {isNearDue(String(record.dueTime)) && !isOverdue(String(record.dueTime)) && (
-                        // @ts-ignore
                         <Tag color="orange" size="small">即将到期</Tag>
                     )}
                 </div>
@@ -157,7 +153,6 @@ const TodoList: React.FC = () => {
     return (
         <div className={styles.container}>
             {error ? (
-                // @ts-ignore
                 <ErrorState error={error} onRetry={() => fetchTodoList(data.pageNum, data.pageSize)} variant="inline"/>
             ) : (
                 /* 服务端分页，不套客户端分页：
@@ -168,12 +163,10 @@ const TodoList: React.FC = () => {
                    - 空态由基座 <EmptyState/> 承接。 */
                 <ListTable
                     rows={data.records}
-                    // @ts-ignore
                     columns={columns}
                     rowKey="id"
                     loading={loading}
                     pagination={{
-                        // @ts-ignore
                         current: data.pageNum,
                         pageSize: data.pageSize,
                         total: data.total,
@@ -200,7 +193,6 @@ const TodoList: React.FC = () => {
                     cardExtra={
                         <Button
                             icon={<ReloadOutlined/>}
-                            // @ts-ignore
                             onClick={() => fetchTodoList(data.pageNum, data.pageSize)}
                         >
                             刷新
