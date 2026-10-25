@@ -12,7 +12,7 @@ import {
     ZoomInOutlined,
     ZoomOutOutlined,
 } from '@ant-design/icons';
-import FlowDesigner from '../../components/FlowDesigner';
+import FlowDesigner, {FlowDesignerRef} from '../../components/FlowDesigner';
 import {approvalApi, designerApi} from '../../services/api';
 import {ProcessDefinition} from '../../types';
 import styles from './index.module.css';
@@ -31,7 +31,7 @@ const approverOptions = [
 const ProcessDesigner: React.FC = () => {
     const {processDefinitionId} = useParams<{ processDefinitionId: string }>();
     const navigate = useNavigate();
-    const designerRef = useRef<any>(null);
+    const designerRef = useRef<FlowDesignerRef>(null);
     const [form] = Form.useForm();
 
     const [loading, setLoading] = useState(false);
@@ -123,24 +123,27 @@ const ProcessDesigner: React.FC = () => {
     };
 
     // 导出图片
-    const handleExportImage = (type: 'png' | 'svg') => {
-        if (designerRef.current) {
-            designerRef.current.exportImage(type);
-        }
+    const handleExportImage = () => {
+        designerRef.current?.exportImage();
     };
 
     // 打开节点属性面板
-    const handleOpenNodeProperties = (nodeData: any) => {
-        setSelectedNode(nodeData);
+    const handleOpenNodeProperties = (nodeModel: any) => {
+        const nodeData = {
+            ...nodeModel,
+            text: nodeModel.text?.value ?? nodeModel.text ?? '',
+            properties: nodeModel.properties || {},
+        };
+        setSelectedNode(nodeModel);
         setDrawerVisible(true);
         // 设置表单初始值
         form.setFieldsValue({
-            name: nodeData.text?.value || '',
+            name: nodeData.text,
             approverType: nodeData.properties?.approverType || 'direct_leader',
             approver: nodeData.properties?.approver,
             multipleApproval: nodeData.properties?.multipleApproval || 'sequential',
-            allowTransfer: nodeData.properties?.allowTransfer || true,
-            allowAddSign: nodeData.properties?.allowAddSign || false,
+            allowTransfer: nodeData.properties?.allowTransfer ?? true,
+            allowAddSign: nodeData.properties?.allowAddSign ?? false,
             description: nodeData.properties?.description,
         });
     };
@@ -148,13 +151,12 @@ const ProcessDesigner: React.FC = () => {
     // 保存节点属性
     const handleSaveNodeProperties = (values: any) => {
         if (selectedNode) {
-            // 更新节点文本
-            selectedNode.setText(values.name);
-            // 更新节点属性
-            selectedNode.properties = {
+            // LogicFlow 2.x：改文本/属性走 model 的 updateText / setProperties，直接赋字段不进历史记录
+            selectedNode.updateText(values.name);
+            selectedNode.setProperties({
                 ...selectedNode.properties,
                 ...values,
-            };
+            });
             message.success('属性保存成功');
             setDrawerVisible(false);
         }
@@ -171,7 +173,7 @@ const ProcessDesigner: React.FC = () => {
                     >
                         返回
                     </Button>
-                    <Divider type="vertical"/>
+                    <Divider orientation="vertical"/>
                     {processInfo && (
                         <div className={styles.processInfo}>
                             <span className={styles.processName}>{processInfo.name}</span>
@@ -180,18 +182,19 @@ const ProcessDesigner: React.FC = () => {
                     )}
                 </div>
                 <div className={styles.toolbarCenter}>
-                    <Button icon={<UndoOutlined/>} title="撤销"/>
-                    <Button icon={<RedoOutlined/>} title="重做"/>
-                    <Divider type="vertical"/>
-                    <Button icon={<ZoomOutOutlined/>} title="缩小"/>
-                    <Button icon={<ZoomInOutlined/>} title="放大"/>
-                    <Divider type="vertical"/>
-                    <Button icon={<DeleteOutlined/>} title="删除" danger/>
+                    <Button icon={<UndoOutlined/>} title="撤销" onClick={() => designerRef.current?.undo()}/>
+                    <Button icon={<RedoOutlined/>} title="重做" onClick={() => designerRef.current?.redo()}/>
+                    <Divider orientation="vertical"/>
+                    <Button icon={<ZoomOutOutlined/>} title="缩小" onClick={() => designerRef.current?.zoomOut()}/>
+                    <Button icon={<ZoomInOutlined/>} title="放大" onClick={() => designerRef.current?.zoomIn()}/>
+                    <Divider orientation="vertical"/>
+                    <Button icon={<DeleteOutlined/>} title="删除" danger
+                            onClick={() => designerRef.current?.deleteSelection()}/>
                 </div>
                 <div className={styles.toolbarRight}>
                     <Button
                         icon={<DownloadOutlined/>}
-                        onClick={() => handleExportImage('png')}
+                        onClick={handleExportImage}
                     >
                         导出图片
                     </Button>
@@ -223,11 +226,10 @@ const ProcessDesigner: React.FC = () => {
             {/* 流程设计器 */}
             <div className={styles.designerContainer}>
                 <FlowDesigner
-                    // @ts-ignore
                     ref={designerRef}
-                    processDefinitionId={processDefinitionId}
                     initialData={graphData}
                     readOnly={false}
+                    onNodeClick={handleOpenNodeProperties}
                 />
             </div>
 
@@ -289,7 +291,6 @@ const ProcessDesigner: React.FC = () => {
                     <Form.Item
                         label="允许转交"
                         name="allowTransfer"
-                        valuePropName="checked"
                     >
                         <Radio.Group>
                             <Radio value={true}>是</Radio>
@@ -300,7 +301,6 @@ const ProcessDesigner: React.FC = () => {
                     <Form.Item
                         label="允许加签"
                         name="allowAddSign"
-                        valuePropName="checked"
                     >
                         <Radio.Group>
                             <Radio value={true}>是</Radio>

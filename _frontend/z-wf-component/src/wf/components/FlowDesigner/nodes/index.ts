@@ -1,11 +1,17 @@
-import {CircleNode, h, PolygonNode, RectNode} from '@logicflow/core';
+import {
+    CircleNode,
+    CircleNodeModel,
+    DiamondNode,
+    DiamondNodeModel,
+    RectNode,
+    RectNodeModel,
+} from '@logicflow/core';
 
-// 开始节点
-class StartNode extends RectNode {
-    static extendKey = 'start';
+// LogicFlow 2.x：view 必须是内置视图类（它从 this.props.model 取坐标），
+// 自定义只做在 Model 上（配色/文字色）。1.x 的 this.getAttributes() 写法在 2.x 会直接崩。
 
+class StartNodeModel extends RectNodeModel {
     getNodeStyle() {
-        // @ts-ignore – LogicFlow runtime method not in type defs
         const style = super.getNodeStyle();
         style.fill = '#52c41a';
         style.stroke = '#52c41a';
@@ -14,34 +20,15 @@ class StartNode extends RectNode {
     }
 
     getTextStyle() {
-        // @ts-ignore – LogicFlow runtime method not in type defs
         const style = super.getTextStyle();
         style.color = '#fff';
         style.fontSize = 14;
         return style;
     }
-
-    getShape() {
-        // @ts-ignore – LogicFlow runtime method not in type defs
-        const {x, y, width, height} = this.getAttributes();
-        const r = height / 2;
-        return h('rect', {
-            x: x - width / 2,
-            y: y - height / 2,
-            width,
-            height,
-            rx: r,
-            ry: r,
-        });
-    }
 }
 
-// 审批节点
-class ApprovalNode extends RectNode {
-    static extendKey = 'approval';
-
+class ApprovalNodeModel extends RectNodeModel {
     getNodeStyle() {
-        // @ts-ignore – LogicFlow runtime method not in type defs
         const style = super.getNodeStyle();
         style.fill = '#fff';
         style.stroke = '#1677ff';
@@ -50,7 +37,6 @@ class ApprovalNode extends RectNode {
     }
 
     getTextStyle() {
-        // @ts-ignore – LogicFlow runtime method not in type defs
         const style = super.getTextStyle();
         style.color = '#262626';
         style.fontSize = 14;
@@ -58,12 +44,8 @@ class ApprovalNode extends RectNode {
     }
 }
 
-// 条件节点（菱形）
-class ConditionNode extends PolygonNode {
-    static extendKey = 'condition';
-
+class ConditionNodeModel extends DiamondNodeModel {
     getNodeStyle() {
-        // @ts-ignore – LogicFlow runtime method not in type defs
         const style = super.getNodeStyle();
         style.fill = '#fff7e6';
         style.stroke = '#fa8c16';
@@ -72,34 +54,15 @@ class ConditionNode extends PolygonNode {
     }
 
     getTextStyle() {
-        // @ts-ignore – LogicFlow runtime method not in type defs
         const style = super.getTextStyle();
         style.color = '#262626';
         style.fontSize = 13;
         return style;
     }
-
-    getAttributes() {
-        // @ts-ignore – LogicFlow runtime method not in type defs
-        const attributes = super.getAttributes();
-        const width = Math.max(80, attributes.width || 80);
-        const height = Math.max(80, attributes.height || 80);
-        const points = [
-            [attributes.x, attributes.y - height / 2],
-            [attributes.x + width / 2, attributes.y],
-            [attributes.x, attributes.y + height / 2],
-            [attributes.x - width / 2, attributes.y],
-        ];
-        return {...attributes, points, width, height};
-    }
 }
 
-// 抄送节点
-class CopyNode extends RectNode {
-    static extendKey = 'copy';
-
+class CopyNodeModel extends RectNodeModel {
     getNodeStyle() {
-        // @ts-ignore – LogicFlow runtime method not in type defs
         const style = super.getNodeStyle();
         style.fill = '#f6ffed';
         style.stroke = '#52c41a';
@@ -109,7 +72,6 @@ class CopyNode extends RectNode {
     }
 
     getTextStyle() {
-        // @ts-ignore – LogicFlow runtime method not in type defs
         const style = super.getTextStyle();
         style.color = '#262626';
         style.fontSize = 14;
@@ -117,12 +79,8 @@ class CopyNode extends RectNode {
     }
 }
 
-// 结束节点
-class EndNode extends CircleNode {
-    static extendKey = 'end';
-
+class EndNodeModel extends CircleNodeModel {
     getNodeStyle() {
-        // @ts-ignore – LogicFlow runtime method not in type defs
         const style = super.getNodeStyle();
         style.fill = '#ff4d4f';
         style.stroke = '#ff4d4f';
@@ -131,7 +89,6 @@ class EndNode extends CircleNode {
     }
 
     getTextStyle() {
-        // @ts-ignore – LogicFlow runtime method not in type defs
         const style = super.getTextStyle();
         style.color = '#fff';
         style.fontSize = 14;
@@ -141,34 +98,9 @@ class EndNode extends CircleNode {
 
 // 注册所有节点
 export function registerApprovalNodes(lf: any): void {
-    lf.register({
-        type: 'start',
-        view: StartNode,
-        // @ts-ignore
-        model: RectNode.model,
-    });
-    lf.register({
-        type: 'approval',
-        view: ApprovalNode,
-        // @ts-ignore
-        model: RectNode.model,
-    });
-    lf.register({
-        type: 'condition',
-        view: ConditionNode,
-        // @ts-ignore
-        model: PolygonNode.model,
-    });
-    lf.register({
-        type: 'copy',
-        view: CopyNode,
-        // @ts-ignore
-        model: RectNode.model,
-    });
-    lf.register({
-        type: 'end',
-        view: EndNode,
-        // @ts-ignore
-        model: CircleNode.model,
-    });
+    lf.register({type: 'start', view: RectNode, model: StartNodeModel});
+    lf.register({type: 'approval', view: RectNode, model: ApprovalNodeModel});
+    lf.register({type: 'condition', view: DiamondNode, model: ConditionNodeModel});
+    lf.register({type: 'copy', view: RectNode, model: CopyNodeModel});
+    lf.register({type: 'end', view: CircleNode, model: EndNodeModel});
 }
