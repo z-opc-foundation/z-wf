@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useMemo, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {Badge, Button, Card, Dropdown, Form, Input, message, Modal, Select, Space, Table, Tag, Typography,} from 'antd';
 import {
@@ -28,6 +28,17 @@ const ProcessList: React.FC = () => {
     const [error, setError] = useState<Error | null>(null);
     const [data, setData] = useState<ProcessDefinition[]>([]);
     const [searchKeyword, setSearchKeyword] = useState('');
+
+    // 客户端查询过滤（lead 008 §2 规则 3）：过滤字段取自本表 columns 的 dataIndex
+    // （name / key / category）。页头搜索框本来就是查询框，之前只存了值没接到表格上。
+    const filteredData = useMemo<ProcessDefinition[]>(() => {
+        const kw = searchKeyword.trim().toLowerCase();
+        if (!kw) return data;
+        return data.filter((r) => {
+            const processKey = String(r.key ?? '');
+            return `${r.name ?? ''} ${processKey} ${r.category ?? ''}`.toLowerCase().includes(kw);
+        });
+    }, [data, searchKeyword]);
     const [modalVisible, setModalVisible] = useState(false);
     const [editingProcess, setEditingProcess] = useState<ProcessDefinition | null>(null);
 
@@ -223,11 +234,11 @@ const ProcessList: React.FC = () => {
                     </div>
                     <Space>
                         <Input
-                            placeholder="搜索流程名称"
+                            placeholder="按流程名称 / 标识 / 分类过滤"
                             prefix={<SearchOutlined/>}
                             value={searchKeyword}
                             onChange={(e) => setSearchKeyword(e.target.value)}
-                            style={{width: 240}}
+                            style={{width: 260}}
                             allowClear
                         />
                         <Button
@@ -251,7 +262,7 @@ const ProcessList: React.FC = () => {
                 ) : (
                     <Table
                         columns={columns}
-                        dataSource={data}
+                        dataSource={filteredData}
                         rowKey="id"
                         loading={loading}
                         // 分页按 lead 008 §2 规则 2 补齐四件套（原来只有 pagination={false}）：

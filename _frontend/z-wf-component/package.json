@@ -1,6 +1,6 @@
 {
   "name": "@yuku123/z-wf-component",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "z-wf 可复用前端组件：审批中心工作台/待办/已办/我的流程/流程定义/LogicFlow 设计器（lead 005 §9）",
   "type": "module",
   "main": "./dist/index.js",
