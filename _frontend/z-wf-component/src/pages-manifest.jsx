@@ -46,7 +46,8 @@ export const routes = [
     { path: '/z-wf/workflow/process/:processInstanceId', Component: ProcessDetail },
     { path: '/z-wf/workflow/task/:taskId', Component: TaskDetail },
     { path: '/z-wf/docs', Component: ComponentDocPage },
-    { path: '/z-wf/:rest*', Component: WorkflowApp },
+    // react-router 7 要求 * 前面必须有 /，`:rest*` 会被警告并自动当成 `:rest/*`
+    { path: '/z-wf/:rest/*', Component: WorkflowApp },
 ]
 
 export { default as HomePage } from './pages/HomePage'

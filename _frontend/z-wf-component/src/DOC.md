@@ -27,7 +27,7 @@ LogicFlow 流程设计器 / 流程详情 / 任务详情」这一整套流程页�
 | 任务详情 | `workflow/task/:taskId` | `wf/pages/TaskDetail/index.tsx` | 任务详情 + 审批操作（同意 / 驳回 / 转交 + 审批意见） |
 | 组件文档 | `docs` | `pages/ComponentDoc.tsx` | 本文件渲染页（左侧 240px TOC + 右侧正文） |
 
-`src/pages/WorkflowApp.jsx` 是本包自己的兜底路由组件，被 `routes` 里的 `/z-wf/:rest*` 承接，
+`src/pages/WorkflowApp.jsx` 是本包自己的兜底路由组件，被 `routes` 里的 `/z-wf/:rest/*` 承接，
 同时从包根具名导出（z-team 的 SystemShell 按这个名字引它挂 `/workflow/*`）。
 
 ## 二、导出面
