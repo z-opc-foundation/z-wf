@@ -9,7 +9,7 @@ import {
 } from '@ant-design/icons';
 import {Link, useNavigate} from 'react-router-dom';
 import {approvalApi} from '../../services/api';
-import {EmptyState, ErrorState, PageHeader} from '@yuku123/z-frontend-common/ui';
+import {EmptyState, ErrorState} from '@yuku123/z-frontend-common/ui';
 import {DashboardStats, Task} from '../../types/workflow';
 
 const styles: Record<string, any> = {
@@ -77,7 +77,6 @@ const Dashboard: React.FC = () => {
     return (
         // @ts-ignore
         <div className={styles.dashboard}>
-            <PageHeader title="流程仪表盘"/>
             {/* 统计卡片 */}
             // @ts-ignore
             <Row gutter={16} className={styles.statsRow}>

@@ -3,7 +3,7 @@ import {useNavigate} from 'react-router-dom';
 import {Badge, Button, Space, Tag, Tooltip, Typography,} from 'antd';
 import {CheckCircleOutlined, ClockCircleOutlined, ReloadOutlined,} from '@ant-design/icons';
 import {approvalApi} from '../../services/api';
-import {ErrorState, ListTable, PageHeader} from '@yuku123/z-frontend-common/ui';
+import {ErrorState, ListTable} from '@yuku123/z-frontend-common/ui';
 import {PageResult, Task} from '../../types';
 import dayjs from 'dayjs';
 import styles from './index.module.css';
@@ -156,7 +156,6 @@ const TodoList: React.FC = () => {
 
     return (
         <div className={styles.container}>
-            <PageHeader title="待办任务"/>
             {error ? (
                 // @ts-ignore
                 <ErrorState error={error} onRetry={() => fetchTodoList(data.pageNum, data.pageSize)} variant="inline"/>

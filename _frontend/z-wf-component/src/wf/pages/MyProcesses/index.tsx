@@ -9,7 +9,7 @@ import {
     ReloadOutlined,
 } from '@ant-design/icons';
 import {approvalApi} from '../../services/api';
-import {ErrorState, ListTable, PageHeader} from '@yuku123/z-frontend-common/ui';
+import {ErrorState, ListTable} from '@yuku123/z-frontend-common/ui';
 import {PageResult, ProcessInstance} from '../../types';
 import dayjs from 'dayjs';
 import styles from './index.module.css';
@@ -177,7 +177,6 @@ const MyProcesses: React.FC = () => {
 
     return (
         <div className={styles.container}>
-            <PageHeader title="我发起的流程"/>
             {error ? (
                 // ErrorState 的 prop 是 variant（'inline' | 'full'），type 是 antd 4 旧名
                 <ErrorState error={error} onRetry={() => fetchMyProcesses(data.pageNum, data.pageSize)}

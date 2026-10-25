@@ -3,7 +3,7 @@ import {useNavigate} from 'react-router-dom';
 import {Button, Space, Tag, Tooltip, Typography,} from 'antd';
 import {EyeOutlined, HistoryOutlined, ReloadOutlined,} from '@ant-design/icons';
 import {approvalApi} from '../../services/api';
-import {ErrorState, ListTable, PageHeader} from '@yuku123/z-frontend-common/ui';
+import {ErrorState, ListTable} from '@yuku123/z-frontend-common/ui';
 import {PageResult, Task} from '../../types';
 import dayjs from 'dayjs';
 import styles from './index.module.css';
@@ -96,7 +96,6 @@ const DoneList: React.FC = () => {
 
     return (
         <div className={styles.container}>
-            <PageHeader title="已办任务"/>
             {error ? (
                 // ErrorState 的 prop 是 variant（'inline' | 'full'），type 是 antd 4 旧名
                 // @ts-ignore
