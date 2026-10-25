@@ -30,6 +30,15 @@ export function configureWf(config) {
 /** Result 解包：{code, success, data, message} → data（对齐主壳 @/common request 语义）。 */
 function unwrap(resp) {
     const body = resp && resp.data !== undefined ? resp.data : resp
+    // SPA 回落对不存在的接口也回 200 + index.html，axios 不会报错；HTML 当成业务数据会直接把表格喂崩。
+    if (typeof body === 'string' && body.trim().startsWith('<')) {
+        throw new Error('接口返回了 HTML 页面，路径可能不存在（被 SPA 回落接住）')
+    }
+    // Spring 的错误体（{timestamp,status,error,path}）没有 success/code，原样返回会被当成业务数据，
+    // 表格 dataSource 收到对象直接崩。HTTP 级错误一律抛出来，交给页面的 ErrorState。
+    if (body && typeof body === 'object' && typeof body.status === 'number' && body.status >= 400) {
+        throw new Error(body.error ? `${body.status} ${body.error}` : `request failed (${body.status})`)
+    }
     if (body && typeof body === 'object' && ('success' in body || 'code' in body)) {
         if (body.success === false || (typeof body.code === 'number' && body.code >= 400)) {
             throw new Error(body.message || 'request failed')
