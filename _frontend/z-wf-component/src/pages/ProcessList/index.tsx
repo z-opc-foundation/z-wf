@@ -13,7 +13,7 @@ import {
     SearchOutlined,
 } from '@ant-design/icons';
 import {approvalApi} from '@/wf/services/api';
-import {EmptyState, ErrorState, PageHeader} from '@yuku123/z-frontend-common/ui';
+import { EmptyState, ErrorState } from '@yuku123/z-frontend-common/ui'
 import {ProcessDefinition} from '@/wf/types';
 import dayjs from 'dayjs';
 import styles from './index.module.css';
@@ -222,7 +222,6 @@ const ProcessList: React.FC = () => {
 
     return (
         <div className={styles.container}>
-            <PageHeader title="流程设计"/>
             <Card className={styles.card}>
                 <div className={styles.header}>
                     <div className={styles.titleSection}>
