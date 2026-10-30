@@ -21,10 +21,10 @@
     <version>${revision}</version>
     <packaging>pom</packaging>
 
-    <name>z-wf (Self-developed Workflow Engine)</name>
-    <description>完全自研的流程引擎 — 流程定义 / 任务管理 / 审批中心。不依赖 Camunda 等任何第三方工作流引擎，
+<name>z-wf :: root</name>
+<description>完全自研的流程引擎 — 流程定义 / 任务管理 / 审批中心。不依赖 Camunda 等任何第三方工作流引擎，
         定义层协议与 z-util-wf-kernel 共用（同一套 BPMN XML 语义），运行时层自研：token 执行树、网关求值、
-        持久化 SPI、钩子与 SPI 扩展模型。</description>
+        持久化 SPI、钩子与 SPI 扩展模型。 / Self-developed Workflow Engine</description>
 
     <url>https://github.com/yuku123/z-opc-foundation</url>
 

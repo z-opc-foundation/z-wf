@@ -22,8 +22,8 @@
     <artifactId>z-wf-admin</artifactId>
     <version>2.0.0</version>
     <packaging>jar</packaging>
-    <name>z-wf :: admin (Standalone App, NOT published to Central)</name>
-    <description>z-wf 独立可启动应用 — 自研流程引擎 + 审批中心 REST。不发 Maven Central。</description>
+<name>z-wf :: admin</name>
+<description>z-wf 独立可启动应用 — 自研流程引擎 + 审批中心 REST。不发 Maven Central。 / Standalone App, NOT published to Central</description>
 
     <properties>
         <!-- 与 ../pom.xml <revision> 同步：根仓升到 2.0.0 是因为 z-wf 坐标的 1.x 是 Camunda 版，

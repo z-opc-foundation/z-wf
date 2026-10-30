@@ -12,7 +12,8 @@
     </parent>
 
     <artifactId>z-wf-core</artifactId>
-    <name>z-wf :: core (self-developed engine: definition + token runtime + services + persistence + hooks/spi)</name>
+<name>z-wf :: core</name>
+    <description>self-developed engine: definition + token runtime + services + persistence + hooks/spi</description>
 
     <dependencies>
         <!-- Spring Boot（仅用容器与 @Component，不引 web） -->

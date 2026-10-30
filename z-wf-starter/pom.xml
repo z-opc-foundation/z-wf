@@ -12,7 +12,8 @@
     </parent>
 
     <artifactId>z-wf-starter</artifactId>
-    <name>z-wf :: starter (autoconfiguration + z-config/z-rpc optional integration + sample processes)</name>
+<name>z-wf :: starter</name>
+    <description>autoconfiguration + z-config/z-rpc optional integration + sample processes</description>
 
     <dependencies>
         <dependency>
