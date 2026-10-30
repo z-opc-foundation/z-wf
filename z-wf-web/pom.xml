@@ -12,7 +12,7 @@
     </parent>
 
     <artifactId>z-wf-web</artifactId>
-<name>z-wf :: web</name>
+    <name>z-wf :: web</name>
     <description>REST API: approval center / process ops / task ops / group / health</description>
 
     <dependencies>

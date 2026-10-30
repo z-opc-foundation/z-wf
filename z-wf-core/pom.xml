@@ -12,7 +12,7 @@
     </parent>
 
     <artifactId>z-wf-core</artifactId>
-<name>z-wf :: core</name>
+    <name>z-wf :: core</name>
     <description>self-developed engine: definition + token runtime + services + persistence + hooks/spi</description>
 
     <dependencies>
