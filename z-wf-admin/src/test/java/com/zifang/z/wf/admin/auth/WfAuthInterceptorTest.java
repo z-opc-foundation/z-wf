@@ -114,7 +114,7 @@ class WfAuthInterceptorTest {
     void ssoCookieAccepted() throws Exception {
         WfAuthProperties p = props();
         MockHttpServletRequest req = request("GET", "/api/wf/jobs");
-        req.setCookies(new javax.servlet.http.Cookie("sso_token", TOKEN));
+        req.setCookies(new jakarta.servlet.http.Cookie("sso_token", TOKEN));
         MockHttpServletResponse res = new MockHttpServletResponse();
 
         boolean pass = interceptor(p, new WfStaticTokenValidator(Collections.singletonList("probe:" + TOKEN)))

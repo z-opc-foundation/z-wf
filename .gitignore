@@ -57,3 +57,9 @@ _frontend/**/.mvn-node/
 # ===== lead 002 规范 R7：运行态/临时件不进 git =====
 __pycache__/	# python 字节码缓存（lead 002 规范 R7）
 *.pyc	# python 字节码（lead 002 规范 R7）
+
+# ============ vite 构建旧产物（沙箱删除闸 ⇒ 只移不删，遗留带时间戳的兄弟目录） ============
+dist.stale-*/
+**/dist.stale-*/
+dist.bak-*/
+**/dist.bak-*/

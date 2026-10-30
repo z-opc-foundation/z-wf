@@ -168,7 +168,7 @@ z-wf 有自己的多阶段 Dockerfile（Temurin 8 JDK→JRE，非 root 用户 ui
 cd z-wf
 export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
 
-# ⚠ Dockerfile 第一阶段要能解析到 parent（z-boot-parent:1.1.0，在 repo1）与兄弟仓件。
+# ⚠ Dockerfile 第一阶段要能解析到 parent（z-boot-parent:1.2.0，在 repo1）与兄弟仓件。
 #   离线构建先确保 ~/.m2 里有；否则先 mvn -o -DskipTests install 把本仓件灌进本地仓。
 # ⚠ 现役走的是 **runtime-only** 路线（见下面的 2026-10-22 18:0x 记录）：
 #   ① 本地离线打 jar ② COPY 进 runtime 镜像 ③ 喂节点

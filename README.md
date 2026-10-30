@@ -91,7 +91,7 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
 mvn -o install
 ```
 
-版本治理：parent `z-boot-parent:1.1.0`（`relativePath` 留空，parent 在 repo1）；
+版本治理：parent `z-boot-parent:1.2.0`（`relativePath` 留空，parent 在 repo1）；
 兄弟仓版本槽位由 parent 自身下发（1.1.0 已不再 import `z-boot-fleet`，它自己的 `z-util.version` 是 1.0.19）；
 本仓 `z-util.version` 显式覆盖为 `1.2.6`（要对齐 `z-util-wf-kernel` —— kernel 是协议层，必须与 parser 同版本）。
 本仓自己声明 `flatten-maven-plugin`——父链那条是 `<inherited>false</inherited>`，
@@ -731,7 +731,7 @@ classpath 上同时存在 `z-util-core 1.0.14` 与 `z-util-wf-kernel 1.0.18` —
 
 `z-wf-admin` 是另一条线，**必须单独钉**：它是 **own-parent**（parent = `spring-boot-starter-parent`），
 根仓的属性与 dependencyManagement **根本到不了它**（没有那条父子继承链）。
-它只能自己 import `z-boot-parent:1.1.0` 拿权威（该 parent 自己把 z-util 槽位管在 1.0.19），
+它只能自己 import `z-boot-parent:1.2.0` 拿权威（该 parent 自己把 z-util 槽位管在 1.0.19），
 再在自己的 dependencyManagement 里钉住 14 个 z-util 坐标，
 `z-util.version` 显式覆盖为 `1.2.6`，与根仓同版本。
 （own-parent 的实测症状比上面那条更隐蔽：根仓 `pom.xml` 里 `z-util.version` 明明写着同一个版本，

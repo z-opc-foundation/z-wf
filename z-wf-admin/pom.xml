@@ -9,10 +9,12 @@
         对齐 z-camuda-admin 模式：own-parent (spring-boot-starter-parent) + maven.deploy.skip=true。
         <version> 与依赖的 z-wf-starter 版本必须与 ../pom.xml 的 <revision> 保持一致。
     -->
+    <!-- 2026-10-30 SB3 火车：own-parent 从 spring-boot-starter-parent 2.7.12 reparent 到 z-boot-parent 1.2.0
+         （DM 早已 import 1.2.0，这里只是把 parent 链也拉齐 —— 悬留清零） -->
     <parent>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-parent</artifactId>
-        <version>2.7.12</version>
+        <groupId>io.github.yuku123</groupId>
+        <artifactId>z-boot-parent</artifactId>
+        <version>1.2.0</version>
         <relativePath/>
     </parent>
 
@@ -39,17 +41,30 @@
              光定义属性盖不住 import 进来的 BOM（根仓 pom 的注释里有同一条坑的完整实测）。 -->
         <z-util.version>1.2.6</z-util.version>
         <maven.deploy.skip>true</maven.deploy.skip>
-        <java.version>8</java.version>
+        <java.version>17</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
     <dependencyManagement>
         <dependencies>
+            <!-- 2026-10-30 Java17/SB3：本模块 parent 仍是 spring-boot-starter 2.7.12（迁移悬留），
+                 JDK8 内置 javax.annotation/servlet 已消失，显式补 jakarta 两件 -->
+            <dependency>
+                <groupId>jakarta.annotation</groupId>
+                <artifactId>jakarta.annotation-api</artifactId>
+                <version>2.1.1</version>
+            </dependency>
+            <dependency>
+                <groupId>jakarta.servlet</groupId>
+                <artifactId>jakarta.servlet-api</artifactId>
+                <version>6.0.0</version>
+                <scope>provided</scope>
+            </dependency>
             <!-- own-parent 形态下兄弟仓版本只能靠 import fleet 拿权威 -->
             <dependency>
                 <groupId>io.github.yuku123</groupId>
                 <artifactId>z-boot-parent</artifactId>
-                <version>1.1.0</version>
+                <version>1.2.0</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
@@ -135,6 +150,20 @@
     </dependencyManagement>
 
     <dependencies>
+        <!-- 2026-10-30 Java17/SB3：JDK8 内置 javax.annotation/servlet 消失，显式补 jakarta 两件
+            （⚠ 本模块 parent 仍是 spring-boot-starter 2.7.12，运行时仍是 javax 栈 —— 迁移悬留，
+             下一班火车把 parent 挪到 z-boot-parent 1.2.0 后这里改成无版本） -->
+        <dependency>
+            <groupId>jakarta.annotation</groupId>
+            <artifactId>jakarta.annotation-api</artifactId>
+            <version>2.1.1</version>
+        </dependency>
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <version>6.0.0</version>
+            <scope>provided</scope>
+        </dependency>
         <!-- z-wf 全栈：core (自研引擎) + web (REST) + starter (自动装配)。
              **三个都要显式列**：starter → web → core 是传递的，但 admin 的测试直接 import
              com.zifang.z.wf.core.model.* 等类型，靠传递依赖能编译但不稳（core 一旦在 web 里
@@ -174,7 +203,7 @@
 
         <dependency>
             <groupId>com.alibaba</groupId>
-            <artifactId>druid-spring-boot-starter</artifactId>
+            <artifactId>druid-spring-boot-3-starter</artifactId>
             <version>1.2.18</version>
         </dependency>
 
@@ -184,11 +213,7 @@
             <artifactId>h2</artifactId>
         </dependency>
 
-        <dependency>
-            <groupId>com.github.xiaoymin</groupId>
-            <artifactId>knife4j-openapi3-spring-boot-starter</artifactId>
-            <version>4.1.0</version>
-        </dependency>
+        <!-- 2026-10-30 SB3 火车：knife4j-jakarta 与本模块 SB2.7.12 运行时悬留不相容，且源码零引用 —— 摘除，待 reparent 后按新地板补 swagger 面 -->
 
         <dependency>
             <groupId>org.springframework.boot</groupId>

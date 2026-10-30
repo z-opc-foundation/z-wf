@@ -3,7 +3,7 @@ package com.zifang.z.wf.admin.web;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-import javax.annotation.Resource;
+import jakarta.annotation.Resource;
 
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
