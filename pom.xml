@@ -82,7 +82,7 @@
                而不是像"1.0.6→1.0.7"那样在版本边界上静默翻转引擎实现。
             详见 README 顶部的「坐标与版本」一节。
         -->
-        <revision>2.0.0</revision>
+        <revision>2.0.1</revision>
 
         <!-- z-util 版本口径。
              坑：<b>只定义 z-util.version 属性是盖不住 import 进来的 BOM 的</b>。
