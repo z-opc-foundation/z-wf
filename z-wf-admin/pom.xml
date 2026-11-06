@@ -14,7 +14,7 @@
     <parent>
         <groupId>io.github.yuku123</groupId>
         <artifactId>z-boot-parent</artifactId>
-        <version>1.2.0</version>
+        <version>1.2.1</version>
         <relativePath/>
     </parent>
 
@@ -64,7 +64,7 @@
             <dependency>
                 <groupId>io.github.yuku123</groupId>
                 <artifactId>z-boot-parent</artifactId>
-                <version>1.2.0</version>
+                <version>1.2.1</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>

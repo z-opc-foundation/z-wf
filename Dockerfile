@@ -34,8 +34,7 @@ RUN mvn -f pom.xml -pl z-wf-admin -am clean package \
 # ============================================================
 # Stage 2: runtime (Eclipse Temurin 8 JRE + 非 root 用户)
 # ============================================================
-FROM eclipse-temurin:8-jre
-
+FROM eclipse-temurin:17-jre
 LABEL maintainer="zifang"
 LABEL description="z-wf - Self-developed Workflow Engine (token runtime + JDBC persistence + approval center REST)"
 
