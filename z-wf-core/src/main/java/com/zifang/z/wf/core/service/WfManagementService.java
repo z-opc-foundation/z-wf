@@ -43,7 +43,7 @@ public class WfManagementService {
      * <p>与 pom 的 {@code <revision>} 同步。{@code WfManagementServiceTest} 有一条
      * 断言直接读 pom 的 {@code <revision>} 与本常量比对 —— 改了 pom 忘了改这里会变红。
      */
-    public static final String VERSION = "2.0.0";
+    public static final String VERSION = "2.0.1";
 
     /**
      * 存储结构版本。

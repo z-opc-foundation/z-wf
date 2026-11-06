@@ -931,7 +931,7 @@ public class ReadmeClaimsTest {
     @DisplayName("牙口：版本号改错必红，且报错指向版本那条主张")
     void mutatedVersionMustFail() {
         String readme = readme();
-        String mutated = readme.replace("破坏性大版本 `2.0.0`", "破坏性大版本 `9.9.9`");
+        String mutated = readme.replace("破坏性大版本 `2.0.1`", "破坏性大版本 `9.9.9`");
         assertFalse(mutated.equals(readme), "合成变异没生效：README 里没找到版本声明那一处");
         AssertionError err = assertThrows(AssertionError.class, () -> assertConsistent(mutated, facts()));
         assertTrue(err.getMessage().contains("9.9.9"), "报错没指出被改坏的版本号：\n" + err.getMessage());
