@@ -2,9 +2,9 @@ import React, {useEffect, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {Button, Space, Tag, Tooltip, Typography,} from 'antd';
 import {HistoryOutlined, ReloadOutlined} from '@ant-design/icons';
-import {approvalApi} from '@/wf/services/api';
+import {approvalApi} from '../../wf/services/api';
 import { ErrorState, ListTable } from '@yuku123/z-frontend-common/ui'
-import {PageResult, Task} from '@/wf/types';
+import {PageResult, Task} from '../../wf/types';
 import dayjs from 'dayjs';
 import styles from './index.module.css';
 
@@ -40,17 +40,18 @@ const DoneList: React.FC = () => {
 
     const columns = [
         {
+            // 2026-11-12: 后端 TaskSummaryVO 字段是 taskName/processName/taskId
             title: '任务名称',
-            dataIndex: 'name',
-            key: 'name',
+            dataIndex: 'taskName',
+            key: 'taskName',
             render: (text: string) => (
                 <span className={styles.taskName}>{text}</span>
             ),
         },
         {
             title: '所属流程',
-            dataIndex: 'processDefinitionName',
-            key: 'processDefinitionName',
+            dataIndex: 'processName',
+            key: 'processName',
             render: (text: string) => (
                 <Tooltip title={text}>
                     <span className={styles.ellipsis}>{text}</span>
@@ -84,7 +85,7 @@ const DoneList: React.FC = () => {
                 <Space size="small">
                     <Button
                         type="link" size="small"
-                        onClick={() => navigate(`/workflow/task/${record.id}`)}
+                        onClick={() => navigate(`/workflow/task/${record.taskId || record.id}`)}
                     >
                         查看
                     </Button>
@@ -111,7 +112,7 @@ const DoneList: React.FC = () => {
                     rows={data.records}
                     // @ts-ignore
                     columns={columns}
-                    rowKey="id"
+                    rowKey="taskId"
                     loading={loading}
                     pagination={{
                         // @ts-ignore
@@ -146,7 +147,7 @@ const DoneList: React.FC = () => {
                             刷新
                         </Button>
                     }
-                    searchKeys="name,processDefinitionName"
+                    searchKeys="taskName,processName"
                     searchPlaceholder="搜索任务名称"
                     emptyTitle="暂无已办任务"
                     emptyDescription="当前没有已办任务"

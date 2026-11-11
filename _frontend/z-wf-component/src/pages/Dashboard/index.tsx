@@ -8,9 +8,9 @@ import {
     RightOutlined,
 } from '@ant-design/icons';
 import {Link, useNavigate} from 'react-router-dom';
-import {approvalApi} from '@/wf/services/api';
+import {approvalApi} from '../../wf/services/api';
 import { EmptyState, ErrorState } from '@yuku123/z-frontend-common/ui'
-import {DashboardStats, Task} from '../../types/workflow';
+import {Task} from '../../types/workflow';
 
 const styles: Record<string, any> = {
     dashboard: {padding: 24},
@@ -25,29 +25,46 @@ const styles: Record<string, any> = {
     taskDesc: {fontSize: 12, color: '#888'},
 };
 
+interface Stats {
+    todoCount: number;
+    doneCount: number;
+    myProcessCount: number;
+}
+
 const Dashboard: React.FC = () => {
     const navigate = useNavigate();
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<Error | null>(null);
-    // @ts-ignore
-    const [stats, setStats] = useState<DashboardStats>({
-        todoCount: 0,
-        doneCount: 0,
-        initiatedCount: 0,
-        todoList: [],
-    });
+    const [stats, setStats] = useState<Stats>({todoCount: 0, doneCount: 0, myProcessCount: 0});
+    // 后端 DashboardStatsVO 只有计数；待办卡片自己拉一页真实待办
+    const [todoList, setTodoList] = useState<Task[]>([]);
+
+    const currentUserId = (): string => {
+        try {
+            const info = JSON.parse(localStorage.getItem('userInfo') || '{}');
+            // 流程引擎里 assignee/initiator 记的是登录名（admin），不是数字 id
+            return info.userName || info.username || info.userCode || info.id || 'admin';
+        } catch {
+            return 'admin';
+        }
+    };
 
     const fetchDashboardData = async () => {
         try {
             setLoading(true);
-            // 从 localStorage.userInfo 读取当前登录用户 (兼容后端字段命名 userId/userCode)
-            const info = JSON.parse(localStorage.getItem('userInfo') || '{}');
-            const currentUser = info.userId || info.userCode || info.id || info.userName || '';
-            const data = await approvalApi.getDashboardStats(currentUser);
+            setError(null);
+            const user = currentUserId();
+            const [data, todoPage] = await Promise.all([
+                approvalApi.getDashboardStats(user),
+                approvalApi.getTodoList(user, 1, 5).catch(() => ({records: []})),
+            ]);
             setStats({
-                ...data,
-                todoList: data.todoList || []
+                // 2026-11-12 修：后端字段是 myProcessCount，原来读 initiatedCount 恒 undefined
+                todoCount: Number(data?.todoCount ?? 0),
+                doneCount: Number(data?.doneCount ?? 0),
+                myProcessCount: Number(data?.myProcessCount ?? (data as any)?.initiatedCount ?? 0),
             });
+            setTodoList((todoPage as any)?.records || []);
         } catch (error) {
             console.error('获取仪表盘数据失败:', error);
             setError(error as Error);
@@ -75,13 +92,10 @@ const Dashboard: React.FC = () => {
     };
 
     return (
-        // @ts-ignore
         <div className={styles.dashboard}>
             {/* 统计卡片 */}
-            // @ts-ignore
             <Row gutter={16} className={styles.statsRow}>
                 <Col xs={24} sm={8}>
-                    // @ts-ignore
                     <Card loading={loading} className={styles.statCard}>
                         <Statistic
                             title="待办任务"
@@ -89,7 +103,6 @@ const Dashboard: React.FC = () => {
                             prefix={<ClockCircleOutlined className={styles.todoIcon}/>}
                             styles={{content: {color: '#1677ff'}}}
                         />
-                        // @ts-ignore
                         <div className={styles.statFooter}>
                             <Link to="/workflow/todo">
                                 去处理 <RightOutlined/>
@@ -98,7 +111,6 @@ const Dashboard: React.FC = () => {
                     </Card>
                 </Col>
                 <Col xs={24} sm={8}>
-                    // @ts-ignore
                     <Card loading={loading} className={styles.statCard}>
                         <Statistic
                             title="已办任务"
@@ -106,7 +118,6 @@ const Dashboard: React.FC = () => {
                             prefix={<CheckCircleOutlined className={styles.doneIcon}/>}
                             styles={{content: {color: '#52c41a'}}}
                         />
-                        // @ts-ignore
                         <div className={styles.statFooter}>
                             <Link to="/workflow/done">
                                 查看全部 <RightOutlined/>
@@ -115,16 +126,13 @@ const Dashboard: React.FC = () => {
                     </Card>
                 </Col>
                 <Col xs={24} sm={8}>
-                    // @ts-ignore
                     <Card loading={loading} className={styles.statCard}>
                         <Statistic
                             title="我发起的"
-                            // @ts-ignore
-                            value={stats.initiatedCount}
+                            value={stats.myProcessCount}
                             prefix={<FileTextOutlined className={styles.initiatedIcon}/>}
                             styles={{content: {color: '#722ed1'}}}
                         />
-                        // @ts-ignore
                         <div className={styles.statFooter}>
                             <Link to="/workflow/my-processes">
                                 查看全部 <RightOutlined/>
@@ -144,24 +152,20 @@ const Dashboard: React.FC = () => {
                 }
                 extra={<Link to="/workflow/todo">查看更多</Link>}
                 loading={loading}
-                // @ts-ignore
                 className={styles.todoCard}
             >
                 {error ? (
-                    // @ts-ignore
-                    <ErrorState error={error} onRetry={fetchDashboardData} type="inline"/>
-                    // @ts-ignore
-                ) : stats.todoList.length > 0 ? (
+                    <ErrorState error={error} onRetry={fetchDashboardData} variant="inline"/>
+                ) : todoList.length > 0 ? (
                     <List
-                        // @ts-ignore
-                        dataSource={stats.todoList.slice(0, 5)}
-                        renderItem={(task: Task) => (
+                        dataSource={todoList.slice(0, 5)}
+                        renderItem={(task: any) => (
                             <List.Item
                                 actions={[
                                     <Button
                                         type="primary"
                                         size="small"
-                                        onClick={() => navigate(`/workflow/task/${task.id}`)}
+                                        onClick={() => navigate(`/workflow/task/${task.taskId || task.id}`)}
                                     >
                                         处理
                                     </Button>,
@@ -169,19 +173,17 @@ const Dashboard: React.FC = () => {
                             >
                                 <List.Item.Meta
                                     title={
-                                        // @ts-ignore
                                         <div className={styles.taskTitle}>
-                                            <span>{task.name}</span>
-                                            <Tag color={getPriorityColor(task.priority)}>
-                                                {getPriorityText(task.priority)}
+                                            <span>{task.taskName || task.name}</span>
+                                            <Tag color={getPriorityColor(Number(task.priority) || 0)}>
+                                                {getPriorityText(Number(task.priority) || 0)}
                                             </Tag>
                                         </div>
                                     }
                                     description={
-                                        // @ts-ignore
                                         <div className={styles.taskDesc}>
-                                            <span>流程: {String(task.processDefinitionName)}</span>
-                                            <span>创建时间: {task.createTime}</span>
+                                            <span>流程: {String(task.processName || task.processDefinitionName || '-')}</span>
+                                            <span>创建时间: {task.createTime || '-'}</span>
                                         </div>
                                     }
                                 />

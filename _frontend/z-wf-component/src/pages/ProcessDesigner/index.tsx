@@ -13,8 +13,8 @@ import {
     ZoomOutOutlined,
 } from '@ant-design/icons';
 import FlowDesigner from '../../components/FlowDesigner';
-import {approvalApi, designerApi} from '@/wf/services/api';
-import {ProcessDefinition} from '@/wf/types';
+import {approvalApi, designerApi} from '../../wf/services/api';
+import {ProcessDefinition} from '../../wf/types';
 import styles from './index.module.css';
 
 const {Option} = Select;

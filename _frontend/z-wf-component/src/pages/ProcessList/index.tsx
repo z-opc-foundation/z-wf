@@ -1,6 +1,6 @@
 import React, {useEffect, useMemo, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
-import {Badge, Button, Card, Dropdown, Form, Input, message, Modal, Select, Space, Table, Tag, Typography,} from 'antd';
+import {Badge, Button, Card, Dropdown, Form, Input, InputNumber, message, Modal, Select, Space, Table, Tag, Typography,} from 'antd';
 import {
     BranchesOutlined,
     CopyOutlined,
@@ -12,14 +12,23 @@ import {
     ReloadOutlined,
     SearchOutlined,
 } from '@ant-design/icons';
-import {approvalApi} from '@/wf/services/api';
+import {approvalApi} from '../../wf/services/api';
 import { EmptyState, ErrorState } from '@yuku123/z-frontend-common/ui'
-import {ProcessDefinition} from '@/wf/types';
+import {ProcessDefinition} from '../../wf/types';
 import dayjs from 'dayjs';
 import styles from './index.module.css';
 
 const {Title} = Typography;
 const {confirm} = Modal;
+
+/** 发起流程的表单值（title/approver/reason/days → startProcess 的 variables） */
+interface StartFormValues {
+    title?: string;
+    approver?: string;
+    reason?: string;
+    days?: number;
+    extraVars?: { key: string; value: string }[];
+}
 
 const ProcessList: React.FC = () => {
     const navigate = useNavigate();
@@ -41,6 +50,11 @@ const ProcessList: React.FC = () => {
     }, [data, searchKeyword]);
     const [modalVisible, setModalVisible] = useState(false);
     const [editingProcess, setEditingProcess] = useState<ProcessDefinition | null>(null);
+    // 2026-11-12: 发起流程 —— 此前 startProcess API 全仓零调用，模板列表只能设计不能发起，
+    // 闭环断在第一环。发起成功直接跳 /workflow/process/:id（流程视图），能逐步看到推进。
+    const [startTarget, setStartTarget] = useState<ProcessDefinition | null>(null);
+    const [startSubmitting, setStartSubmitting] = useState(false);
+    const [startForm] = Form.useForm();
 
     const fetchProcessList = async () => {
         try {
@@ -112,6 +126,45 @@ const ProcessList: React.FC = () => {
         }
     };
 
+    const openStart = (record: ProcessDefinition) => {
+        setStartTarget(record);
+        startForm.resetFields();
+        startForm.setFieldsValue({approver: 'admin'});
+    };
+
+    const handleStart = async (values: StartFormValues) => {
+        if (!startTarget) return;
+        try {
+            setStartSubmitting(true);
+            const variables: Record<string, unknown> = {};
+            if (values.approver) variables.approver = values.approver;
+            if (values.reason) variables.reason = values.reason;
+            if (values.days != null && values.days !== undefined) variables.days = values.days;
+            // 自定义键值对最后合并（模板缺角色变量如 marketScorer/ceo 时从这里补）
+            (values.extraVars || []).forEach(({key, value}) => {
+                if (key && key.trim() && value !== undefined && value !== '') {
+                    variables[key.trim()] = value;
+                }
+            });
+            const result = await approvalApi.startProcess({
+                processKey: String(startTarget.key),
+                initiator: 'admin',
+                title: values.title || String(startTarget.name || ''),
+                variables,
+            });
+            message.success('流程已发起');
+            setStartTarget(null);
+            const instanceId = result && (result as any).processInstanceId;
+            if (instanceId) {
+                navigate(`/workflow/process/${instanceId}`);
+            }
+        } catch (error) {
+            message.error(`发起失败: ${(error as Error).message}`);
+        } finally {
+            setStartSubmitting(false);
+        }
+    };
+
     const getStatusBadge = (status: string) => {
         switch (status) {
             case 'active':
@@ -133,7 +186,6 @@ const ProcessList: React.FC = () => {
                     <BranchesOutlined className={styles.processIcon}/>
                     <div className={styles.nameInfo}>
                         <span className={styles.name}>{text}</span>
-                        // @ts-ignore
                         <span className={styles.key}>{String(record.key)}</span>
                     </div>
                 </div>
@@ -163,11 +215,12 @@ const ProcessList: React.FC = () => {
             render: (status: string) => getStatusBadge(status),
         },
         {
-            title: '更新时间',
+            title: '部署时间',
             dataIndex: 'updateTime',
             key: 'updateTime',
             width: 180,
-            render: (time: string) => dayjs(time).format('YYYY-MM-DD HH:mm:ss'),
+            // 定义端点的 createTime/updateTime 是空串 ⇒ dayjs('') 是 Invalid Date
+            render: (time: string) => (time ? dayjs(time).format('YYYY-MM-DD HH:mm:ss') : '-'),
         },
         {
             title: '操作',
@@ -178,6 +231,12 @@ const ProcessList: React.FC = () => {
                 <Space size="small">
                     <Button
                         type="primary"
+                        size="small"
+                        onClick={() => openStart(record)}
+                    >
+                        发起
+                    </Button>
+                    <Button
                         size="small"
                         onClick={() => navigate(`/workflow/designer/${record.id}`)}
                     >
@@ -226,10 +285,10 @@ const ProcessList: React.FC = () => {
                     <div className={styles.titleSection}>
                         <Title level={4} className={styles.title}>
                             <BranchesOutlined className={styles.titleIcon}/>
-                            流程设计
+                            流程模板
                         </Title>
                         <span className={styles.subtitle}>
-              共 <strong>{data.length}</strong> 个流程
+              共 <strong>{data.length}</strong> 个模板 · 从模板发起流程实例
             </span>
                     </div>
                     <Space>
@@ -282,8 +341,8 @@ const ProcessList: React.FC = () => {
                         locale={{
                             emptyText: (
                                 <EmptyState
-                                    title="暂无流程定义"
-                                    description="当前没有流程定义"
+                                    title="暂无流程模板"
+                                    description="当前没有已部署的流程模板"
                                     // @ts-ignore
                                     action={
                                         <Button type="primary" icon={<PlusOutlined/>} onClick={handleCreate}>
@@ -349,6 +408,58 @@ const ProcessList: React.FC = () => {
                             rows={4}
                             placeholder="请输入流程描述"
                         />
+                    </Form.Item>
+                </Form>
+            </Modal>
+
+            {/* 发起流程弹窗（2026-11-12）：从模板一键发起实例，成功后跳流程视图 */}
+            <Modal
+                title={startTarget ? `发起流程 — ${startTarget.name}` : '发起流程'}
+                open={!!startTarget}
+                onCancel={() => setStartTarget(null)}
+                confirmLoading={startSubmitting}
+                onOk={() => startForm.submit()}
+                okText="发起"
+            >
+                <Form form={startForm} layout="vertical" onFinish={handleStart}>
+                    <Form.Item label="申请标题" name="title"
+                               rules={[{required: true, message: '请输入申请标题'}]}>
+                        <Input placeholder="如：张三的请假申请"/>
+                    </Form.Item>
+                    <Form.Item label="审批人" name="approver"
+                               extra="流程变量 approver，决定待办派给谁">
+                        <Input placeholder="admin"/>
+                    </Form.Item>
+                    <Form.Item label="事由" name="reason">
+                        <Input.TextArea rows={3} placeholder="流程变量 reason（选填）"/>
+                    </Form.Item>
+                    <Form.Item label="天数" name="days"
+                               extra="流程变量 days，请假类模板使用（选填）">
+                        <InputNumber min={0.5} step={0.5} style={{width: '100%'}}/>
+                    </Form.Item>
+                    <Form.Item label="其他流程变量" style={{marginBottom: 0}}
+                               extra="模板声明了其他 assignee 变量（如五看模板的 marketScorer/ceo）时从这里补">
+                        <Form.List name="extraVars">
+                            {(fields, {add, remove}) => (
+                                <>
+                                    {fields.map((field) => (
+                                        <Space key={field.key} align="baseline" style={{display: 'flex', marginBottom: 4}}>
+                                            <Form.Item name={[field.name, 'key']} noStyle>
+                                                <Input placeholder="变量名" style={{width: 150}}/>
+                                            </Form.Item>
+                                            <Form.Item name={[field.name, 'value']} noStyle>
+                                                <Input placeholder="值" style={{width: 180}}/>
+                                            </Form.Item>
+                                            <Button type="text" size="small" onClick={() => remove(field.name)}>删除</Button>
+                                        </Space>
+                                    ))}
+                                    <Button type="dashed" size="small" block icon={<PlusOutlined/>}
+                                            onClick={() => add()}>
+                                        添加变量
+                                    </Button>
+                                </>
+                            )}
+                        </Form.List>
                     </Form.Item>
                 </Form>
             </Modal>

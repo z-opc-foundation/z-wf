@@ -2,9 +2,9 @@ import React, {useEffect, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {Badge, Button, Space, Tag, Tooltip, Typography,} from 'antd';
 import {ClockCircleOutlined, ReloadOutlined} from '@ant-design/icons';
-import {approvalApi} from '@/wf/services/api';
+import {approvalApi} from '../../wf/services/api';
 import { ErrorState, ListTable } from '@yuku123/z-frontend-common/ui'
-import {PageResult, Task} from '@/wf/types';
+import {PageResult, Task} from '../../wf/types';
 import dayjs from 'dayjs';
 import styles from './index.module.css';
 
@@ -69,29 +69,27 @@ const TodoList: React.FC = () => {
 
     const columns = [
         {
+            // 2026-11-12: 后端 TaskSummaryVO 字段是 taskName/processName/taskId，
+            // 原来的 name/processDefinitionName/id 全取空 ⇒ 列空白 + 审批跳 /workflow/task/undefined。
             title: '任务名称',
-            dataIndex: 'name',
-            key: 'name',
+            dataIndex: 'taskName',
+            key: 'taskName',
             render: (text: string, record: Task) => (
                 <div className={styles.taskName}>
                     <span className={styles.name}>{text}</span>
-                    // @ts-ignore
                     {isOverdue(String(record.dueTime)) && (
-                        // @ts-ignore
-                        <Tag color="red" size="small">已逾期</Tag>
+                        <Tag color="red">已逾期</Tag>
                     )}
-                    // @ts-ignore
                     {isNearDue(String(record.dueTime)) && !isOverdue(String(record.dueTime)) && (
-                        // @ts-ignore
-                        <Tag color="orange" size="small">即将到期</Tag>
+                        <Tag color="orange">即将到期</Tag>
                     )}
                 </div>
             ),
         },
         {
             title: '所属流程',
-            dataIndex: 'processDefinitionName',
-            key: 'processDefinitionName',
+            dataIndex: 'processName',
+            key: 'processName',
             render: (text: string) => (
                 <Tooltip title={text}>
                     <span className={styles.ellipsis}>{text}</span>
@@ -144,7 +142,7 @@ const TodoList: React.FC = () => {
                     <Button
                         type="primary"
                         size="small"
-                        onClick={() => navigate(`/workflow/task/${record.id}`)}
+                        onClick={() => navigate(`/workflow/task/${record.taskId || record.id}`)}
                     >
                         审批
                     </Button>
@@ -169,7 +167,7 @@ const TodoList: React.FC = () => {
                     rows={data.records}
                     // @ts-ignore
                     columns={columns}
-                    rowKey="id"
+                    rowKey="taskId"
                     loading={loading}
                     pagination={{
                         // @ts-ignore
@@ -205,7 +203,7 @@ const TodoList: React.FC = () => {
                             刷新
                         </Button>
                     }
-                    searchKeys="name,processDefinitionName"
+                    searchKeys="taskName,processName"
                     searchPlaceholder="搜索任务名称"
                     emptyTitle="暂无待办任务"
                     emptyDescription="当前没有待办任务"

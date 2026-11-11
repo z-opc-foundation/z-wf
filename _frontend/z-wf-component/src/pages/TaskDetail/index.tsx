@@ -29,9 +29,9 @@ import {
     PlayCircleOutlined,
     UserOutlined,
 } from '@ant-design/icons';
-import {approvalApi, designerApi} from '@/wf/services/api';
+import {approvalApi, designerApi} from '../../wf/services/api';
 import {EmptyState, ErrorState, PageHeader} from '@yuku123/z-frontend-common/ui';
-import {ApprovalHistory, Task} from '@/wf/types';
+import {ApprovalHistory, Task} from '../../wf/types';
 import dayjs from 'dayjs';
 import styles from './index.module.css';
 
@@ -83,13 +83,15 @@ const TaskDetail: React.FC = () => {
         if (!taskId) return;
         try {
             setSubmitting(true);
+            // 2026-11-12 修：后端 ApprovalRequestDTO 收 approvalResult（网关条件
+            // ${approvalResult == 'approved'/'rejected'}），原来发的 action/formData
+            // 后端根本不读 ⇒ 流程变量永远不写，网关两边都不命中，流程卡死在网关。
             await approvalApi.completeTask(taskId, {
-                action: values.action,
+                approvalResult: values.action === 'approve' ? 'approved' : 'rejected',
                 comment: values.comment,
-                formData: values.formData,
             });
             message.success('审批操作成功');
-            navigate('/workflow/todo');
+            navigate(`/workflow/process/${(task as any)?.processInstanceId || ''}`);
         } catch (error) {
             console.error('审批操作失败:', error);
             message.error('审批操作失败');
@@ -146,10 +148,18 @@ const TaskDetail: React.FC = () => {
                 return '转交他人';
             case 'delegate':
                 return '委托处理';
+            case 'processing':
+                return '进行中';
             default:
                 return action;
         }
     };
+
+    // 2026-11-12: 后端 TaskDetailVO.status 从不赋值（恒 null），原来拿 'pending' 比对
+    // ⇒ 审批表单永远不渲染，闭环断在最后一环。待处理 = 状态为空或 todo/pending。
+    const statusText = (task as any)?.status;
+    const isPending = !statusText || statusText === 'pending' || statusText === 'todo';
+    const isDone = statusText === 'completed' || statusText === 'done';
 
     if (loading) {
         return (
@@ -176,12 +186,9 @@ const TaskDetail: React.FC = () => {
             <Card className={styles.card}>
                 <div className={styles.header}>
                     <div className={styles.headerActions}>
-                        // @ts-ignore
-                        {task.status === 'pending' && <Badge status="processing" text="待处理"/>}
-                        // @ts-ignore
-                        {task.status === 'claimed' && <Badge status="warning" text="处理中"/>}
-                        // @ts-ignore
-                        {task.status === 'completed' && <Badge status="success" text="已完成"/>}
+                        {isPending && <Badge status="processing" text="待处理"/>}
+                        {!isPending && !isDone && <Badge status="warning" text="处理中"/>}
+                        {isDone && <Badge status="success" text="已完成"/>}
                     </div>
                 </div>
 
@@ -190,32 +197,25 @@ const TaskDetail: React.FC = () => {
                 <div className={styles.content}>
                     <div className={styles.leftPanel}>
                         <Descriptions title="任务信息" bordered column={1} className={styles.descriptions}>
-                            <Descriptions.Item label="任务名称">{task.name}</Descriptions.Item>
-                            <Descriptions.Item label="任务ID">{task.id}</Descriptions.Item>
-                            // @ts-ignore
-                            <Descriptions.Item label="所属流程">{String(task.processDefinitionName)}</Descriptions.Item>
+                            <Descriptions.Item label="任务名称">{(task as any).taskName ?? task.name}</Descriptions.Item>
+                            <Descriptions.Item label="任务ID">{(task as any).taskId ?? task.id}</Descriptions.Item>
+                            <Descriptions.Item label="所属流程">{String((task as any).processName || '-')}</Descriptions.Item>
                             <Descriptions.Item label="流程实例ID">{task.processInstanceId}</Descriptions.Item>
                             <Descriptions.Item
-                                // @ts-ignore
-                                label="当前处理人">{task.assigneeName || task.assignee || '-'}</Descriptions.Item>
+                                label="当前处理人">{(task as any).assigneeName || task.assignee || '-'}</Descriptions.Item>
                             <Descriptions.Item label="任务状态">
-                                {task.status === 'pending' && <Tag color="blue">待处理</Tag>}
-                                {task.status === 'claimed' && <Tag color="orange">处理中</Tag>}
-                                {task.status === 'completed' && <Tag color="green">已完成</Tag>}
+                                {isPending && <Tag color="blue">待处理</Tag>}
+                                {!isPending && !isDone && <Tag color="orange">处理中</Tag>}
+                                {isDone && <Tag color="green">已完成</Tag>}
                             </Descriptions.Item>
                             <Descriptions.Item label="创建时间">
-                                {dayjs(task.createTime).format('YYYY-MM-DD HH:mm:ss')}
+                                {task.createTime ? dayjs(String(task.createTime)).format('YYYY-MM-DD HH:mm:ss') : '-'}
                             </Descriptions.Item>
-                            <Descriptions.Item label="认领时间">
-                                // @ts-ignore
-                                {task.claimTime ? dayjs(String(task.claimTime)).format('YYYY-MM-DD HH:mm:ss') : '-'}
-                            </Descriptions.Item>
-                            {task.dueTime && (
+                            {(task as any).dueDate ? (
                                 <Descriptions.Item label="到期时间">
-                                    // @ts-ignore
-                                    {dayjs(String(task.dueTime)).format('YYYY-MM-DD HH:mm:ss')}
+                                    {dayjs(String((task as any).dueDate)).format('YYYY-MM-DD HH:mm:ss')}
                                 </Descriptions.Item>
-                            )}
+                            ) : null}
                             <Descriptions.Item label="优先级">
                                 <Tag color={task.priority >= 80 ? 'red' : task.priority >= 50 ? 'orange' : 'default'}>
                                     {task.priority >= 80 ? '紧急' : task.priority >= 50 ? '高' : '普通'}
@@ -223,7 +223,7 @@ const TaskDetail: React.FC = () => {
                             </Descriptions.Item>
                         </Descriptions>
 
-                        {task.status === 'pending' && (
+                        {isPending && (
                             <>
                                 <Divider/>
                                 <div className={styles.approvalSection}>
@@ -314,14 +314,12 @@ const TaskDetail: React.FC = () => {
                             {getActionText(item.action)}
                           </span>
                                                     <span className={styles.historyTime}>
-                            // @ts-ignore
-                                                        {dayjs(String(item.createTime)).format('MM-DD HH:mm')}
+                                                        {item.time ? dayjs(String(item.time)).format('MM-DD HH:mm') : '-'}
                           </span>
                                                 </div>
                                                 <div className={styles.historyContent}>
                           <span className={styles.historyUser}>
-                            // @ts-ignore
-                            <UserOutlined/> {String(item.assigneeName || item.assignee)}
+                            <UserOutlined/> {String((item as any).operator || item.assignee || '-')}
                           </span>
                                                 </div>
                                                 {item.comment && (

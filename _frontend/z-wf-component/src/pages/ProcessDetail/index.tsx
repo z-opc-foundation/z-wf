@@ -9,15 +9,25 @@ import {
     PlayCircleOutlined,
     UserOutlined,
 } from '@ant-design/icons';
-import {approvalApi, designerApi} from '@/wf/services/api';
+import {approvalApi, designerApi} from '../../wf/services/api';
 import {EmptyState, ErrorState, PageHeader} from '@yuku123/z-frontend-common/ui';
-import {ApprovalHistory, ProcessInstance} from '@/wf/types';
+import {ApprovalHistory, ProcessInstance} from '../../wf/types';
 import dayjs from 'dayjs';
 import styles from './index.module.css';
 
 const {Title, Text} = Typography;
 // @ts-ignore
 const {Step} = Steps;
+
+/** 轨迹端点给的是毫秒数（ProcessOperationController#getTrail durationInMillis），转人话。 */
+function formatMillis(ms: number): string {
+    if (!ms || ms <= 0) return '0分钟';
+    const minutes = Math.floor(ms / 60000);
+    if (minutes < 1) return '不足1分钟';
+    const hours = Math.floor(minutes / 60);
+    if (hours > 0) return `${hours}小时${minutes % 60}分钟`;
+    return `${minutes}分钟`;
+}
 
 const ProcessDetail: React.FC = () => {
     const {processInstanceId} = useParams<{ processInstanceId: string }>();
@@ -69,6 +79,15 @@ const ProcessDetail: React.FC = () => {
         }
     };
 
+    /** 轨迹项语义：引擎 trail 只有「有无 endTime」，用 activityType 区分开始/网关/任务节点。 */
+    const describeTrail = (item: ApprovalHistory) => {
+        const type = String((item as any).activityType || '').toLowerCase();
+        if (type.includes('startevent')) return '发起流程';
+        if (type.includes('endevent')) return item.action === 'complete' ? '流程结束（已批准）' : '流程结束';
+        if (type.includes('gateway')) return '网关判断';
+        return getActionText(item.action);
+    };
+
     const getActionIcon = (action: string) => {
         switch (action) {
             case 'start':
@@ -99,6 +118,8 @@ const ProcessDetail: React.FC = () => {
                 return '委托';
             case 'terminate':
                 return '终止流程';
+            case 'processing':
+                return '进行中';
             default:
                 return action;
         }
@@ -125,7 +146,7 @@ const ProcessDetail: React.FC = () => {
 
     return (
         <div className={styles.container}>
-            <PageHeader title="流程详情" back={() => navigate('/wf/pages/ProcessList')}/>
+            <PageHeader title="流程详情" back={() => navigate('/workflow/my-processes')}/>
             <Card className={styles.card}>
                 <div className={styles.header}>
                     <div className={styles.headerActions}>
@@ -136,33 +157,27 @@ const ProcessDetail: React.FC = () => {
                 <Divider/>
 
                 <Descriptions title="基本信息" bordered column={2} className={styles.descriptions}>
-                    <Descriptions.Item label="流程名称">{process.processDefinitionName}</Descriptions.Item>
-                    <Descriptions.Item label="流程实例ID">{process.id}</Descriptions.Item>
-                    <Descriptions.Item label="业务标识">{process.businessKey || '-'}</Descriptions.Item>
+                    <Descriptions.Item label="流程名称">
+                        {/* 2026-11-12: ProcessDetailVO 字段是 processName/processInstanceId/initiator */}
+                        {(process as any).processName || '-'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="流程实例ID">{(process as any).processInstanceId || (process as any).id}</Descriptions.Item>
                     <Descriptions.Item label="状态">{getStatusTag(process.status)}</Descriptions.Item>
-                    // @ts-ignore
-                    <Descriptions.Item label="发起人">{String(process.startUserName || '系统')}</Descriptions.Item>
+                    <Descriptions.Item label="发起人">{String((process as any).initiator || (process as any).startUserName || '系统')}</Descriptions.Item>
                     <Descriptions.Item label="发起时间">
-                        {dayjs(process.startTime).format('YYYY-MM-DD HH:mm:ss')}
+                        {process.startTime ? dayjs(process.startTime).format('YYYY-MM-DD HH:mm:ss') : '-'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="当前节点">
+                        {String((process as any).currentTaskName || '-')}
                     </Descriptions.Item>
                     {process.endTime && (
                         <>
                             <Descriptions.Item label="结束时间">
                                 {dayjs(process.endTime).format('YYYY-MM-DD HH:mm:ss')}
                             </Descriptions.Item>
+                            {/* ProcessDetailVO.duration 已是后端 formatDuration 的字符串（如 "9分钟"） */}
                             <Descriptions.Item label="总耗时">
-                                {(() => {
-                                    const duration = process.duration || 0;
-                                    // @ts-ignore
-                                    const days = Math.floor(duration / 86400000);
-                                    // @ts-ignore
-                                    const hours = Math.floor((duration % 86400000) / 3600000);
-                                    // @ts-ignore
-                                    const minutes = Math.floor((duration % 3600000) / 60000);
-                                    if (days > 0) return `${days}天${hours}小时`;
-                                    if (hours > 0) return `${hours}小时${minutes}分钟`;
-                                    return `${minutes}分钟`;
-                                })()}
+                                {String((process as any).duration || '-')}
                             </Descriptions.Item>
                         </>
                     )}
@@ -192,23 +207,21 @@ const ProcessDetail: React.FC = () => {
                                     <div className={styles.timelineItem}>
                                         <div className={styles.timelineHeader}>
                       <span className={styles.timelineAction}>
-                        {getActionText(item.action)}
+                        {describeTrail(item)}
                       </span>
                                             <span className={styles.timelineTask}>{item.taskName}</span>
                                         </div>
                                         <div className={styles.timelineContent}>
                       <span className={styles.timelineUser}>
-                        // @ts-ignore
-                        <UserOutlined/> {String(item.assigneeName || item.assignee)}
+                        <UserOutlined/> {String((item as any).operator || item.assignee || '-')}
                       </span>
                                             <span className={styles.timelineTime}>
                         <ClockCircleOutlined/>{' '}
-                                                // @ts-ignore
-                                                {dayjs(String(item.createTime)).format('YYYY-MM-DD HH:mm:ss')}
+                                                {item.time ? dayjs(String(item.time)).format('YYYY-MM-DD HH:mm:ss') : ''}
                       </span>
-                                            {item.duration && (
+                                            {item.duration != null && (
                                                 <span className={styles.timelineDuration}>
-                          耗时: {Math.floor(item.duration / 1000 / 60)}分钟
+                          耗时: {formatMillis(Number(item.duration))}
                         </span>
                                             )}
                                         </div>

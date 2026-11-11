@@ -6,9 +6,9 @@ import {
     FileTextOutlined,
     ReloadOutlined,
 } from '@ant-design/icons';
-import {approvalApi} from '@/wf/services/api';
+import {approvalApi} from '../../wf/services/api';
 import { ErrorState, ListTable } from '@yuku123/z-frontend-common/ui'
-import {PageResult, ProcessInstance} from '@/wf/types';
+import {PageResult, ProcessInstance} from '../../wf/types';
 import dayjs from 'dayjs';
 import styles from './index.module.css';
 
@@ -47,7 +47,7 @@ const MyProcesses: React.FC = () => {
         confirm({
             title: '确认删除',
             icon: <ExclamationCircleOutlined/>,
-            content: `确定要删除流程实例 "${record.processDefinitionName}" 吗？此操作不可恢复。`,
+            content: `确定要删除流程实例 "${(record.processName || record.processDefinitionName || "该流程")}" 吗？此操作不可恢复。`,
             okText: '删除',
             okType: 'danger',
             cancelText: '取消',
@@ -84,21 +84,25 @@ const MyProcesses: React.FC = () => {
 
     const columns = [
         {
+            // 2026-11-12: 后端 ProcessInstanceVO 字段是 processName/initiator/processInstanceId，
+            // 原来的 processDefinitionName/startUserName/id 全取空。
             title: '流程名称',
-            dataIndex: 'processDefinitionName',
-            key: 'processDefinitionName',
-            render: (text: string) => (
+            dataIndex: 'processName',
+            key: 'processName',
+            render: (text: string, record: ProcessInstance) => (
                 <div className={styles.processName}>
                     <FileTextOutlined className={styles.processIcon}/>
-                    <span className={styles.name}>{text}</span>
+                    <span className={styles.name}>{text || (record as any).processDefinitionName}</span>
                 </div>
             ),
         },
         {
-            title: '业务标识',
-            dataIndex: 'businessKey',
-            key: 'businessKey',
-            render: (text?: string) => text || '-',
+            title: '当前节点',
+            dataIndex: 'currentTaskName',
+            key: 'currentTaskName',
+            width: 140,
+            render: (text?: string, record?: ProcessInstance) =>
+                text || (record?.status === 'completed' ? '已结束' : '-'),
         },
         {
             title: '状态',
@@ -109,8 +113,8 @@ const MyProcesses: React.FC = () => {
         },
         {
             title: '发起人',
-            dataIndex: 'startUserName',
-            key: 'startUserName',
+            dataIndex: 'initiator',
+            key: 'initiator',
             width: 120,
             render: (text?: string) => text || '系统',
         },
@@ -130,17 +134,19 @@ const MyProcesses: React.FC = () => {
         },
         {
             title: '耗时',
-            dataIndex: 'duration',
             key: 'duration',
             width: 120,
-            render: (duration?: number) => {
-                if (!duration) return '-';
-                const hours = Math.floor(duration / 3600000);
-                const minutes = Math.floor((duration % 3600000) / 60000);
-                if (hours > 0) {
-                    return `${hours}小时${minutes}分钟`;
-                }
-                return `${minutes}分钟`;
+            // 后端 ProcessInstanceVO 没有 duration 字段，由起止时间现算
+            render: (_: any, record: ProcessInstance) => {
+                if (!record.endTime || !record.startTime) return '-';
+                const ms = dayjs(record.endTime).diff(dayjs(record.startTime));
+                if (ms <= 0) return '-';
+                const days = Math.floor(ms / 86400000);
+                const hours = Math.floor((ms % 86400000) / 3600000);
+                const minutes = Math.floor((ms % 3600000) / 60000);
+                if (days > 0) return `${days}天${hours}小时`;
+                if (hours > 0) return `${hours}小时${minutes}分钟`;
+                return minutes > 0 ? `${minutes}分钟` : '不足1分钟';
             },
         },
         {
@@ -153,7 +159,7 @@ const MyProcesses: React.FC = () => {
                     <Button
                         type="primary"
                         size="small"
-                        onClick={() => navigate(`/workflow/process/${record.id}`)}
+                        onClick={() => navigate(`/workflow/process/${(record as any).processInstanceId || record.id}`)}
                     >
                         详情
                     </Button>
@@ -188,7 +194,7 @@ const MyProcesses: React.FC = () => {
                     rows={data.records}
                     // @ts-ignore
                     columns={columns}
-                    rowKey="id"
+                    rowKey="processInstanceId"
                     loading={loading}
                     pagination={{
                         // @ts-ignore
@@ -224,7 +230,7 @@ const MyProcesses: React.FC = () => {
                             刷新
                         </Button>
                     }
-                    searchKeys="processDefinitionName,businessKey,startUserName"
+                    searchKeys="processName,initiator"
                     searchPlaceholder="搜索流程名称"
                     emptyTitle="暂无流程实例"
                     emptyDescription="当前没有流程实例"
