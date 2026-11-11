@@ -2,9 +2,7 @@ import React, {useEffect, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {Badge, Button, message, Modal, Space, Typography,} from 'antd';
 import {
-    DeleteOutlined,
     ExclamationCircleOutlined,
-    EyeOutlined,
     FileTextOutlined,
     ReloadOutlined,
 } from '@ant-design/icons';
@@ -155,16 +153,14 @@ const MyProcesses: React.FC = () => {
                     <Button
                         type="primary"
                         size="small"
-                        icon={<EyeOutlined/>}
                         onClick={() => navigate(`/workflow/process/${record.id}`)}
                     >
                         详情
                     </Button>
                     {record.status !== 'completed' && record.status !== 'terminated' && (
-                        <Button
+                        <Button type="link"
                             size="small"
                             danger
-                            icon={<DeleteOutlined/>}
                             onClick={() => handleDelete(record)}
                         >
                             终止

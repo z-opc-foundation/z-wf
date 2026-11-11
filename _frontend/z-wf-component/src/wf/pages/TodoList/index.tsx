@@ -1,7 +1,7 @@
 import React, {useEffect, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {Badge, Button, Space, Tag, Tooltip, Typography,} from 'antd';
-import {CheckCircleOutlined, ClockCircleOutlined, ReloadOutlined,} from '@ant-design/icons';
+import {ClockCircleOutlined, ReloadOutlined} from '@ant-design/icons';
 import {approvalApi} from '../../services/api';
 import {ErrorState, ListTable} from '@yuku123/z-frontend-common/ui';
 import {PageResult, Task} from '../../types';
@@ -140,7 +140,6 @@ const TodoList: React.FC = () => {
                     <Button
                         type="primary"
                         size="small"
-                        icon={<CheckCircleOutlined/>}
                         onClick={() => navigate(`/z-wf/workflow/task/${record.id}`)}
                     >
                         审批

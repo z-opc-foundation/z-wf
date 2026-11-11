@@ -1,7 +1,7 @@
 import React, {useEffect, useState} from 'react';
 import {useNavigate} from 'react-router-dom';
 import {Button, Space, Tag, Tooltip, Typography,} from 'antd';
-import {EyeOutlined, HistoryOutlined, ReloadOutlined,} from '@ant-design/icons';
+import {HistoryOutlined, ReloadOutlined} from '@ant-design/icons';
 import {approvalApi} from '../../services/api';
 import {ErrorState, ListTable} from '@yuku123/z-frontend-common/ui';
 import {PageResult, Task} from '../../types';
@@ -83,8 +83,7 @@ const DoneList: React.FC = () => {
             render: (_: any, record: Task) => (
                 <Space size="small">
                     <Button
-                        type="text"
-                        icon={<EyeOutlined/>}
+                        type="link" size="small"
                         onClick={() => navigate(`/z-wf/workflow/task/${record.id}`)}
                     >
                         查看

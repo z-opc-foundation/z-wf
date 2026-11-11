@@ -179,7 +179,6 @@ const ProcessList: React.FC = () => {
                     <Button
                         type="primary"
                         size="small"
-                        icon={<EditOutlined/>}
                         onClick={() => navigate(`/workflow/designer/${record.id}`)}
                     >
                         设计
@@ -211,7 +210,7 @@ const ProcessList: React.FC = () => {
                             ],
                         }}
                     >
-                        <Button size="small">
+                        <Button type="link" size="small">
                             <MoreOutlined/>
                         </Button>
                     </Dropdown>
