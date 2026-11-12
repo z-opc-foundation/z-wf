@@ -2,7 +2,7 @@
     width: 100%;
     height: 100%;
     position: relative;
-    background: #fafafa;
+    background: #fafbfc;
 }
 
 .canvas {
@@ -10,128 +10,103 @@
     height: 100%;
 }
 
-/* 拖拽面板样式 */
-.dndItem {
+/* —— 左侧节点面板 —— */
+.palette {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    width: 176px;
+    background: #fff;
+    border: 1px solid #e8ecf1;
+    border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(15, 34, 58, 0.08);
+    padding: 12px;
+    z-index: 10;
     display: flex;
     flex-direction: column;
+    gap: 4px;
+}
+
+.paletteTitle {
+    font-size: 12px;
+    color: #8c8c8c;
+    letter-spacing: 2px;
+    padding: 0 4px 6px;
+}
+
+.paletteItem {
+    display: flex;
     align-items: center;
-    padding: 12px;
+    gap: 10px;
+    padding: 8px;
+    border-radius: 8px;
     cursor: grab;
-    transition: all 0.2s;
+    transition: background 0.15s;
+    user-select: none;
+}
+
+.paletteItem:hover {
+    background: #f0f7ff;
+}
+
+.paletteItem:active {
+    cursor: grabbing;
+}
+
+.paletteDot {
+    flex: none;
+    width: 22px;
+    height: 22px;
     border-radius: 6px;
 }
 
-.dndItem:hover {
-    background: #f0f7ff;
-    transform: scale(1.05);
+.dot_start { background: #52c41a; border-radius: 11px; }
+.dot_approval { background: #fff; border: 1.5px solid #1677ff; }
+.dot_condition { background: #fff7e6; border: 1.5px solid #fa8c16; transform: rotate(45deg) scale(0.72); }
+.dot_copy { background: #fafafa; border: 1.2px dashed #8c8c8c; }
+.dot_end { background: #ff4d4f; border-radius: 50%; }
+
+.paletteText {
+    min-width: 0;
 }
 
-.dndItem img {
-    width: 40px;
-    height: 40px;
-    margin-bottom: 8px;
+.paletteLabel {
+    font-size: 13px;
+    color: #262626;
+    line-height: 18px;
 }
 
-.dndItem span {
-    font-size: 12px;
-    color: #595959;
+.paletteHint {
+    font-size: 11px;
+    color: #9aa4b2;
+    line-height: 15px;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-/* LogicFlow 样式覆盖 */
-:global(.lf-dnd-panel) {
-    width: 80px !important;
-    background: #fff;
-    border-right: 1px solid #e8e8e8;
-    padding: 16px 0;
+.paletteFooter {
+    margin-top: 6px;
+    padding: 6px 4px 0;
+    border-top: 1px solid #f0f2f5;
+    font-size: 11px;
+    color: #b0b8c3;
+    line-height: 1.5;
 }
 
-:global(.lf-control) {
-    background: #fff;
-    border-radius: 4px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+/* —— LogicFlow 全局样式微调 —— */
+:global(.lf-graph) {
+    background: #fafbfc;
 }
 
-:global(.lf-mini-map) {
-    background: #fff;
-    border: 1px solid #e8e8e8;
-    border-radius: 4px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-}
-
-/* 节点样式 */
 :global(.lf-node) {
-    cursor: pointer;
+    cursor: move;
 }
 
 :global(.lf-node:hover) {
-    filter: brightness(0.95);
+    filter: brightness(0.97);
 }
 
-:global(.lf-node.selected) {
-    filter: drop-shadow(0 0 4px rgba(22, 119, 255, 0.5));
-}
-
-/* 边样式 */
-:global(.lf-edge) {
-    stroke: #8c8c8c;
-    stroke-width: 2;
-}
-
-:global(.lf-edge:hover) {
-    stroke: #1677ff;
-    stroke-width: 3;
-}
-
-/* 文本样式 */
 :global(.lf-text) {
-    font-size: 14px;
-    fill: #262626;
-}
-
-/* 属性面板 */
-.propertyPanel {
-    position: absolute;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    width: 300px;
-    background: #fff;
-    border-left: 1px solid #e8e8e8;
-    padding: 16px;
-    overflow-y: auto;
-    z-index: 10;
-}
-
-.propertyPanelTitle {
-    font-size: 16px;
-    font-weight: 500;
-    color: #262626;
-    margin-bottom: 16px;
-    padding-bottom: 12px;
-    border-bottom: 1px solid #f0f0f0;
-}
-
-/* 工具栏 */
-.toolbar {
-    position: absolute;
-    top: 16px;
-    left: 96px;
-    right: 316px;
-    height: 48px;
-    background: #fff;
-    border-radius: 4px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-    display: flex;
-    align-items: center;
-    padding: 0 16px;
-    gap: 8px;
-    z-index: 10;
-}
-
-.toolbarDivider {
-    width: 1px;
-    height: 24px;
-    background: #e8e8e8;
-    margin: 0 8px;
+    font-size: 13px;
 }

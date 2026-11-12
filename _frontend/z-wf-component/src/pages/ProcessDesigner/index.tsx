@@ -1,6 +1,6 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {useNavigate, useParams} from 'react-router-dom';
-import {Button, Divider, Drawer, Form, Input, message, Popconfirm, Radio, Select,} from 'antd';
+import {Alert, Button, Divider, Drawer, Form, Input, message, Popconfirm, Radio, Select, Spin, Tooltip,} from 'antd';
 import {
     ArrowLeftOutlined,
     DeleteOutlined,
@@ -12,38 +12,37 @@ import {
     ZoomInOutlined,
     ZoomOutOutlined,
 } from '@ant-design/icons';
-import FlowDesigner from '../../components/FlowDesigner';
+import FlowDesigner, {FlowDesignerHandle} from '../../components/FlowDesigner';
 import {approvalApi, designerApi} from '../../wf/services/api';
 import {ProcessDefinition} from '../../wf/types';
 import styles from './index.module.css';
 
-const {Option} = Select;
-const {TextArea} = Input;
-
-// 审批人选项
+// 审批人类型。2026-11-12 对齐后端 LogicFlowGraphConverter#resolveAssignee：
+// 只有 specify_user 会静态落成 camunda:assignee 表达式，其余三类需运行时求解钩子（暂缺），留空走人工认领。
 const approverOptions = [
-    {value: 'direct_leader', label: '直属上级'},
     {value: 'specify_user', label: '指定人员'},
-    {value: 'role', label: '角色'},
-    {value: 'dept_leader', label: '部门负责人'},
+    {value: 'direct_leader', label: '直属上级（暂按人工认领）'},
+    {value: 'dept_leader', label: '部门负责人（暂按人工认领）'},
+    {value: 'role', label: '角色（暂按人工认领）'},
 ];
 
 const ProcessDesigner: React.FC = () => {
     const {processDefinitionId} = useParams<{ processDefinitionId: string }>();
     const navigate = useNavigate();
-    const designerRef = useRef<any>(null);
+    const designerRef = useRef<FlowDesignerHandle>(null);
     const [form] = Form.useForm();
 
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [deploying, setDeploying] = useState(false);
     const [processInfo, setProcessInfo] = useState<ProcessDefinition | null>(null);
-    // 2026-10-04: 设计相关接口按 **流程 key** 工作，不按 definition id ——
+    // 设计相关接口按 **流程 key** 工作，不按 definition id ——
     // 同一个 key 每次发布会产生新的 definition id，用 id 会把设计稿存到一次性版本上。
     const [processKey, setProcessKey] = useState<string>('');
     const [selectedNode, setSelectedNode] = useState<any>(null);
     const [drawerVisible, setDrawerVisible] = useState(false);
     const [graphData, setGraphData] = useState<any>(null);
+    const approverType = Form.useWatch('approverType', form);
 
     // 加载流程定义信息
     useEffect(() => {
@@ -55,24 +54,20 @@ const ProcessDesigner: React.FC = () => {
     const fetchProcessDefinition = async () => {
         try {
             setLoading(true);
-            // 获取流程定义列表，找到当前编辑的流程
             const definitions = await approvalApi.getProcessDefinitions();
             const current = definitions.find(d => d.id === processDefinitionId);
             if (current) {
                 setProcessInfo(current);
-                // 后端 getProcessDefinitions 返回的 key 就是流程定义 key
                 setProcessKey(String(current.key ?? ''));
             } else {
                 message.warning('未找到该流程定义，可能已被删除或未发布');
             }
 
             if (!current?.key) {
-                // 没有 key 就无法定位设计稿, 再往下调只会拿到 400，不如停在这里
                 setGraphData(null);
                 return;
             }
 
-            // 获取流程图数据
             const flowData = await designerApi.getFlowGraph(String(current.key));
             setGraphData(flowData);
         } catch (error) {
@@ -95,7 +90,7 @@ const ProcessDesigner: React.FC = () => {
             setSaving(true);
             const data = designerRef.current.getGraphData();
             await designerApi.saveFlowGraph(processKey, data);
-            message.success('保存成功');
+            message.success('设计稿已保存');
         } catch (error) {
             console.error('保存失败:', error);
             message.error('保存失败');
@@ -123,41 +118,35 @@ const ProcessDesigner: React.FC = () => {
     };
 
     // 导出图片
-    const handleExportImage = (type: 'png' | 'svg') => {
-        if (designerRef.current) {
-            designerRef.current.exportImage(type);
-        }
+    const handleExportImage = () => {
+        designerRef.current?.exportImage();
     };
 
     // 打开节点属性面板
     const handleOpenNodeProperties = (nodeData: any) => {
         setSelectedNode(nodeData);
         setDrawerVisible(true);
-        // 设置表单初始值
         form.setFieldsValue({
             name: nodeData.text?.value || '',
-            approverType: nodeData.properties?.approverType || 'direct_leader',
+            approverType: nodeData.properties?.approverType || 'specify_user',
             approver: nodeData.properties?.approver,
             multipleApproval: nodeData.properties?.multipleApproval || 'sequential',
-            allowTransfer: nodeData.properties?.allowTransfer || true,
-            allowAddSign: nodeData.properties?.allowAddSign || false,
+            allowTransfer: nodeData.properties?.allowTransfer ?? true,
+            allowAddSign: nodeData.properties?.allowAddSign ?? false,
             description: nodeData.properties?.description,
         });
     };
 
-    // 保存节点属性
+    // 保存节点属性。node:click 事件给的是数据快照（没有 setText 方法），
+    // 改画布必须走 lf.updateText / lf.setProperties。
     const handleSaveNodeProperties = (values: any) => {
-        if (selectedNode) {
-            // 更新节点文本
-            selectedNode.setText(values.name);
-            // 更新节点属性
-            selectedNode.properties = {
-                ...selectedNode.properties,
-                ...values,
-            };
-            message.success('属性保存成功');
-            setDrawerVisible(false);
-        }
+        if (!selectedNode) return;
+        designerRef.current?.updateNode(selectedNode.id, {
+            text: values.name,
+            properties: values,
+        });
+        message.success('属性已保存（记得点「保存」写入设计稿）');
+        setDrawerVisible(false);
     };
 
     return (
@@ -171,27 +160,41 @@ const ProcessDesigner: React.FC = () => {
                     >
                         返回
                     </Button>
-                    <Divider type="vertical"/>
+                    <Divider orientation="vertical"/>
                     {processInfo && (
                         <div className={styles.processInfo}>
                             <span className={styles.processName}>{processInfo.name}</span>
                             <span className={styles.processVersion}>v{processInfo.version}</span>
+                            <span className={styles.processKey}>{processKey}</span>
                         </div>
                     )}
                 </div>
                 <div className={styles.toolbarCenter}>
-                    <Button icon={<UndoOutlined/>} title="撤销"/>
-                    <Button icon={<RedoOutlined/>} title="重做"/>
-                    <Divider type="vertical"/>
-                    <Button icon={<ZoomOutOutlined/>} title="缩小"/>
-                    <Button icon={<ZoomInOutlined/>} title="放大"/>
-                    <Divider type="vertical"/>
-                    <Button icon={<DeleteOutlined/>} title="删除" danger/>
+                    <Tooltip title="撤销 (Ctrl+Z)">
+                        <Button icon={<UndoOutlined/>} onClick={() => designerRef.current?.undo()}/>
+                    </Tooltip>
+                    <Tooltip title="重做 (Ctrl+Shift+Z)">
+                        <Button icon={<RedoOutlined/>} onClick={() => designerRef.current?.redo()}/>
+                    </Tooltip>
+                    <Divider orientation="vertical"/>
+                    <Tooltip title="缩小">
+                        <Button icon={<ZoomOutOutlined/>} onClick={() => designerRef.current?.zoomOut()}/>
+                    </Tooltip>
+                    <Tooltip title="放大">
+                        <Button icon={<ZoomInOutlined/>} onClick={() => designerRef.current?.zoomIn()}/>
+                    </Tooltip>
+                    <Tooltip title="删除选中（Del）">
+                        <Button
+                            icon={<DeleteOutlined/>}
+                            danger
+                            onClick={() => designerRef.current?.deleteSelected()}
+                        />
+                    </Tooltip>
                 </div>
                 <div className={styles.toolbarRight}>
                     <Button
                         icon={<DownloadOutlined/>}
-                        onClick={() => handleExportImage('png')}
+                        onClick={handleExportImage}
                     >
                         导出图片
                     </Button>
@@ -221,29 +224,27 @@ const ProcessDesigner: React.FC = () => {
             </div>
 
             {/* 流程设计器 */}
-            <div className={styles.designerContainer}>
-                <FlowDesigner
-                    // @ts-ignore
-                    ref={designerRef}
-                    processDefinitionId={processDefinitionId}
-                    initialData={graphData}
-                    readOnly={false}
-                />
-            </div>
+            <Spin spinning={loading} classNames={{root: styles.designerSpin}}>
+                <div className={styles.designerContainer}>
+                    <FlowDesigner
+                        ref={designerRef}
+                        processDefinitionId={processDefinitionId}
+                        initialData={graphData}
+                        readOnly={false}
+                        onNodeClick={handleOpenNodeProperties}
+                    />
+                </div>
+            </Spin>
 
             {/* 节点属性面板 */}
             <Drawer
                 title="节点属性"
                 placement="right"
-                size="large"
+                size="default"
                 onClose={() => setDrawerVisible(false)}
                 open={drawerVisible}
             >
-                <Form
-                    form={form}
-                    layout="vertical"
-                    onFinish={handleSaveNodeProperties}
-                >
+                <Form form={form} layout="vertical" onFinish={handleSaveNodeProperties}>
                     <Form.Item
                         label="节点名称"
                         name="name"
@@ -255,76 +256,67 @@ const ProcessDesigner: React.FC = () => {
                     <Form.Item
                         label="审批人类型"
                         name="approverType"
+                        extra="仅「指定人员」会写入流程定义；其余类型运行时走人工认领"
                     >
-                        <Select placeholder="请选择审批人类型">
-                            <Select.Option value="direct_leader">直属上级</Select.Option>
-                            <Select.Option value="specify_user">指定人员</Select.Option>
-                            <Select.Option value="role">角色</Select.Option>
-                            <Select.Option value="dept_leader">部门负责人</Select.Option>
-                        </Select>
+                        <Select options={approverOptions} placeholder="请选择审批人类型"/>
                     </Form.Item>
 
-                    <Form.Item
-                        label="指定审批人"
-                        name="approver"
-                    >
-                        <Select
-                            mode="multiple"
-                            placeholder="请选择审批人"
-                            allowClear
-                        />
-                    </Form.Item>
+                    {approverType === 'specify_user' && (
+                        <Form.Item
+                            label="审批人（用户名）"
+                            name="approver"
+                            extra="输入用户名后回车确认；多个逗号分隔，任一人通过即流转"
+                            rules={[{required: true, message: '至少填写一个审批人'}]}
+                        >
+                            <Select
+                                mode="tags"
+                                tokenSeparators={[',']}
+                                placeholder="如 admin"
+                                options={[{value: 'admin', label: 'admin'}]}
+                            />
+                        </Form.Item>
+                    )}
 
-                    <Form.Item
-                        label="多人审批方式"
-                        name="multipleApproval"
-                    >
+                    <Form.Item label="多人审批方式" name="multipleApproval">
                         <Radio.Group>
                             <Radio value="sequential">依次审批</Radio>
-                            <Radio value="parallel">会签（同时审批）</Radio>
-                            <Radio value="any">或签（任一人审批）</Radio>
+                            <Radio value="parallel">会签</Radio>
+                            <Radio value="any">或签</Radio>
                         </Radio.Group>
                     </Form.Item>
 
-                    <Form.Item
-                        label="允许转交"
-                        name="allowTransfer"
-                        valuePropName="checked"
-                    >
+                    <Form.Item label="允许转交" name="allowTransfer" valuePropName="checked">
                         <Radio.Group>
                             <Radio value={true}>是</Radio>
                             <Radio value={false}>否</Radio>
                         </Radio.Group>
                     </Form.Item>
 
-                    <Form.Item
-                        label="允许加签"
-                        name="allowAddSign"
-                        valuePropName="checked"
-                    >
+                    <Form.Item label="允许加签" name="allowAddSign" valuePropName="checked">
                         <Radio.Group>
                             <Radio value={true}>是</Radio>
                             <Radio value={false}>否</Radio>
                         </Radio.Group>
                     </Form.Item>
 
-                    <Form.Item
-                        label="节点说明"
-                        name="description"
-                    >
-                        <Input.TextArea
-                            rows={4}
-                            placeholder="请输入节点说明"
-                        />
+                    <Form.Item label="节点说明" name="description">
+                        <Input.TextArea rows={4} placeholder="请输入节点说明"/>
                     </Form.Item>
 
                     <Form.Item>
                         <Button type="primary" htmlType="submit" block>
-                            保存
+                            保存节点属性
                         </Button>
                     </Form.Item>
                 </Form>
             </Drawer>
+
+            <Alert
+                className={styles.deployHint}
+                type="info"
+                showIcon
+                title="设计稿保存后点「部署」才会生成新版本的流程定义；分支条件与会签/或签暂未落成 BPMN 语义，运行时按人工任务流转。"
+            />
         </div>
     );
 };
