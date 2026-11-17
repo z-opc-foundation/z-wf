@@ -41,10 +41,13 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.13.1",
-    "vite": "^6.2.6"
+    "vite": "^6.4.5"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
     "access": "public"
+  },
+  "overrides": {
+    "follow-redirects": "^1.16.2"
   }
 }
