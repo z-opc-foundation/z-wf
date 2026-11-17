@@ -4,12 +4,14 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfJob;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfProcessInstance;
+import com.zifang.z.wf.core.model.WfProcessStatus;
 import com.zifang.z.wf.core.model.WfTask;
 import com.zifang.z.wf.web.dto.WfViews;
 
@@ -44,7 +46,7 @@ public class WfViewMapper {
         view.setAssignee(task.getAssignee());
         view.setOwner(task.getOwner());
         view.setHandler(task.effectiveHandler());
-        view.setStatus(task.getStatus() == null ? null : task.getStatus().name());
+        view.setStatus(task.getStatus() == null ? null : task.getStatus().name().toLowerCase(Locale.ROOT));
         view.setPriority(task.getPriority());
         view.setCreateTime(time(task.getCreateTime()));
         view.setDueDate(time(task.getDueDate()));
@@ -90,6 +92,29 @@ public class WfViewMapper {
     }
 
     /**
+     * 实例状态按 z-camuda 前端词表输出：running / completed / suspended / terminated。
+     * （引擎枚举是 ACTIVE / COMPLETED / SUSPENDED / EXTERNALLY_TERMINATED / INTERNALLY_TERMINATED）
+     */
+    private static String toInstanceStatus(WfProcessStatus status) {
+        if (status == null) {
+            return null;
+        }
+        switch (status) {
+            case ACTIVE:
+                return "running";
+            case COMPLETED:
+                return "completed";
+            case SUSPENDED:
+                return "suspended";
+            case EXTERNALLY_TERMINATED:
+            case INTERNALLY_TERMINATED:
+                return "terminated";
+            default:
+                return status.name().toLowerCase(Locale.ROOT);
+        }
+    }
+
+    /**
      * 流程实例 → 摘要。
      */
     public WfViews.ProcessInstanceView toProcessView(WfProcessInstance instance) {
@@ -106,7 +131,7 @@ public class WfViewMapper {
         view.setStartUserId(instance.getStartUserId());
         view.setStartDeptId(instance.getStartDeptId());
         view.setCategory(instance.getCategory());
-        view.setStatus(instance.getStatus() == null ? null : instance.getStatus().name());
+        view.setStatus(toInstanceStatus(instance.getStatus()));
         view.setResult(instance.getResult());
         view.setStartTime(time(instance.getStartTime()));
         view.setEndTime(time(instance.getEndTime()));

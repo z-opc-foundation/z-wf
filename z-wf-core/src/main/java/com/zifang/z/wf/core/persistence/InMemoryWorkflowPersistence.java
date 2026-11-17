@@ -78,6 +78,9 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
     /** 补偿登记（第 37 轮）。键是登记 id，值是 {@link WfCompensationEntry}。 */
     private final Map<String, WfCompensationEntry> compensations = new ConcurrentHashMap<>();
 
+    /** 设计稿草图，key → LogicFlow 图 JSON（未发布草稿，覆盖式保存）。 */
+    private final Map<String, String> designGraphs = new ConcurrentHashMap<>();
+
     /** 批次（第 39 轮）。键是批次 id，值是 {@link WfBatch}。 */
     private final Map<String, WfBatch> batches = new ConcurrentHashMap<>();
 
@@ -996,9 +999,24 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
      * <p>顺序固定（不是按 Map 的迭代顺序）：自省接口的输出要能直接拿去 diff，
      * 顺序飘一次就让人以为"表变了"。
      */
+    @Override
+    public void saveDesignGraph(String key, String graph) {
+        designGraphs.put(key, graph);
+    }
+
+    @Override
+    public String findDesignGraph(String key) {
+        return designGraphs.get(key);
+    }
+
+    @Override
+    public List<String> findDesignedKeys() {
+        return new java.util.ArrayList<>(designGraphs.keySet());
+    }
+
     public static final List<String> STORAGE_NAMES = java.util.Collections.unmodifiableList(
             java.util.Arrays.asList(
-                    "ZWF_DEFINITION", "ZWF_PROCESS", "ZWF_EXECUTION", "ZWF_TASK",
+                    "ZWF_DEFINITION", "ZWF_DESIGN", "ZWF_PROCESS", "ZWF_EXECUTION", "ZWF_TASK",
                     "ZWF_JOB", "ZWF_ACTIVITY", "ZWF_COMMENT", "ZWF_FILTER",
                     "ZWF_DECISION", "ZWF_COMPENSATION", "ZWF_BATCH", "ZWF_BATCH_ELEMENT",
                     "ZWF_INCIDENT_HISTORY"));
@@ -1023,6 +1041,9 @@ public class InMemoryWorkflowPersistence implements WfPersistence {
                 total += versions.size();
             }
             return total;
+        }
+        if ("ZWF_DESIGN".equals(name)) {
+            return designGraphs.size();
         }
         if ("ZWF_PROCESS".equals(name)) {
             return processInstances.size();

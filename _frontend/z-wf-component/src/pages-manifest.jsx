@@ -18,7 +18,7 @@ export {default as TodoList} from './wf/pages/TodoList'
 export {default as ProcessList} from './wf/pages/ProcessList'
 export {default as ProcessDesigner} from './wf/pages/ProcessDesigner'
 import HomePage from './pages/HomePage'
-import WorkflowApp from './pages/WorkflowApp.jsx'
+import WorkflowApp from './wf/pages/WorkflowApp.jsx'
 import ComponentDocPage from './pages/ComponentDoc'
 
 /** 菜单 + 路由清单（lead 008 §10/§14/§16 批量落地）。App 壳在 suit 侧组装。 */

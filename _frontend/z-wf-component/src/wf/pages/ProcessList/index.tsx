@@ -178,7 +178,7 @@ const ProcessList: React.FC = () => {
                     <Button
                         type="primary"
                         size="small"
-                        onClick={() => navigate(`/z-wf/workflow/designer/${record.id}`)}
+                        onClick={() => navigate(`/workflow/designer/${record.id}`)}
                     >
                         设计
                     </Button>

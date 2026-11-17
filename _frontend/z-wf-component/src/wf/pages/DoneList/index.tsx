@@ -84,7 +84,7 @@ const DoneList: React.FC = () => {
                 <Space size="small">
                     <Button
                         type="link" size="small"
-                        onClick={() => navigate(`/z-wf/workflow/task/${record.id}`)}
+                        onClick={() => navigate(`/workflow/task/${record.taskId}`)}
                     >
                         查看
                     </Button>

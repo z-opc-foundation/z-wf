@@ -140,7 +140,7 @@ const TodoList: React.FC = () => {
                     <Button
                         type="primary"
                         size="small"
-                        onClick={() => navigate(`/z-wf/workflow/task/${record.id}`)}
+                        onClick={() => navigate(`/workflow/task/${record.taskId}`)}
                     >
                         审批
                     </Button>

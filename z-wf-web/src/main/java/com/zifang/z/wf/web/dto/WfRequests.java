@@ -185,6 +185,41 @@ public final class WfRequests {
         public void setVariables(Map<String, Object> variables) {
             this.variables = variables == null ? new HashMap<String, Object>() : variables;
         }
+
+        // ---- 兼容 z-camuda 的字段别名（前端仍发 processKey/initiator/title）----
+
+        /** 流程定义 key（z-camuda 侧叫 processKey，等价于 {@link #definitionKey}）。 */
+        private String processKey;
+
+        /** 发起人（z-camuda 侧叫 initiator，等价于 {@link #userId}）。 */
+        private String initiator;
+
+        /** 流程标题：z-camuda 前端发起表单必填；本引擎没有实例名参数，缺 businessKey 时兜底。 */
+        private String title;
+
+        public String getProcessKey() {
+            return processKey;
+        }
+
+        public void setProcessKey(String processKey) {
+            this.processKey = processKey;
+        }
+
+        public String getInitiator() {
+            return initiator;
+        }
+
+        public void setInitiator(String initiator) {
+            this.initiator = initiator;
+        }
+
+        public String getTitle() {
+            return title;
+        }
+
+        public void setTitle(String title) {
+            this.title = title;
+        }
     }
 
     /**
@@ -204,6 +239,17 @@ public final class WfRequests {
 
         /** 本次带入的变量（如 approved=false 会影响网关走向）。 */
         private Map<String, Object> variables = new HashMap<>();
+
+        /** 审批结论 approved/rejected —— z-camuda 前端只发这个 + comment，由兼容层并入 variables。 */
+        private String approvalResult;
+
+        public String getApprovalResult() {
+            return approvalResult;
+        }
+
+        public void setApprovalResult(String approvalResult) {
+            this.approvalResult = approvalResult;
+        }
 
         public String getTaskId() {
             return taskId;

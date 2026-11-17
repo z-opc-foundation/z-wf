@@ -151,7 +151,7 @@ class WfDdlDialectTest {
 
         try (Connection c = ds.getConnection()) {
             DatabaseMetaData md = c.getMetaData();
-            assertEquals(13, countTables(md), "应建出 13 张 ZWF_* 表");
+            assertEquals(14, countTables(md), "应建出 14 张 ZWF_* 表");
 
             // 索引必须真建出来（不是被 catch 吞掉的）
             assertTrue(indexExists(md, "ZWF_PROCESS", "IDX_WF_PROC_BIZKEY"),

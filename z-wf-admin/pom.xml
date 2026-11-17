@@ -28,7 +28,7 @@
     <properties>
         <!-- 与 ../pom.xml <revision> 同步：根仓升到 2.0.0 是因为 z-wf 坐标的 1.x 是 Camunda 版，
              本仓是自研引擎，属于破坏性大版本（详见根 pom 注释与 README 顶部）。 -->
-        <z-wf.version>2.0.0</z-wf.version>
+        <z-wf.version>2.0.1</z-wf.version>
         <!-- z-util 版本口径：本模块是 own-parent（parent = spring-boot-starter-parent），
              根仓 pom.xml 的 <z-util.version> 属性与 dependencyManagement 对本模块**完全不生效** ——
              own-parent 就没有那条父子继承链。兄弟仓版本只能靠 import fleet 拿权威，

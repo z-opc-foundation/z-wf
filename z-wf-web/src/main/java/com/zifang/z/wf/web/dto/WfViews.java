@@ -457,6 +457,23 @@ public final class WfViews {
         public void setOpenTaskCount(int openTaskCount) {
             this.openTaskCount = openTaskCount;
         }
+
+        /**
+         * 兼容 z-camuda 的 VO 字段名 {@code processName}：界面展示用，
+         * 空时回退业务键，避免「流程名称」列空着。
+         *
+         * <p>{@link #name} 保持引擎语义不动，这里只做派生别名。
+         */
+        public String getProcessName() {
+            return name != null && !name.trim().isEmpty() ? name : businessKey;
+        }
+
+        /**
+         * 兼容 z-camuda 的 VO 字段名 {@code initiator}：即发起人。
+         */
+        public String getInitiator() {
+            return startUserId;
+        }
     }
 
     /**
@@ -633,6 +650,9 @@ public final class WfViews {
         private int flowCount;
         private boolean suspended;
 
+        /** 等价于 {@code key:version}，供前端按 definitionId 定位（设计器路由用）。 */
+        private String id;
+
         public String getKey() {
             return key;
         }
@@ -695,6 +715,22 @@ public final class WfViews {
 
         public void setSuspended(boolean suspended) {
             this.suspended = suspended;
+        }
+
+        public String getId() {
+            return id != null ? id : (key == null ? null : key + ":" + version);
+        }
+
+        public void setId(String id) {
+            this.id = id;
+        }
+
+        /**
+         * 兼容 z-camuda 的 {@code status}（active/suspended）：
+         * 引擎只存 {@code suspended} 布尔，这里派生给前端状态徽标用。
+         */
+        public String getStatus() {
+            return suspended ? "suspended" : "active";
         }
     }
 

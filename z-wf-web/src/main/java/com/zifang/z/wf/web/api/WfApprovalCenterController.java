@@ -2,6 +2,7 @@ package com.zifang.z.wf.web.api;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import jakarta.annotation.Resource;
@@ -127,9 +128,25 @@ public class WfApprovalCenterController {
     @Operation(summary = "005_办理任务（审批通过/驳回）")
     public Result<WfViews.ProcessInstanceView> completeTask(
             @RequestBody WfRequests.CompleteTask request) {
+        String userId = request.getUserId();
+        if (userId == null || userId.trim().isEmpty()) {
+            // z-camuda 前端不发 userId，办结人就是任务 assignee
+            WfTask task = taskService.getTask(request.getTaskId());
+            if (task != null && task.getAssignee() != null) {
+                userId = task.getAssignee();
+            }
+        }
+        Map<String, Object> variables = request.getVariables();
+        String approval = request.getApprovalResult();
+        if (approval != null && !approval.trim().isEmpty()) {
+            // z-camuda 前端只发 approvalResult + comment：
+            // approvalResult 供网关条件 ${approvalResult==...} 判断；
+            // processResult 是本引擎结算实例 result 的变量名（WfEngine#completed）。
+            variables.put("approvalResult", approval.trim());
+            variables.put("processResult", approval.trim());
+        }
         WfProcessInstance instance = runtimeService.completeTask(
-                request.getTaskId(), request.getUserId(),
-                request.getComment(), request.getVariables());
+                request.getTaskId(), userId, request.getComment(), variables);
         return Result.success(viewMapper.toProcessView(instance));
     }
 
@@ -161,7 +178,7 @@ public class WfApprovalCenterController {
                 .setStartUserId(userId)
                 .setPageNum(pageNum).setPageSize(pageSize);
         if (status != null && !status.trim().isEmpty()) {
-            query.setStatus(WfProcessStatus.valueOf(status.trim()));
+            query.setStatus(parseStatus(status));
         }
         List<WfViews.ProcessInstanceView> views = viewMapper.toProcessViews(
                 runtimeService.queryProcessInstances(query));
@@ -189,9 +206,13 @@ public class WfApprovalCenterController {
     @PostMapping("/processes/start")
     @Operation(summary = "009_发起流程")
     public Result<String> startProcess(@RequestBody WfRequests.StartProcess request) {
+        String definitionKey = resolveDefinitionKey(request);
+        if (definitionKey == null) {
+            return Result.fail("definitionKey/processKey 不能为空");
+        }
         String processId = runtimeService.startProcessInstance(
-                request.getDefinitionKey(), request.getVersion(),
-                request.getBusinessKey(), request.getUserId(),
+                definitionKey, request.getVersion(),
+                resolveBusinessKey(request), resolveUserId(request),
                 request.getDeptId(), request.getVariables());
         if (processId == null) {
             return Result.fail("流程启动被钩子否决");
@@ -211,7 +232,7 @@ public class WfApprovalCenterController {
     @Operation(summary = "009b_按默认流程发起（不传 key）")
     public Result<String> startDefaultProcess(@RequestBody WfRequests.StartProcess request) {
         String processId = runtimeService.startDefaultProcessInstance(
-                request.getBusinessKey(), request.getUserId(),
+                resolveBusinessKey(request), resolveUserId(request),
                 request.getDeptId(), request.getVariables());
         if (processId == null) {
             return Result.fail("流程启动被钩子否决");
@@ -320,7 +341,7 @@ public class WfApprovalCenterController {
             query.setStartUserId(userId);
         }
         if (isNotBlank(status)) {
-            query.setStatus(WfProcessStatus.valueOf(status.trim()));
+            query.setStatus(parseStatus(status));
         }
         applyVariableConditions(query, variableName, variableValueEquals,
                 variableValueGreaterThan, variableValueLessThan,
@@ -454,5 +475,56 @@ public class WfApprovalCenterController {
 
     private boolean isNotBlank(String s) {
         return s != null && !s.trim().isEmpty();
+    }
+
+    /**
+     * z-camuda 前端发 {@code processKey}，本引擎原生收 {@code definitionKey}。
+     */
+    private static String resolveDefinitionKey(WfRequests.StartProcess request) {
+        String key = request.getDefinitionKey();
+        if (!isNotBlankStatic(key)) {
+            key = request.getProcessKey();
+        }
+        return isNotBlankStatic(key) ? key.trim() : null;
+    }
+
+    /**
+     * z-camuda 前端发 {@code initiator}，本引擎原生收 {@code userId}。
+     */
+    private static String resolveUserId(WfRequests.StartProcess request) {
+        String userId = request.getUserId();
+        if (!isNotBlankStatic(userId)) {
+            userId = request.getInitiator();
+        }
+        return isNotBlankStatic(userId) ? userId.trim() : null;
+    }
+
+    /**
+     * z-camuda 前端把标题放 {@code title}；本引擎实例名不落库，缺单号时用标题兜底，
+     * 让「流程名称」列有东西可看。
+     */
+    private static String resolveBusinessKey(WfRequests.StartProcess request) {
+        String businessKey = request.getBusinessKey();
+        if (!isNotBlankStatic(businessKey)) {
+            businessKey = request.getTitle();
+        }
+        return isNotBlankStatic(businessKey) ? businessKey.trim() : null;
+    }
+
+    private static boolean isNotBlankStatic(String s) {
+        return s != null && !s.trim().isEmpty();
+    }
+
+    /**
+     * 状态过滤接受前端词表（running/terminated）与引擎枚举名（ACTIVE/...）两种写法。
+     */
+    private static WfProcessStatus parseStatus(String status) {
+        if ("running".equalsIgnoreCase(status.trim())) {
+            return WfProcessStatus.ACTIVE;
+        }
+        if ("terminated".equalsIgnoreCase(status.trim())) {
+            return WfProcessStatus.EXTERNALLY_TERMINATED;
+        }
+        return WfProcessStatus.valueOf(status.trim().toUpperCase(Locale.ROOT));
     }
 }

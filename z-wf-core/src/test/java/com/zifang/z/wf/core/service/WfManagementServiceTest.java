@@ -66,7 +66,7 @@ class WfManagementServiceTest {
         assertTrue(String.valueOf(memory.get("storage")).contains("不落库"),
                 "内存存储要把「重启即失」写进返回值：这是排障时最先要确认的一条。实际: "
                         + memory.get("storage"));
-        assertEquals(13, memory.get("storageCount"));
+        assertEquals(14, memory.get("storageCount"));
 
         Map<String, Object> jdbc = propsOf(jdbcPersistence());
         assertEquals("jdbc", jdbc.get("persistence"));
@@ -301,9 +301,12 @@ class WfManagementServiceTest {
             incident.setFailureCount(1);
             memory.saveHistoricIncident(incident);
         }
+        for (int i = 1; i <= 14; i++) {                                               // 14
+            memory.saveDesignGraph("design-" + i, "{\"nodes\":[]}");
+        }
 
         Map<String, Long> expected = new java.util.LinkedHashMap<>();
-        // 1..13 各用一次。**必须真的互不相同** —— 两项数字一旦撞上，
+        // 1..14 各用一次。**必须真的互不相同** —— 两项数字一旦撞上，
         // 「串味了但数字恰好相同」这条失败就测不出来（这坑踩过：EXECUTION 与 JOB
         // 都曾是 2，DEFINITION 与 BATCH 都曾是 3，而注释里一直写着「互不相同」）
         expected.put("ZWF_PROCESS", 1L);
@@ -319,12 +322,13 @@ class WfManagementServiceTest {
         expected.put("ZWF_BATCH", 11L);
         expected.put("ZWF_BATCH_ELEMENT", 12L);
         expected.put("ZWF_INCIDENT_HISTORY", 13L);
+        expected.put("ZWF_DESIGN", 14L);
         assertEquals(expected.size(), new java.util.HashSet<>(expected.values()).size(),
                 "各项的条数必须互不相同，否则「串味了但数字恰好相同」测不出来。实际: "
                         + new java.util.TreeMap<>(expected));
         assertEquals(new java.util.TreeSet<>(expected.keySet()),
                 new java.util.TreeSet<>(InMemoryWorkflowPersistence.STORAGE_NAMES),
-                "这里造的十三项必须与存储项名单一一对应 —— 名单多一项或少一项，"
+                "这里造的十四项必须与存储项名单一一对应 —— 名单多一项或少一项，"
                         + "下面的断言就只覆盖了其中一部分。**比集合不比顺序**："
                         + "这里要验的是「覆盖完整」，不是「顺序一致」");
 
@@ -405,8 +409,8 @@ class WfManagementServiceTest {
         assertEquals(1, new WfManagementService(repo).getTableCount("ZWF_PROCESS"));
         Map<String, Object> properties = new WfManagementService(repo).getProperties();
         assertNotNull(properties.get("storageCount"));
-        assertEquals(13, properties.get("storageCount"),
-                "建完表之后应当报满十三张 —— 与「未迁移时报空」那条互为对照");
+        assertEquals(14, properties.get("storageCount"),
+                "建完表之后应当报满十四张 —— 与「未迁移时报空」那条互为对照");
     }
 
     /** 造一条成功的批次明细。<b>id 必须显式给</b>：saveBatchElement 少了 id 会直接抛，
@@ -430,7 +434,7 @@ class WfManagementServiceTest {
                     "名字 " + evil + " 绝不能被拼进 SQL");
         }
         // 确认表还在（上面那串没有造成任何影响）
-        assertEquals(13, service.getTables().size());
+        assertEquals(14, service.getTables().size());
     }
 
     @Test

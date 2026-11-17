@@ -1,4 +1,4 @@
-export {default as FlowDesigner} from './components/FlowDesigner'
+export {default as FlowDesigner} from './wf/components/FlowDesigner'
 // 4A 中心 / 流程中心 业务页面
 export {default as WorkflowDashboard} from './pages/Dashboard'
 export {default as TodoList} from './pages/TodoList'

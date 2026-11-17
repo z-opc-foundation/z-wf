@@ -152,7 +152,7 @@ const MyProcesses: React.FC = () => {
                     <Button
                         type="primary"
                         size="small"
-                        onClick={() => navigate(`/z-wf/workflow/process/${record.id}`)}
+                        onClick={() => navigate(`/workflow/process/${record.processInstanceId}`)}
                     >
                         详情
                     </Button>
@@ -186,7 +186,7 @@ const MyProcesses: React.FC = () => {
                 <ListTable
                     rows={data.records}
                     columns={columns}
-                    rowKey="id"
+                    rowKey="processInstanceId"
                     loading={loading}
                     pagination={{
                         current: data.pageNum,

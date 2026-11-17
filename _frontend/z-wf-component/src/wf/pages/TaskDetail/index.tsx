@@ -89,7 +89,7 @@ const TaskDetail: React.FC = () => {
                 formData: values.formData,
             });
             message.success('审批操作成功');
-            navigate('/z-wf/workflow/todo');
+            navigate('/workflow/todo');
         } catch (error) {
             console.error('审批操作失败:', error);
             message.error('审批操作失败');
@@ -187,7 +187,7 @@ const TaskDetail: React.FC = () => {
                     <div className={styles.leftPanel}>
                         <Descriptions title="任务信息" bordered column={1} className={styles.descriptions}>
                             <Descriptions.Item label="任务名称">{task.name}</Descriptions.Item>
-                            <Descriptions.Item label="任务ID">{task.id}</Descriptions.Item>
+                            <Descriptions.Item label="任务ID">{task.taskId}</Descriptions.Item>
                             <Descriptions.Item label="所属流程">{String(task.processDefinitionName)}</Descriptions.Item>
                             <Descriptions.Item label="流程实例ID">{task.processInstanceId}</Descriptions.Item>
                             <Descriptions.Item

@@ -591,6 +591,26 @@ public interface WfPersistence {
      */
     void clear();
 
+    // ==================== 设计稿草图 ====================
+
+    /**
+     * 保存某 key 的设计稿草图（LogicFlow 图 JSON，覆盖式）。
+     *
+     * <p>设计稿是<b>未发布</b>的流程草稿，与已部署的定义版本无关：
+     * 同 key 反复保存只保留最新一份，发布后再画也从头迭代。
+     */
+    void saveDesignGraph(String key, String graph);
+
+    /**
+     * 取某 key 的最新设计稿草图；没有返回 {@code null}。
+     */
+    String findDesignGraph(String key);
+
+    /**
+     * 已有设计稿草图的 key（去重、无序）。
+     */
+    List<String> findDesignedKeys();
+
     // ==================== 存储自省 ====================
 
     /**

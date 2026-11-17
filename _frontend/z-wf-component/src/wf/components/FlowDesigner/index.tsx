@@ -63,6 +63,24 @@ const FlowDesigner = forwardRef<FlowDesignerRef, FlowDesignerProps>(({
     const onNodeClickRef = useRef(onNodeClick);
     onNodeClickRef.current = onNodeClick;
 
+    // 后端 /model/graph 返回的 graph 是 JSON 字符串；历史设计稿的边 type 可能是 ""
+    // （LF2 按 type 查注册表查不到会静默不挂边），统一 parse + 兜成 polyline。
+    const normalizeData = (raw: any) => {
+        let data = raw;
+        if (typeof data === 'string') {
+            try {
+                data = JSON.parse(data);
+            } catch {
+                data = null;
+            }
+        }
+        if (!data || !data.nodes) return null;
+        if (Array.isArray(data.edges)) {
+            data.edges = data.edges.map((e: any) => ({...e, type: e.type || 'polyline'}));
+        }
+        return data;
+    };
+
     useImperativeHandle(ref, () => ({
         getGraphData: () => lfRef.current?.getGraphData() || null,
         exportImage: async () => {
@@ -117,7 +135,7 @@ const FlowDesigner = forwardRef<FlowDesignerRef, FlowDesignerProps>(({
             if (model) onNodeClickRef.current?.(model);
         });
 
-        lf.render(initialData || {
+        lf.render(normalizeData(initialData) || {
             nodes: [{id: 'start-1', type: 'start', x: 100, y: 300, text: '开始'}],
             edges: []
         });

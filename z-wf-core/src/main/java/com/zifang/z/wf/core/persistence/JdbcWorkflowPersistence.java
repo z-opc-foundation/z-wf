@@ -108,6 +108,10 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                 + "IS_DEFAULT INTEGER NOT NULL DEFAULT 0,"
                 + "PRIMARY KEY (DEF_KEY, DEF_VERSION))");
 
+        ddl.add("CREATE TABLE IF NOT EXISTS ZWF_DESIGN ("
+                + "DEF_KEY VARCHAR(128) NOT NULL PRIMARY KEY,"
+                + "GRAPH CLOB,"
+                + "UPDATED_AT TIMESTAMP)");
         ddl.add("CREATE TABLE IF NOT EXISTS ZWF_PROCESS ("
                 + "PROC_ID VARCHAR(128) NOT NULL,"
                 + "DEF_KEY VARCHAR(128),"
@@ -902,6 +906,91 @@ public class JdbcWorkflowPersistence implements WfPersistence {
         } finally {
             close(connection);
         }
+    }
+
+    // ==================== 设计稿草图 ====================
+
+    @Override
+    public void saveDesignGraph(String key, String graph) {
+        Connection connection = null;
+        try {
+            connection = dataSource.getConnection();
+            PreparedStatement del = connection.prepareStatement(
+                    "DELETE FROM ZWF_DESIGN WHERE DEF_KEY=?");
+            try {
+                del.setString(1, key);
+                del.executeUpdate();
+            } finally {
+                del.close();
+            }
+            PreparedStatement ps = connection.prepareStatement(
+                    "INSERT INTO ZWF_DESIGN (DEF_KEY, GRAPH, UPDATED_AT) VALUES (?,?,?)");
+            try {
+                ps.setString(1, key);
+                ps.setString(2, graph);
+                ps.setTimestamp(3, new Timestamp(System.currentTimeMillis()));
+                ps.executeUpdate();
+            } finally {
+                ps.close();
+            }
+        } catch (SQLException e) {
+            throw new WfPersistenceException("保存设计稿失败: " + key, e);
+        } finally {
+            close(connection);
+        }
+    }
+
+    @Override
+    public String findDesignGraph(String key) {
+        Connection connection = null;
+        try {
+            connection = dataSource.getConnection();
+            PreparedStatement ps = connection.prepareStatement(
+                    "SELECT GRAPH FROM ZWF_DESIGN WHERE DEF_KEY=?");
+            try {
+                ps.setString(1, key);
+                ResultSet rs = ps.executeQuery();
+                try {
+                    return rs.next() ? rs.getString(1) : null;
+                } finally {
+                    rs.close();
+                }
+            } finally {
+                ps.close();
+            }
+        } catch (SQLException e) {
+            throw new WfPersistenceException("读取设计稿失败: " + key, e);
+        } finally {
+            close(connection);
+        }
+    }
+
+    @Override
+    public List<String> findDesignedKeys() {
+        Connection connection = null;
+        List<String> keys = new ArrayList<>();
+        try {
+            connection = dataSource.getConnection();
+            PreparedStatement ps = connection.prepareStatement(
+                    "SELECT DEF_KEY FROM ZWF_DESIGN");
+            try {
+                ResultSet rs = ps.executeQuery();
+                try {
+                    while (rs.next()) {
+                        keys.add(rs.getString(1));
+                    }
+                } finally {
+                    rs.close();
+                }
+            } finally {
+                ps.close();
+            }
+        } catch (SQLException e) {
+            throw new WfPersistenceException("读取设计稿清单失败", e);
+        } finally {
+            close(connection);
+        }
+        return keys;
     }
 
     /**
@@ -2261,7 +2350,7 @@ public class JdbcWorkflowPersistence implements WfPersistence {
                     "ZWF_DEFINITION", "ZWF_PROCESS", "ZWF_EXECUTION", "ZWF_TASK",
                     "ZWF_JOB", "ZWF_ACTIVITY", "ZWF_COMMENT", "ZWF_FILTER",
                     "ZWF_DECISION", "ZWF_COMPENSATION", "ZWF_BATCH", "ZWF_BATCH_ELEMENT",
-                    "ZWF_INCIDENT_HISTORY"));
+                    "ZWF_INCIDENT_HISTORY", "ZWF_DESIGN"));
 
     /**
      * 表名清单，<b>从库里真查</b>而不是直接返回常量。

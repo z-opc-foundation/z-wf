@@ -47,6 +47,7 @@ public class WfJsonParser {
             {"user-task", "userTask"},
             {"userTask", "userTask"},
             {"approval", "userTask"},
+            {"copy", "userTask"},
             {"service-task", "serviceTask"},
             {"serviceTask", "serviceTask"},
             {"script-task", "scriptTask"},
@@ -61,6 +62,7 @@ public class WfJsonParser {
             {"exclusive-gateway", "exclusiveGateway"},
             {"exclusiveGateway", "exclusiveGateway"},
             {"branch", "exclusiveGateway"},
+            {"condition", "exclusiveGateway"},
             {"parallel", "parallelGateway"},
             {"parallel-gateway", "parallelGateway"},
             {"parallelGateway", "parallelGateway"},
@@ -297,7 +299,9 @@ public class WfJsonParser {
         if (node.getId() == null) {
             return null;
         }
-        node.setName(str(raw.get("name"), node.getId()));
+        // LogicFlow 的节点名在 text.value 里（{text:{value}}），与 name 字段两种写法都收
+        Map<String, Object> text = asMap(raw.get("text"));
+        node.setName(str(raw.get("name"), str(text == null ? null : text.get("value"), node.getId())));
         String rawType = str(raw.get("type"), "task");
         node.setType(resolveType(rawType));
         // 与 WfXmlParser 同一套标记：退化出来的 TASK 必须留下原名，
@@ -360,9 +364,11 @@ public class WfJsonParser {
         WfFlow flow = new WfFlow();
         flow.setId(str(raw.get("id"), null));
         flow.setName(str(raw.get("name"), null));
-        // sourceRef/targetRef 与 LogicFlow 的 source/target 两种写法都收
-        flow.setSourceRef(str(raw.get("sourceRef"), str(raw.get("source"), null)));
-        flow.setTargetRef(str(raw.get("targetRef"), str(raw.get("target"), null)));
+        // sourceRef/targetRef 与 LogicFlow 的 source/target、sourceNodeId/targetNodeId 三种写法都收
+        flow.setSourceRef(str(raw.get("sourceRef"), str(raw.get("source"),
+                str(raw.get("sourceNodeId"), null))));
+        flow.setTargetRef(str(raw.get("targetRef"), str(raw.get("target"),
+                str(raw.get("targetNodeId"), null))));
         if (flow.getSourceRef() == null || flow.getTargetRef() == null) {
             return null;
         }

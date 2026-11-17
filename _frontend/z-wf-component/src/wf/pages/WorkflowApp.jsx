@@ -17,7 +17,7 @@ export default function WorkflowIndex() {
             <Route path="done" element={<DoneList/>}/>
             <Route path="my-processes" element={<MyProcesses/>}/>
             <Route path="processes" element={<ProcessList/>}/>
-            <Route path="designer/:id" element={<ProcessDesigner/>}/>
+            <Route path="designer/:processDefinitionId" element={<ProcessDesigner/>}/>
             <Route path="process/:processInstanceId" element={<ProcessDetail/>}/>
             <Route path="task/:taskId" element={<TaskDetail/>}/>
         </Routes>

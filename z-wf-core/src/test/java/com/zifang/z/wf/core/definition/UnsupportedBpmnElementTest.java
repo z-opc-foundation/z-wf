@@ -312,6 +312,21 @@ class UnsupportedBpmnElementTest {
         }
 
         @Override
+        public void saveDesignGraph(String key, String graph) {
+            throw new AssertionError("校验没过就不该走到设计稿落库");
+        }
+
+        @Override
+        public String findDesignGraph(String key) {
+            return null;
+        }
+
+        @Override
+        public List<String> findDesignedKeys() {
+            return new java.util.ArrayList<>();
+        }
+
+        @Override
         public void saveProcessInstance(com.zifang.z.wf.core.model.WfProcessInstance i) {
         }
 

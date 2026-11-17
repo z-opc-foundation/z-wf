@@ -295,6 +295,27 @@ public class WfRepositoryService {
      *
      * @param suspended {@code null} 不限
      */
+    /**
+     * 保存某 key 的设计稿草图（LogicFlow 图 JSON，覆盖式）。
+     */
+    public void saveDesignGraph(String key, String graph) {
+        persistence.saveDesignGraph(key, graph);
+    }
+
+    /**
+     * 取某 key 的最新设计稿草图；没有返回 {@code null}。
+     */
+    public String findDesignGraph(String key) {
+        return persistence.findDesignGraph(key);
+    }
+
+    /**
+     * 已有设计稿草图的 key。
+     */
+    public List<String> findDesignedKeys() {
+        return persistence.findDesignedKeys();
+    }
+
     public List<WfDefinition> queryDefinitions(String keyLike, String nameLike, Boolean suspended) {
         return persistence.findDefinitions(keyLike, nameLike, suspended);
     }

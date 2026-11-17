@@ -123,7 +123,7 @@ const ProcessDetail: React.FC = () => {
 
     return (
         <div className={styles.container}>
-            <PageHeader title="流程详情" back={() => navigate('/wf/pages/ProcessList')}/>
+            <PageHeader title="流程详情" back={() => navigate('/workflow/my-processes')}/>
             <Card className={styles.card}>
                 <div className={styles.header}>
                     <div className={styles.headerActions}>
@@ -135,7 +135,7 @@ const ProcessDetail: React.FC = () => {
 
                 <Descriptions title="基本信息" bordered column={2} className={styles.descriptions}>
                     <Descriptions.Item label="流程名称">{process.processDefinitionName}</Descriptions.Item>
-                    <Descriptions.Item label="流程实例ID">{process.id}</Descriptions.Item>
+                    <Descriptions.Item label="流程实例ID">{process.processInstanceId}</Descriptions.Item>
                     <Descriptions.Item label="业务标识">{process.businessKey || '-'}</Descriptions.Item>
                     <Descriptions.Item label="状态">{getStatusTag(process.status)}</Descriptions.Item>
                     <Descriptions.Item label="发起人">{String(process.startUserName || '系统')}</Descriptions.Item>
