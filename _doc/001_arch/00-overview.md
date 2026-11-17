@@ -1,3 +1,5 @@
+<!-- 2026-11-17: z-camuda 已退役归档（GitHub archived=true，流程引擎功能由 z-wf-admin 兼容层承接）。本文提及 z-camuda 处均为历史/对照语义。 -->
+
 # 项目总览
 
 ## 1. 项目简介

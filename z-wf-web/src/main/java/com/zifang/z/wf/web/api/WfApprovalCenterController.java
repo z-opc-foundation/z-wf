@@ -1,6 +1,7 @@
 package com.zifang.z.wf.web.api;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -205,7 +206,7 @@ public class WfApprovalCenterController {
 
     @PostMapping("/processes/start")
     @Operation(summary = "009_发起流程")
-    public Result<String> startProcess(@RequestBody WfRequests.StartProcess request) {
+    public Result<Map<String, Object>> startProcess(@RequestBody WfRequests.StartProcess request) {
         String definitionKey = resolveDefinitionKey(request);
         if (definitionKey == null) {
             return Result.fail("definitionKey/processKey 不能为空");
@@ -217,7 +218,18 @@ public class WfApprovalCenterController {
         if (processId == null) {
             return Result.fail("流程启动被钩子否决");
         }
-        return Result.success(processId);
+        // ⚠ 这个端点的 data 必须是**对象**（含 processInstanceId），不能是裸字符串：
+        //   z-camuda 原版这里就是对象，兼容层要同形状。z-lc 的 CamudaAdapter 逐格读
+        //   data.processInstanceId（见它那行「信封只能逐格读」的注释）—— 拿到字符串时
+        //   它会落「data 不是一个对象」而把**已经发起来**的流程记成 FAILED
+        //   （2026-11-17 136 集群实测：引擎侧实例已建出，z-lc 账上却是 FAILED）。
+        //   z-wf 自己的前端（ProcessList 页面）同样按 result.processInstanceId 取值。
+        //   ⚠ 与下面两个 start 端点不一致是有意的：那两个是 z-wf **自研**端点
+        //   （按默认定义 / 按消息信号起），没有 z-camuda 侧的旧契约要承接，
+        //   它们的 data 仍是 processId 本身。
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("processInstanceId", processId);
+        return Result.success(data);
     }
 
     /**

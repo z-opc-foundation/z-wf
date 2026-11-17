@@ -79,10 +79,10 @@ class WfTaskManagementJdbcTest {
     }
 
     private String startOne(String definitionKey) {
-        String pid = (String) exchange(HttpMethod.POST, "/api/approval-center/processes/start",
+        String pid = (String) asMap(exchange(HttpMethod.POST, "/api/approval-center/processes/start",
                 body("definitionKey", definitionKey,
                         "businessKey", "TMQ-" + System.nanoTime(),
-                        "userId", "tmq-alice")).get("data");
+                        "userId", "tmq-alice")).get("data")).get("processInstanceId");
         assertNotNull(pid, "应返回流程实例 id");
         List<Map<String, Object>> open = asList(asMap(
                 exchange(HttpMethod.GET, "/api/wf/process/overview?processInstanceId=" + pid, null)

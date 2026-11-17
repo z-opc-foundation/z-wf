@@ -1,3 +1,5 @@
+<!-- 2026-11-17: z-camuda 已退役归档（GitHub archived=true，流程引擎功能由 z-wf-admin 兼容层承接）。本文提及 z-camuda 处均为历史/对照语义。 -->
+
 # z-wf — 自研流程引擎
 
 > [English](_doc/001_arch/02-readme-en.md) · [能力盘点：与 Camunda 7 的逐项对照](_doc/001_arch/01-capability-gap.md)

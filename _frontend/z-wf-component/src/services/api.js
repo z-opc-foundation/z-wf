@@ -1,5 +1,6 @@
 /**
- * z-camuda 审批中心 / 流程设计 的 API 客户端。
+ * z-wf 审批中心 / 流程设计 的 API 客户端（原 z-camuda 审批中心，2026-11-17 退役后由
+ * z-wf-admin 兼容层同路径同语义承接）。
  *
  * 2026-10-04 瘦身：原先本文件在 approvalApi / designerApi 之外，还挂着
  * 32 个 makeApi 产物（mcp / mock / naming / ops / oss / script / skill / agent /
@@ -43,14 +44,14 @@ export const approvalApi = {
 }
 
 /**
- * 流程设计 API — 对应 z-camuda 的 ProcessModelController
+ * 流程设计 API — 对应 z-wf-admin 兼容层的 WfModelCompatController（原 z-camuda 的 ProcessModelController）
  * (@RequestMapping("/api/approval-center/processes/model"))。
  *
  * 2026-10-04 新增。此前这里是 `makeApi('designer')`，那是个只有
  * list/page/get/create/update/delete 六个方法的通用垫壳，而页面调的是
  * getFlowGraph / saveFlowGraph / deployProcess / getApprovalHistory ——
  * 四个都不存在，点进 /workflow/designer/:id 必 TypeError。
- * z-camuda 侧同时补齐了对应的流程图端点（本次一起加的）。
+ * 兼容层侧同时补齐了对应的流程图端点（本次一起加的）。
  */
 export const designerApi = {
     /** 取设计稿，返回 LogicFlow 的 {nodes, edges} */

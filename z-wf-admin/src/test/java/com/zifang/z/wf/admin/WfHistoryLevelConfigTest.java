@@ -73,10 +73,10 @@ class WfHistoryLevelConfigTest {
 
     private String startOne() {
         WfDefinition definition = repositoryService.deploy(new WfXmlParser().parse(APPROVAL_BPMN));
-        String pid = (String) exchange(HttpMethod.POST, "/api/approval-center/processes/start",
+        String pid = (String) asMap(exchange(HttpMethod.POST, "/api/approval-center/processes/start",
                 body("definitionKey", "histLevelProcess",
                         "businessKey", "HL-" + System.nanoTime(),
-                        "userId", "hl-alice")).get("data");
+                        "userId", "hl-alice")).get("data")).get("processInstanceId");
         assertNotNull(pid, "应返回流程实例 id");
         return pid;
     }

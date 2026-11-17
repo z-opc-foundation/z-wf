@@ -1,3 +1,5 @@
+<!-- 2026-11-17: z-camuda is archived (GitHub archived=true; workflow engine duties taken over by the z-wf-admin compat layer). All z-camuda mentions below are historical/for comparison. -->
+
 # z-wf — A Self-Developed Workflow Engine
 
 > A BPMN workflow engine with **no third-party engine underneath** — no Camunda, no Flowable,

@@ -100,9 +100,9 @@ class WfProcessVariableQueryJdbcTest {
 
     /** 起一单并写变量；{@code values} 原样进 JSON —— 数字与字符串在这里分道扬镳。 */
     private String startWithAmount(String definitionKey, String businessKey, Object amount) {
-        String pid = (String) exchange(HttpMethod.POST, "/api/approval-center/processes/start",
+        String pid = (String) asMap(exchange(HttpMethod.POST, "/api/approval-center/processes/start",
                 body("definitionKey", definitionKey, "businessKey", businessKey,
-                        "userId", "alice")).get("data");
+                        "userId", "alice")).get("data")).get("processInstanceId");
         assertNotNull(pid, "应返回流程实例 id");
         exchange(HttpMethod.POST, "/api/wf/process/variables",
                 body("processInstanceId", pid, "userId", "alice",
@@ -111,9 +111,9 @@ class WfProcessVariableQueryJdbcTest {
     }
 
     private String startWithoutAmount(String definitionKey, String businessKey) {
-        return (String) exchange(HttpMethod.POST, "/api/approval-center/processes/start",
+        return (String) asMap(exchange(HttpMethod.POST, "/api/approval-center/processes/start",
                 body("definitionKey", definitionKey, "businessKey", businessKey,
-                        "userId", "alice")).get("data");
+                        "userId", "alice")).get("data")).get("processInstanceId");
     }
 
     // ==================== 一、JSON 文本列那侧 ====================

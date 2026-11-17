@@ -123,8 +123,8 @@ token 走 `Authorization: Bearer`（token 键 `zwf_token`），`unwrap` 把后�
   区分「已完成 / 进行中」，不编造审批动作。
 - `deleteProcessInstance` 的后端签名是 `@RequestParam String processInstanceId`，
   早期发 `?id=` 会 400。
-- 设计器保存与发布的路径挂在 `/approval-center/processes/model/**`，由 z-camuda 侧的
-  `ProcessModelController` 提供 —— 只挂 z-wf 而不挂 z-camuda 时这两个端点 404。
+- 设计器保存与发布的路径挂在 `/approval-center/processes/model/**`，由 z-wf-admin 兼容层的
+  `WfModelCompatController` 提供（原为 z-camuda 的 `ProcessModelController`，2026-11-17 退役后由兼容层同路径同语义承接）。
 
 ## 七、变更记录
 

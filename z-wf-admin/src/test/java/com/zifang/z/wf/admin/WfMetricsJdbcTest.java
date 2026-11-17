@@ -85,9 +85,9 @@ class WfMetricsJdbcTest {
     }
 
     private String startOne(String definitionKey, String businessKey) {
-        String pid = (String) exchange(HttpMethod.POST, "/api/approval-center/processes/start",
+        String pid = (String) asMap(exchange(HttpMethod.POST, "/api/approval-center/processes/start",
                 body("definitionKey", definitionKey, "businessKey", businessKey,
-                        "userId", "mtr-alice")).get("data");
+                        "userId", "mtr-alice")).get("data")).get("processInstanceId");
         assertNotNull(pid, "应返回流程实例 id");
         return pid;
     }

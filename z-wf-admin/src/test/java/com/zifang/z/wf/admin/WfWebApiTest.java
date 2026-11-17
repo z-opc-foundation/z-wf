@@ -101,7 +101,7 @@ class WfWebApiTest {
         Map<String, Object> start = postOk("/api/approval-center/processes/start",
                 body("definitionKey", "leaveProcess", "businessKey", businessKey,
                         "userId", "web-alice", "deptId", "d1", "variables", vars));
-        String processId = (String) start.get("data");
+        String processId = (String) asMap(start.get("data")).get("processInstanceId");
         assertNotNull(processId, "应返回流程实例 id");
 
         // 待办：分页结构 + VO 字段
@@ -255,7 +255,7 @@ class WfWebApiTest {
         Map<String, Object> started = postOk("/api/approval-center/processes/start",
                 body("definitionKey", "leaveProcess", "businessKey", "WEB-OPS-" + System.nanoTime(),
                         "userId", "ops-alice", "variables", vars));
-        String processId = (String) started.get("data");
+        String processId = (String) asMap(started.get("data")).get("processInstanceId");
 
         postOk("/api/wf/process/suspend",
                 body("processInstanceId", processId, "userId", "ops-admin", "reason", "等资料"));
@@ -288,9 +288,9 @@ class WfWebApiTest {
         String suffix = deployParallelProcess();
         String alice = "lp-a-" + suffix;
         String bob = "lp-b-" + suffix;
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "lpProcess", "businessKey", "WEB-LV-" + suffix,
-                        "userId", "alice")).get("data");
+                        "userId", "alice")).get("data")).get("processInstanceId");
 
         // 端点收 taskId 而不是 executionId：执行树是引擎内部结构，
         // 仓里有测试钉着「任务响应里不得出现 executionId」
@@ -338,9 +338,9 @@ class WfWebApiTest {
         String suffix = deployParallelProcess();
         String alice = "lp-a-" + suffix;
         String bob = "lp-b-" + suffix;
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "lpProcess", "businessKey", "WEB-VI-" + suffix,
-                        "userId", "alice")).get("data");
+                        "userId", "alice")).get("data")).get("processInstanceId");
         String taskA = openTaskOf(alice, processId).get("taskId").toString();
         String taskB = openTaskOf(bob, processId).get("taskId").toString();
 
@@ -443,9 +443,9 @@ class WfWebApiTest {
         String firstName = "flt" + tag + "-在途的单";
         String secondName = "flt" + tag + "-另一个";
         String user = "flt-alice-" + tag;
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "leaveProcess", "businessKey", "WEB-FLT-" + tag,
-                        "userId", user)).get("data");
+                        "userId", user)).get("data")).get("processInstanceId");
         assertNotNull(processId);
 
         Map<String, Object> created = asMap(postOk("/api/wf/filters",
@@ -753,9 +753,10 @@ class WfWebApiTest {
                 "报错要点名消息。实际: " + unknown.getBody());
 
         // 手工发起的那个入口仍然可用
-        String plain = (String) postOk("/api/approval-center/processes/start",
+        String plain = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webTwoEntryProcess", "businessKey", "WEB-PLAIN-" + suffix,
-                        "userId", "alice", "variables", body("amount", 500))).get("data");
+                        "userId", "alice", "variables", body("amount", 500))).get("data"))
+                .get("processInstanceId");
         assertEquals("checkAmount", firstOpenTaskNodeOf("finance-" + suffix, plain),
                 "加了消息起始之后手工发起不能被带偏");
     }
@@ -818,9 +819,9 @@ class WfWebApiTest {
     void incidentEndpointOverHttp() throws Exception {
         deployExternalProcess();
         String suffix = String.valueOf(System.nanoTime());
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webExternalProcess", "businessKey", "WEB-INC-" + suffix,
-                        "userId", "inc-owner-" + suffix)).get("data");
+                        "userId", "inc-owner-" + suffix)).get("data")).get("processInstanceId");
 
         // 前置条件：还没失败过时不该报故障 —— 否则这个端点等于永远有东西，没人再看
         assertEquals(0, count("/api/wf/incidents/count?processInstanceId=" + processId),
@@ -905,9 +906,9 @@ class WfWebApiTest {
         String leader = "mv-leader-" + tag;
         Map<String, Object> vars = new HashMap<>();
         vars.put("moveLeader", leader);
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webMoveProcess", "businessKey", tag,
-                        "userId", "mv-owner", "variables", vars)).get("data");
+                        "userId", "mv-owner", "variables", vars)).get("data")).get("processInstanceId");
 
         // 前置条件一：此刻只有两条订阅，一个待办都没有。
         // 这正是 move 存在的理由 —— jump 的入口是任务，没有任务就跳不动
@@ -969,9 +970,9 @@ class WfWebApiTest {
         Map<String, Object> vars = new HashMap<String, Object>();
         vars.put("days", 1);
         vars.put("leaderId", "audit-leader");
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "leaveProcess", "businessKey", businessKey,
-                        "userId", "audit-alice", "variables", vars)).get("data");
+                        "userId", "audit-alice", "variables", vars)).get("data")).get("processInstanceId");
 
         Map<String, Object> values = new LinkedHashMap<String, Object>();
         values.put("days", 5);
@@ -1025,7 +1026,7 @@ class WfWebApiTest {
 
         Map<String, Object> start = postOk("/api/approval-center/processes/start",
                 body("definitionKey", key, "businessKey", "DEL-BUS-1", "userId", "del-alice"));
-        String processId = (String) start.get("data");
+        String processId = (String) asMap(start.get("data")).get("processInstanceId");
         assertNotNull(processId);
 
         // 有在途实例时必须拒绝
@@ -1054,9 +1055,9 @@ class WfWebApiTest {
         Map<String, Object> vars = new HashMap<String, Object>();
         vars.put("days", 1);
         vars.put("leaderId", "cand-leader");
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "leaveProcess", "businessKey", businessKey,
-                        "userId", "cand-alice", "variables", vars)).get("data");
+                        "userId", "cand-alice", "variables", vars)).get("data")).get("processInstanceId");
 
         List<Map<String, Object>> todos = asList(asMap(
                 getOk("/api/approval-center/tasks/todo?userId=cand-leader")
@@ -1111,9 +1112,9 @@ class WfWebApiTest {
         Map<String, Object> vars = new HashMap<String, Object>();
         vars.put("days", 1);
         vars.put("leaderId", "susp-leader");
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "leaveProcess", "businessKey", businessKey,
-                        "userId", "susp-alice", "variables", vars)).get("data");
+                        "userId", "susp-alice", "variables", vars)).get("data")).get("processInstanceId");
 
         // 直属领导由 ${leaderId} 决定，先把待办取出来
         List<Map<String, Object>> todos = asList(asMap(
@@ -1298,7 +1299,7 @@ class WfWebApiTest {
         Map<String, Object> start = postOk("/api/approval-center/processes/start",
                 body("definitionKey", "leaveProcess", "businessKey", businessKey,
                         "userId", "var-alice", "variables", vars));
-        String processId = (String) start.get("data");
+        String processId = (String) asMap(start.get("data")).get("processInstanceId");
 
         // 启动时写入的变量读得到
         Map<String, Object> before = getOk("/api/wf/process/variables?processInstanceId=" + processId);
@@ -1359,7 +1360,7 @@ class WfWebApiTest {
         Map<String, Object> start = postOk("/api/approval-center/processes/start",
                 body("definitionKey", "leaveProcess", "businessKey", businessKey,
                         "userId", "varnull-alice", "variables", vars));
-        String processId = (String) start.get("data");
+        String processId = (String) asMap(start.get("data")).get("processInstanceId");
 
         Map<String, Object> values = new LinkedHashMap<String, Object>();
         values.put("days", null);
@@ -1479,7 +1480,7 @@ class WfWebApiTest {
         Map<String, Object> started = postOk("/api/approval-center/processes/start",
                 body("definitionKey", "leaveProcess", "businessKey", "WEB-TOK-" + System.nanoTime(),
                         "userId", "tok-alice", "variables", vars));
-        String processId = (String) started.get("data");
+        String processId = (String) asMap(started.get("data")).get("processInstanceId");
 
         List<Map<String, Object>> tokens = asList(
                 getOk("/api/wf/process/executions?processInstanceId=" + processId).get("data"));
@@ -1703,7 +1704,7 @@ class WfWebApiTest {
                 body("definitionKey", "webIncidentProcess-" + tag,
                         "businessKey", businessKey, "userId", "incident-alice",
                         "deptId", "d1", "variables", new HashMap<>()));
-        String pid = (String) start.get("data");
+        String pid = (String) asMap(start.get("data")).get("processInstanceId");
         assertNotNull(pid, "应返回流程实例 id");
 
         // 领 → fail，走真实的外部任务失败路径
@@ -1790,7 +1791,7 @@ class WfWebApiTest {
             Map<String, Object> start = postOk("/api/approval-center/processes/start",
                     body("definitionKey", key, "businessKey", "BATCH-" + tag + "-" + i,
                             "userId", "batch-alice", "deptId", "d1", "variables", new HashMap<>()));
-            ids.add((String) start.get("data"));
+            ids.add((String) asMap(start.get("data")).get("processInstanceId"));
         }
         assertEquals(2, ids.size());
 
@@ -2081,10 +2082,10 @@ class WfWebApiTest {
                 + "</definitions>\n";
         postOk("/api/wf/definitions/deploy", body("xml", bpmn, "key", key));
 
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", key, "businessKey", "BRT-" + System.nanoTime(),
                         "userId", "brt-alice", "deptId", "d1",
-                        "variables", body("amount", 60000))).get("data");
+                        "variables", body("amount", 60000))).get("data")).get("processInstanceId");
         assertNotNull(processId, "流程应当被启动");
 
         Map<String, Object> variables = asMap(getOk("/api/wf/process/variables?processInstanceId="
@@ -2103,9 +2104,9 @@ class WfWebApiTest {
         Map<String, Object> vars = new HashMap<>();
         vars.put("days", 1);
         vars.put("leaderId", "hist-leader-" + businessKey);
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "leaveProcess", "businessKey", businessKey,
-                        "userId", "hist-owner-" + businessKey, "variables", vars)).get("data");
+                        "userId", "hist-owner-" + businessKey, "variables", vars)).get("data")).get("processInstanceId");
 
         // 按流程实例查：在途流程只有起始那一行 ——
         // 活动历史是"离开节点时"才写的（一次节点访问一条），
@@ -2155,9 +2156,9 @@ class WfWebApiTest {
         Map<String, Object> vars = new HashMap<>();
         vars.put("days", 1);
         vars.put("leaderId", "hp-leader-" + businessKey);
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "leaveProcess", "businessKey", businessKey,
-                        "userId", owner, "variables", vars)).get("data");
+                        "userId", owner, "variables", vars)).get("data")).get("processInstanceId");
 
         // 查已结束：还没办结时应当查不到
         Map<String, Object> before = getOk("/api/wf/history/processes?businessKey=" + businessKey);
@@ -2188,9 +2189,9 @@ class WfWebApiTest {
         String businessKey = "WEB-JOB-" + System.nanoTime();
         Map<String, Object> vars = new HashMap<>();
         vars.put("sla", "PT30M");
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webTimerProcess", "businessKey", businessKey,
-                        "userId", "job-owner-" + businessKey, "variables", vars)).get("data");
+                        "userId", "job-owner-" + businessKey, "variables", vars)).get("data")).get("processInstanceId");
 
         Map<String, Object> listed = getOk("/api/wf/history/jobs?processInstanceId=" + processId);
         List<Map<String, Object>> jobs = asList(asMap(listed.get("data")).get("records"));
@@ -2223,9 +2224,9 @@ class WfWebApiTest {
         String tag = "WEB-JOBTRIG-" + System.nanoTime();
         Map<String, Object> vars = new HashMap<>();
         vars.put("sla", "PT30M");
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webTimerProcess", "businessKey", tag,
-                        "userId", "jobtrig-owner-" + tag, "variables", vars)).get("data");
+                        "userId", "jobtrig-owner-" + tag, "variables", vars)).get("data")).get("processInstanceId");
 
         // 前置：领办人真的有待办，且定时器还没到点（到了就不成其为「提前」）
         assertFalse(asList(asMap(getOk("/api/approval-center/tasks/todo?userId=web-timer-leader")
@@ -2271,9 +2272,9 @@ class WfWebApiTest {
         String tag = "WEB-JOBID-" + System.nanoTime();
         Map<String, Object> vars = new HashMap<>();
         vars.put("sla", "PT30M");
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webTimerProcess", "businessKey", tag,
-                        "userId", "jobid-owner-" + tag, "variables", vars)).get("data");
+                        "userId", "jobid-owner-" + tag, "variables", vars)).get("data")).get("processInstanceId");
 
         Map<String, Object> fromHistory = asList(asMap(getOk(
                 "/api/wf/history/jobs?processInstanceId=" + processId)
@@ -2339,9 +2340,9 @@ class WfWebApiTest {
         repositoryService.deploy(new com.zifang.z.wf.core.definition.WfXmlParser().parse(xml));
 
         String tag = "WEB-THR-" + System.nanoTime();
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", key, "businessKey", tag, "userId", "thr-owner-" + tag))
-                .get("data");
+                .get("data")).get("processInstanceId");
 
         postOk("/api/approval-center/tasks/complete", body("taskId", firstTodoId("th-legal"),
                 "userId", "th-legal", "comment", "法务同意"));
@@ -2380,9 +2381,9 @@ class WfWebApiTest {
         Map<String, Object> vars = new HashMap<>();
         vars.put("days", 1);
         vars.put("leaderId", "clean-open-leader-" + System.nanoTime());
-        String openId = (String) postOk("/api/approval-center/processes/start",
+        String openId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "leaveProcess", "businessKey", openKey,
-                        "userId", "clean-open-owner", "variables", vars)).get("data");
+                        "userId", "clean-open-owner", "variables", vars)).get("data")).get("processInstanceId");
 
         ResponseEntity<String> removed = exchange(HttpMethod.DELETE,
                 "/api/wf/history/cleanup?before=" + (System.currentTimeMillis() + 60_000L), null);
@@ -2407,10 +2408,10 @@ class WfWebApiTest {
         Map<String, Object> vars = new HashMap<>();
         vars.put("days", 1);
         vars.put("leaderId", leaderId);
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "leaveProcess", "businessKey", businessKey,
                         "userId", tag + "-owner-" + System.nanoTime(), "variables", vars))
-                .get("data");
+                .get("data")).get("processInstanceId");
         // 多级审批：一路办到底，否则流程没结束、算"在途"
         completeOne(leaderId);
         completeOne("hr");
@@ -2445,10 +2446,10 @@ class WfWebApiTest {
         String suffix = String.valueOf(System.nanoTime());
         String businessKey = "WEB-EXT-" + suffix;
 
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webExternalProcess", "businessKey", businessKey,
                         "userId", "ext-owner-" + suffix,
-                        "variables", body("orderNo", "EXT-" + suffix))).get("data");
+                        "variables", body("orderNo", "EXT-" + suffix))).get("data")).get("processInstanceId");
 
         // 1) 列表端点能查到这笔活，且 topic 过滤生效
         Map<String, Object> listed = getOk("/api/wf/external-tasks?topic=web.notify");
@@ -2521,9 +2522,9 @@ class WfWebApiTest {
     void externalTaskFailUnlocksOverHttp() throws Exception {
         deployExternalProcess();
         String suffix = String.valueOf(System.nanoTime());
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webExternalProcess", "businessKey", "WEB-EXTF-" + suffix,
-                        "userId", "extf-owner-" + suffix)).get("data");
+                        "userId", "extf-owner-" + suffix)).get("data")).get("processInstanceId");
 
         String worker = "web-wf-" + suffix;
         Map<String, Object> fetched = postOk("/api/wf/external-tasks/fetch",
@@ -2591,10 +2592,10 @@ class WfWebApiTest {
     void externalBpmnErrorOverHttp() throws Exception {
         String tag = String.valueOf(System.nanoTime());
         deployExternalErrorBoundaryProcess(tag);
-        String pid = (String) postOk("/api/approval-center/processes/start",
+        String pid = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webExternalErrorProcess-" + tag,
                         "businessKey", "EXT-ERR-" + tag, "userId", "err-owner-" + tag))
-                .get("data");
+                .get("data")).get("processInstanceId");
 
         String worker = "web-we-" + tag;
         List<Map<String, Object>> claimed = asList(postOk("/api/wf/external-tasks/fetch",
@@ -2656,10 +2657,10 @@ class WfWebApiTest {
     void externalBpmnErrorWithoutBoundaryTerminatesOverHttp() throws Exception {
         String tag = String.valueOf(System.nanoTime());
         deployExternalNoBoundaryProcess(tag);
-        String pid = (String) postOk("/api/approval-center/processes/start",
+        String pid = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webExternalNoBoundaryProcess-" + tag,
                         "businessKey", "EXT-NB-" + tag, "userId", "nb-owner-" + tag))
-                .get("data");
+                .get("data")).get("processInstanceId");
 
         String worker = "web-wnb-" + tag;
         List<Map<String, Object>> claimed = asList(postOk("/api/wf/external-tasks/fetch",
@@ -2694,10 +2695,10 @@ class WfWebApiTest {
     void externalBpmnErrorRejectsBadCallsOverHttp() throws Exception {
         String tag = String.valueOf(System.nanoTime());
         deployExternalErrorBoundaryProcess(tag);
-        String pid = (String) postOk("/api/approval-center/processes/start",
+        String pid = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webExternalErrorProcess-" + tag,
                         "businessKey", "EXT-BAD-" + tag, "userId", "bad-owner-" + tag))
-                .get("data");
+                .get("data")).get("processInstanceId");
 
         String worker = "web-wbad-" + tag;
         List<Map<String, Object>> claimed = asList(postOk("/api/wf/external-tasks/fetch",
@@ -2795,9 +2796,9 @@ class WfWebApiTest {
         String suffix = String.valueOf(System.nanoTime());
         String businessKey = "WEB-ASYNC-" + suffix;
 
-        String processId = (String) postOk("/api/approval-center/processes/start",
+        String processId = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webAsyncProcess", "businessKey", businessKey,
-                        "userId", "async-owner-" + suffix)).get("data");
+                        "userId", "async-owner-" + suffix)).get("data")).get("processInstanceId");
 
         // 1) 起流程即挂一个异步 job，且它是"异步前置"而不是定时器
         Map<String, Object> listed = getOk("/api/wf/history/jobs?processInstanceId=" + processId);
@@ -2935,9 +2936,9 @@ class WfWebApiTest {
     @DisplayName("订阅端点：在等消息的流程查得到等待状态，且总览里也带得出来")
     void subscriptionsOverHttp() throws Exception {
         postOk("/api/wf/definitions/deploy", body("key", "webSub", "xml", RACE_BPMN));
-        String pid = (String) postOk("/api/approval-center/processes/start",
+        String pid = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webSub", "businessKey", "SUB-1",
-                        "userId", "web-sub-alice")).get("data");
+                        "userId", "web-sub-alice")).get("data")).get("processInstanceId");
 
         // 排障现场最需要的一条信息：这条单子在等谁。
         // 它在待办列表里查不到（没有待办）、轨迹里也没动静、而且没有任何报错
@@ -2985,9 +2986,9 @@ class WfWebApiTest {
     @DisplayName("总览端点带出当前等待 —— 不用再开一个页面才能看出卡在哪")
     void overviewCarriesSubscriptionsOverHttp() throws Exception {
         postOk("/api/wf/definitions/deploy", body("key", "webSub2", "xml", RACE_BPMN));
-        String pid = (String) postOk("/api/approval-center/processes/start",
+        String pid = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webSub2", "businessKey", "SUB-2",
-                        "userId", "web-sub-bob")).get("data");
+                        "userId", "web-sub-bob")).get("data")).get("processInstanceId");
 
         Map<String, Object> overview = asMap(getOk(
                 "/api/wf/process/overview?processInstanceId=" + pid).get("data"));
@@ -3006,9 +3007,9 @@ class WfWebApiTest {
     void eventGatewayOverHttp() throws Exception {
         postOk("/api/wf/definitions/deploy", body("key", "webRace", "xml", RACE_BPMN));
         // start 端点的 data 是流程实例 id（裸字符串），不是视图对象
-        String pid = (String) postOk("/api/approval-center/processes/start",
+        String pid = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webRace", "businessKey", "RACE-1",
-                        "userId", "web-race-alice")).get("data");
+                        "userId", "web-race-alice")).get("data")).get("processInstanceId");
         assertNotNull(pid);
 
         // 等事件期间一条待办都不该有：中间捕获事件等的是消息，不是某个人
@@ -3048,12 +3049,12 @@ class WfWebApiTest {
         varsA.put("orderNo", tag + "-A");
         Map<String, Object> varsB = new HashMap<>();
         varsB.put("orderNo", tag + "-B");
-        String pidA = (String) postOk("/api/approval-center/processes/start",
+        String pidA = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webCorrelate", "businessKey", tag + "-A",
-                        "userId", "cor-alice", "variables", varsA)).get("data");
-        String pidB = (String) postOk("/api/approval-center/processes/start",
+                        "userId", "cor-alice", "variables", varsA)).get("data")).get("processInstanceId");
+        String pidB = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webCorrelate", "businessKey", tag + "-B",
-                        "userId", "cor-bob", "variables", varsB)).get("data");
+                        "userId", "cor-bob", "variables", varsB)).get("data")).get("processInstanceId");
 
         Map<String, Object> vars = new HashMap<>();
         vars.put("orderNo", tag + "-B");
@@ -3120,9 +3121,9 @@ class WfWebApiTest {
         String tag = "WEB-CORL-" + System.nanoTime();
         postOk("/api/wf/definitions/deploy", body("key", "webCorrelateLocal",
                 "xml", CORRELATE_PARALLEL_BPMN));
-        String pid = (String) postOk("/api/approval-center/processes/start",
+        String pid = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webCorrelateLocal", "businessKey", tag,
-                        "userId", "corl-alice")).get("data");
+                        "userId", "corl-alice")).get("data")).get("processInstanceId");
 
         // 前置条件：一个实例里有两条同名等待，不加条件必然报歧义
         List<Map<String, Object>> waiting = openTasksOf(pid);
@@ -3159,9 +3160,9 @@ class WfWebApiTest {
         String tag = "WEB-CORBK-" + System.nanoTime();
         postOk("/api/wf/definitions/deploy", body("key", "webCorrelateBk",
                 "xml", CORRELATE_RECEIVE_BPMN));
-        String pidA = (String) postOk("/api/approval-center/processes/start",
+        String pidA = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webCorrelateBk", "businessKey", tag + "-A",
-                        "userId", "bk-alice")).get("data");
+                        "userId", "bk-alice")).get("data")).get("processInstanceId");
         postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webCorrelateBk", "businessKey", tag + "-B",
                         "userId", "bk-bob")).get("data");
@@ -3205,12 +3206,12 @@ class WfWebApiTest {
         String tag = "WEB-CORPID-" + System.nanoTime();
         postOk("/api/wf/definitions/deploy", body("key", "webCorrelatePid",
                 "xml", CORRELATE_RECEIVE_BPMN));
-        String pidA = (String) postOk("/api/approval-center/processes/start",
+        String pidA = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webCorrelatePid", "businessKey", tag + "-A",
-                        "userId", "pid-alice")).get("data");
-        String pidB = (String) postOk("/api/approval-center/processes/start",
+                        "userId", "pid-alice")).get("data")).get("processInstanceId");
+        String pidB = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webCorrelatePid", "businessKey", tag + "-B",
-                        "userId", "pid-bob")).get("data");
+                        "userId", "pid-bob")).get("data")).get("processInstanceId");
 
         ResponseEntity<String> ambiguous = exchange(HttpMethod.POST,
                 "/api/wf/process/message/correlate",
@@ -3259,9 +3260,9 @@ class WfWebApiTest {
         // 部署期就该放行：此前这个元素不在解析表里，部署期会直接报「不支持」
         postOk("/api/wf/definitions/deploy", body("key", key, "xml", xml));
 
-        String pid = (String) postOk("/api/approval-center/processes/start",
+        String pid = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", key, "businessKey", "TERM-BUS-1", "userId", "term-alice"))
-                .get("data");
+                .get("data")).get("processInstanceId");
         assertEquals(2, openTasksOf(pid).size(), "两条并行分支各有一个待办");
 
         String slowTaskId = null;
@@ -3339,9 +3340,9 @@ class WfWebApiTest {
         String tag = "WEB-TREE-" + System.nanoTime();
         postOk("/api/wf/definitions/deploy", body("key", "webTree",
                 "xml", TREE_PARALLEL_BPMN));
-        String pid = (String) postOk("/api/approval-center/processes/start",
+        String pid = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webTree", "businessKey", tag, "userId", "tree-alice"))
-                .get("data");
+                .get("data")).get("processInstanceId");
 
         Map<String, Object> root = asMap(getOk(
                 "/api/wf/process/activity-instance?processInstanceId=" + pid).get("data"));
@@ -3381,9 +3382,9 @@ class WfWebApiTest {
         String tag = "WEB-TREE-OV-" + System.nanoTime();
         postOk("/api/wf/definitions/deploy", body("key", "webTreeOverview",
                 "xml", TREE_PARALLEL_BPMN));
-        String pid = (String) postOk("/api/approval-center/processes/start",
+        String pid = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webTreeOverview", "businessKey", tag,
-                        "userId", "tree-ov")).get("data");
+                        "userId", "tree-ov")).get("data")).get("processInstanceId");
 
         Map<String, Object> overview = asMap(getOk(
                 "/api/wf/process/overview?processInstanceId=" + pid).get("data"));
@@ -3508,9 +3509,9 @@ class WfWebApiTest {
     @DisplayName("令牌端点：按节点查得到，且 count 与列表口径一致")
     void executionsOverHttp() throws Exception {
         postOk("/api/wf/definitions/deploy", body("key", "webExec", "xml", NAME_SEQ_BPMN));
-        String pid = (String) postOk("/api/approval-center/processes/start",
+        String pid = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webExec", "businessKey", "EXEC-1",
-                        "userId", "web-exec-alice")).get("data");
+                        "userId", "web-exec-alice")).get("data")).get("processInstanceId");
 
         // 关键一问：**还不知道单子 id，只知道节点** 时能不能查
         Map<String, Object> byNode = asMap(getOk("/api/wf/executions?activityId=wnt1").get("data"));
@@ -3547,9 +3548,9 @@ class WfWebApiTest {
     @DisplayName("改名端点：改名后看得到，空白串报 400，实例不存在报 400")
     void setProcessInstanceNameOverHttp() throws Exception {
         postOk("/api/wf/definitions/deploy", body("key", "webRename", "xml", NAME_SEQ_BPMN));
-        String pid = (String) postOk("/api/approval-center/processes/start",
+        String pid = (String) asMap(postOk("/api/approval-center/processes/start",
                 body("definitionKey", "webRename", "businessKey", "RN-1",
-                        "userId", "web-rename-alice")).get("data");
+                        "userId", "web-rename-alice")).get("data")).get("processInstanceId");
 
         Map<String, Object> renamed = asMap(postOk("/api/wf/process/name",
                 body("processInstanceId", pid, "name", "张三的请假申请")).get("data"));
