@@ -16,7 +16,7 @@ z-wf 是 z-opc-foundation 的**自研 BPMN 流程引擎**。它**不依赖 Camun
 （87 个测试类）。
 
 **坐标与版本：** `io.github.yuku123:z-wf:${revision}`，根 POM `<revision>2.0.0</revision>`，
-`<parent>` 是 `io.github.yuku123:z-boot-parent:1.1.0`。**版本号是刻意的破坏性大版本 2.0.0** ——
+`<parent>` 是 `io.github.yuku123:z-boot-parent:1.2.4`。**版本号是刻意的破坏性大版本 2.0.0** ——
 Central 上 `io.github.yuku123:z-wf` 的 1.0.4 / 1.0.5 / 1.0.6 属于**另一个引擎**
 （Camunda 版，即改名前的 z-wf），1.x 与 2.x 是两套不同的实现。消费方必须写明 `2.x`
 并把 1.x 排除在版本区间外。
@@ -29,7 +29,7 @@ Central 上 `io.github.yuku123:z-wf` 的 1.0.4 / 1.0.5 / 1.0.6 属于**另一个
 
 ```
 z-wf/
-├── pom.xml                       # 聚合根：io.github.yuku123:z-wf:2.0.0，parent=z-boot-parent:1.1.0
+├── pom.xml                       # 聚合根：io.github.yuku123:z-wf:2.0.0，parent=z-boot-parent:1.2.4
 ├── Dockerfile                    # 多阶段：maven:3.9.9-eclipse-temurin-8 编译 → temurin 8 JRE 运行
 ├── docker-compose.yml            # 三服务：mysql + z-config(8848) + z-wf(8080)
 ├── CHANGELOG.md

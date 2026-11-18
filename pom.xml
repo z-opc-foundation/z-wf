@@ -12,7 +12,7 @@
     <parent>
         <groupId>io.github.yuku123</groupId>
         <artifactId>z-boot-parent</artifactId>
-        <version>1.2.3</version>
+        <version>1.2.4</version>
         <relativePath/>
     </parent>
 
@@ -86,7 +86,7 @@
 
         <!-- z-util 版本口径。
              坑：<b>只定义 z-util.version 属性是盖不住 import 进来的 BOM 的</b>。
-             z-boot-parent:1.0.21 引入 z-boot-fleet:1.0.1，而 fleet 的 dependencyManagement 里写的是
+             z-boot-parent:1.2.4 引入 z-boot-fleet:1.0.1，而 fleet 的 dependencyManagement 里写的是
              `${z-util.version}` —— import 进来的 BOM 是<b>用它自己 pom 的属性上下文</b>解析的
              （fleet 1.0.1 里该属性 = 1.0.14），消费方再定义同名属性不会生效。
              实测：属性写成 1.0.18 而 dependency:tree 仍显示 z-util-core:1.0.14。
@@ -317,7 +317,7 @@
                             <failOnWarnings>false</failOnWarnings>
                             <quiet>true</quiet>
                             <!-- Java 口径由 parent 的 pluginManagement / properties 下发
-                                 （z-boot-parent:1.1.0 里 maven.compiler.source=8） -->
+                                 （z-boot-parent:1.2.4 里 maven.compiler.source=8） -->
                             <source>${maven.compiler.source}</source>
                         </configuration>
                         <executions>
