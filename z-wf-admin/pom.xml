@@ -18,6 +18,7 @@
         <relativePath/>
     </parent>
 
+
     <groupId>io.github.yuku123</groupId>
     <artifactId>z-wf-admin</artifactId>
     <version>2.0.0</version>
@@ -26,6 +27,7 @@
     <description>z-wf 独立可启动应用 — 自研流程引擎 + 审批中心 REST。不发 Maven Central。 / Standalone App, NOT published to Central</description>
 
     <properties>
+        <z-meta.version>1.0.2</z-meta.version>
         <!-- 与 ../pom.xml <revision> 同步：根仓升到 2.0.0 是因为 z-wf 坐标的 1.x 是 Camunda 版，
              本仓是自研引擎，属于破坏性大版本（详见根 pom 注释与 README 顶部）。 -->
         <z-wf.version>2.0.1</z-wf.version>
@@ -254,9 +256,14 @@
     <dependency>
         <groupId>io.github.yuku123</groupId>
         <artifactId>z-ext-spring-boot-starter</artifactId>
-        <version>1.1.0</version>
+        <version>1.2.1</version>
 </dependency>
-    </dependencies>
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-meta-starter</artifactId>
+            <version>${z-meta.version}</version>
+        </dependency>
+</dependencies>
 
     <build>
         <plugins>
