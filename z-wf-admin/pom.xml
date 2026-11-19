@@ -246,6 +246,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-meta-api</artifactId>
+            <version>1.0.2</version>
+        </dependency>
     </dependencies>
 
     <build>

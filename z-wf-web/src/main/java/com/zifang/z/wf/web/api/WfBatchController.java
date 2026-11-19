@@ -1,13 +1,21 @@
 package com.zifang.z.wf.web.api;
 
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-
+import com.zifang.util.core.meta.Result;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.meta.api.annotation.BizField;
+import com.zifang.z.meta.api.annotation.BizParam;
+import com.zifang.z.wf.core.model.WfBatch;
+import com.zifang.z.wf.core.model.WfBatchCriteria;
+import com.zifang.z.wf.core.model.WfBatchElement;
+import com.zifang.z.wf.core.model.WfBatchOperation;
+import com.zifang.z.wf.core.persistence.WfBatchQuery;
+import com.zifang.z.wf.core.service.WfBatchService;
+import com.zifang.z.wf.core.service.WfEngineException;
+import com.zifang.z.wf.core.view.WfBatchView;
+import com.zifang.z.wf.web.dto.WfRequests;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
-
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -17,19 +25,11 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.zifang.util.core.meta.Result;
-import com.zifang.z.wf.core.model.WfBatch;
-import com.zifang.z.wf.core.model.WfBatchElement;
-import com.zifang.z.wf.core.model.WfBatchOperation;
-import com.zifang.z.wf.core.model.WfBatchCriteria;
-import com.zifang.z.wf.core.persistence.WfBatchQuery;
-import com.zifang.z.wf.core.service.WfBatchService;
-import com.zifang.z.wf.core.service.WfEngineException;
-import com.zifang.z.wf.core.view.WfBatchView;
-import com.zifang.z.wf.web.dto.WfRequests;
-
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 批量操作 Controller —— Camunda 的 {@code Batch}。
@@ -57,12 +57,18 @@ public class WfBatchController {
 
     @GetMapping
     @Operation(summary = "001_列批次（可按类型 / 状态 / 是否挂起 / 创建人筛）")
-    public Result<Map<String, Object>> list(@RequestParam(required = false) String batchType,
-                                            @RequestParam(required = false) String state,
-                                            @RequestParam(required = false) Boolean suspended,
-                                            @RequestParam(required = false) String operatorId,
-                                            @RequestParam(required = false) Integer pageNum,
-                                            @RequestParam(required = false) Integer pageSize) {
+    @BizApi(summary = "list", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> list(@RequestParam(required = false) @BizParam(name = "batchType", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String batchType,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "state", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String state,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "suspended", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) Boolean suspended,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "operatorId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String operatorId,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageNum,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageSize) {
         WfBatchQuery query = buildQuery(batchType, state, suspended, operatorId);
         if (pageNum != null) {
             query.setPageNum(pageNum);
@@ -82,7 +88,8 @@ public class WfBatchController {
 
     @GetMapping("/{batchId}")
     @Operation(summary = "002_取一个批次")
-    public Result<WfBatchView> get(@PathVariable String batchId) {
+    @BizApi(summary = "get", description = "", tags = { "z-wf" })
+    public Result<WfBatchView> get(@PathVariable @BizParam(name = "batchId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String batchId) {
         return Result.success(toView(requireBatch(batchId)));
     }
 
@@ -93,7 +100,8 @@ public class WfBatchController {
      */
     @GetMapping("/{batchId}/count")
     @Operation(summary = "003_看这批会命中多少个目标（只数，不改任何东西）")
-    public Result<Map<String, Object>> count(@PathVariable String batchId) {
+    @BizApi(summary = "count", description = "执行前的那一眼 ：现在跑这批会命中多少个目标。 只数不落，所以可以随便调。", tags = { "z-wf" })
+    public Result<Map<String, Object>> count(@PathVariable @BizParam(name = "batchId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String batchId) {
         requireBatch(batchId);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("count", batchService.countTargets(batchId));
@@ -102,9 +110,11 @@ public class WfBatchController {
 
     @GetMapping("/{batchId}/elements")
     @Operation(summary = "004_看这批处理了哪些目标（failedOnly=true 时只看失败的）")
+    @BizApi(summary = "elements", description = "", tags = { "z-wf" })
     public Result<WfBatchView.WfBatchElementList> elements(
-            @PathVariable String batchId,
-            @RequestParam(required = false, defaultValue = "false") boolean failedOnly) {
+            @PathVariable @BizParam(name = "batchId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String batchId,
+            @RequestParam(required = false, defaultValue = "false")
+            @BizParam(name = "failedOnly", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) boolean failedOnly) {
         requireBatch(batchId);
         List<WfBatchElement> rows = failedOnly
                 ? batchService.listFailedElements(batchId)
@@ -122,7 +132,8 @@ public class WfBatchController {
 
     @PostMapping
     @Operation(summary = "005_创建批次（**什么都不改**，只是把「改哪些」「改什么」记下来）")
-    public Result<WfBatchView> create(@RequestBody WfRequests.BatchOperation request) {
+    @BizApi(summary = "create", description = "", tags = { "z-wf" })
+    public Result<WfBatchView> create(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.BatchOperation request) {
         if (request == null) {
             throw new WfEngineException("请求体不能为空");
         }
@@ -134,29 +145,36 @@ public class WfBatchController {
 
     @PostMapping("/{batchId}/execute")
     @Operation(summary = "006_执行批次（逐个目标独立成败；批次不做二次执行）")
-    public Result<WfBatchView> execute(@PathVariable String batchId,
-                                        @RequestParam(required = false) Long now) {
+    @BizApi(summary = "execute", description = "", tags = { "z-wf" })
+    public Result<WfBatchView> execute(@PathVariable @BizParam(name = "batchId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String batchId,
+                                        @RequestParam(required = false)
+                                        @BizParam(name = "now", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long now) {
         return Result.success(toView(batchService.executeBatch(batchId,
                 now == null ? new Date() : new Date(now))));
     }
 
     @PostMapping("/{batchId}/suspend")
     @Operation(summary = "007_挂起批次（只对还没执行的批次有效）")
-    public Result<WfBatchView> suspend(@PathVariable String batchId,
-                                       @RequestParam(required = false) String operatorId) {
+    @BizApi(summary = "suspend", description = "", tags = { "z-wf" })
+    public Result<WfBatchView> suspend(@PathVariable @BizParam(name = "batchId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String batchId,
+                                       @RequestParam(required = false)
+                                       @BizParam(name = "operatorId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String operatorId) {
         return Result.success(toView(batchService.suspendBatch(batchId, operatorId)));
     }
 
     @PostMapping("/{batchId}/activate")
     @Operation(summary = "008_激活批次")
-    public Result<WfBatchView> activate(@PathVariable String batchId,
-                                        @RequestParam(required = false) String operatorId) {
+    @BizApi(summary = "activate", description = "", tags = { "z-wf" })
+    public Result<WfBatchView> activate(@PathVariable @BizParam(name = "batchId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String batchId,
+                                        @RequestParam(required = false)
+                                        @BizParam(name = "operatorId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String operatorId) {
         return Result.success(toView(batchService.activateBatch(batchId, operatorId)));
     }
 
     @DeleteMapping("/{batchId}")
     @Operation(summary = "009_删批次（连带删掉它的全部明细）")
-    public Result<Void> delete(@PathVariable String batchId) {
+    @BizApi(summary = "delete", description = "", tags = { "z-wf" })
+    public Result<Void> delete(@PathVariable @BizParam(name = "batchId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String batchId) {
         if (!batchService.deleteBatch(batchId)) {
             // 不静默返回成功：调用方以为删掉了、实际没删，下次列出来还在，
             // 而"我明明删了它"是排障时最难自己解释的一种现象
@@ -316,3 +334,4 @@ public class WfBatchController {
         return view;
     }
 }
+

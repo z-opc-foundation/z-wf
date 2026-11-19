@@ -1,26 +1,26 @@
 package com.zifang.z.wf.web.api;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
+import com.zifang.util.core.meta.Result;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.meta.api.annotation.BizField;
+import com.zifang.z.meta.api.annotation.BizParam;
+import com.zifang.z.wf.core.persistence.WfVariableInstanceQuery;
+import com.zifang.z.wf.core.service.WfEngineException;
+import com.zifang.z.wf.core.service.WfVariableQueryService;
+import com.zifang.z.wf.core.view.WfVariableInstanceView;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
-
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.zifang.util.core.meta.Result;
-import com.zifang.z.wf.core.persistence.WfVariableInstanceQuery;
-import com.zifang.z.wf.core.service.WfEngineException;
-import com.zifang.z.wf.core.service.WfVariableQueryService;
-import com.zifang.z.wf.core.view.WfVariableInstanceView;
-
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 变量实例查询 Controller —— 「某个变量挂在哪一级作用域上、值是多少」。
@@ -56,18 +56,30 @@ public class WfVariableController {
 
     @GetMapping
     @Operation(summary = "001_查变量实例：每个变量挂在哪一级作用域上、值是多少")
+    @BizApi(summary = "list", description = "", tags = { "z-wf" })
     public Result<Map<String, Object>> list(
-            @RequestParam(required = false) String processInstanceId,
-            @RequestParam(required = false) String executionId,
-            @RequestParam(required = false) String taskId,
-            @RequestParam(required = false) String name,
-            @RequestParam(required = false) String nameLike,
-            @RequestParam(required = false) String valueEquals,
-            @RequestParam(required = false) String scope,
-            @RequestParam(required = false) Boolean openTasksOnly,
-            @RequestParam(required = false) Boolean includeEngineInternal,
-            @RequestParam(required = false) Integer pageNum,
-            @RequestParam(required = false) Integer pageSize) {
+            @RequestParam(required = false)
+            @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+            @RequestParam(required = false)
+            @BizParam(name = "executionId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String executionId,
+            @RequestParam(required = false)
+            @BizParam(name = "taskId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String taskId,
+            @RequestParam(required = false)
+            @BizParam(name = "name", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String name,
+            @RequestParam(required = false)
+            @BizParam(name = "nameLike", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String nameLike,
+            @RequestParam(required = false)
+            @BizParam(name = "valueEquals", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String valueEquals,
+            @RequestParam(required = false)
+            @BizParam(name = "scope", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String scope,
+            @RequestParam(required = false)
+            @BizParam(name = "openTasksOnly", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) Boolean openTasksOnly,
+            @RequestParam(required = false)
+            @BizParam(name = "includeEngineInternal", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) Boolean includeEngineInternal,
+            @RequestParam(required = false)
+            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageNum,
+            @RequestParam(required = false)
+            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageSize) {
         WfVariableInstanceQuery query = buildQuery(processInstanceId, executionId, taskId,
                 name, nameLike, valueEquals, scope, openTasksOnly, includeEngineInternal);
         if (pageNum != null) {
@@ -82,15 +94,24 @@ public class WfVariableController {
 
     @GetMapping("/count")
     @Operation(summary = "002_只取总数：接监控打点用，比拉全量列表便宜得多")
-    public Result<Map<String, Object>> count(@RequestParam(required = false) String processInstanceId,
-                                             @RequestParam(required = false) String executionId,
-                                             @RequestParam(required = false) String taskId,
-                                             @RequestParam(required = false) String name,
-                                             @RequestParam(required = false) String nameLike,
-                                             @RequestParam(required = false) String valueEquals,
-                                             @RequestParam(required = false) String scope,
-                                             @RequestParam(required = false) Boolean openTasksOnly,
-                                             @RequestParam(required = false) Boolean includeEngineInternal) {
+    @BizApi(summary = "count", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> count(@RequestParam(required = false) @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "executionId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String executionId,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "taskId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String taskId,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "name", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String name,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "nameLike", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String nameLike,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "valueEquals", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String valueEquals,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "scope", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String scope,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "openTasksOnly", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) Boolean openTasksOnly,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "includeEngineInternal", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) Boolean includeEngineInternal) {
         WfVariableInstanceQuery query = buildQuery(processInstanceId, executionId, taskId,
                 name, nameLike, valueEquals, scope, openTasksOnly, includeEngineInternal);
         Map<String, Object> payload = new HashMap<>();
@@ -168,3 +189,6 @@ public class WfVariableController {
         return payload;
     }
 }
+
+
+

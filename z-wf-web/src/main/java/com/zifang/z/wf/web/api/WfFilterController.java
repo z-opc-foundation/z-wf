@@ -1,11 +1,19 @@
 package com.zifang.z.wf.web.api;
 
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.Map;
-
+import com.zifang.util.core.meta.Result;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.meta.api.annotation.BizField;
+import com.zifang.z.meta.api.annotation.BizParam;
+import com.zifang.z.wf.core.model.WfFilter;
+import com.zifang.z.wf.core.model.WfFilterType;
+import com.zifang.z.wf.core.persistence.WfFilterQuery;
+import com.zifang.z.wf.core.service.WfEngineException;
+import com.zifang.z.wf.core.service.WfFilterService;
+import com.zifang.z.wf.core.view.WfFilterResult;
+import com.zifang.z.wf.web.dto.WfRequests;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
-
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -16,17 +24,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.zifang.util.core.meta.Result;
-import com.zifang.z.wf.core.model.WfFilter;
-import com.zifang.z.wf.core.model.WfFilterType;
-import com.zifang.z.wf.core.persistence.WfFilterQuery;
-import com.zifang.z.wf.core.service.WfEngineException;
-import com.zifang.z.wf.core.service.WfFilterService;
-import com.zifang.z.wf.core.view.WfFilterResult;
-import com.zifang.z.wf.web.dto.WfRequests;
-
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * 保存筛选器 Controller —— 把一组查询条件存起来，反复用、大家共用。
@@ -54,12 +54,18 @@ public class WfFilterController {
 
     @GetMapping
     @Operation(summary = "001_列筛选器（可按名字 / 类型 / 创建人筛）")
-    public Result<Map<String, Object>> list(@RequestParam(required = false) String name,
-                                            @RequestParam(required = false) String nameLike,
-                                            @RequestParam(required = false) String resourceType,
-                                            @RequestParam(required = false) String owner,
-                                            @RequestParam(required = false) Integer pageNum,
-                                            @RequestParam(required = false) Integer pageSize) {
+    @BizApi(summary = "list", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> list(@RequestParam(required = false) @BizParam(name = "name", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String name,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "nameLike", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String nameLike,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "resourceType", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String resourceType,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "owner", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String owner,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageNum,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageSize) {
         WfFilterQuery query = buildQuery(name, nameLike, resourceType, owner);
         if (pageNum != null) {
             query.setPageNum(pageNum);
@@ -73,10 +79,14 @@ public class WfFilterController {
 
     @GetMapping("/count")
     @Operation(summary = "002_只取总数")
-    public Result<Map<String, Object>> count(@RequestParam(required = false) String name,
-                                             @RequestParam(required = false) String nameLike,
-                                             @RequestParam(required = false) String resourceType,
-                                             @RequestParam(required = false) String owner) {
+    @BizApi(summary = "count", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> count(@RequestParam(required = false) @BizParam(name = "name", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String name,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "nameLike", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String nameLike,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "resourceType", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String resourceType,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "owner", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String owner) {
         Map<String, Object> payload = new HashMap<>();
         payload.put("count", filterService.countFilters(
                 buildQuery(name, nameLike, resourceType, owner)));
@@ -85,13 +95,15 @@ public class WfFilterController {
 
     @GetMapping("/{filterId}")
     @Operation(summary = "003_取一张筛选器")
-    public Result<Map<String, Object>> get(@PathVariable String filterId) {
+    @BizApi(summary = "get", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> get(@PathVariable @BizParam(name = "filterId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String filterId) {
         return Result.success(toView(filterService.getFilter(filterId)));
     }
 
     @PostMapping
     @Operation(summary = "004_新建筛选器（条件当场验能不能用，存不进去的直接报错）")
-    public Result<Map<String, Object>> create(@RequestBody WfRequests.FilterOperation request) {
+    @BizApi(summary = "create", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> create(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.FilterOperation request) {
         return Result.success(toView(filterService.createFilter(
                 requireName(request), WfFilterType.parse(requireType(request)),
                 request == null ? null : request.getOwner(),
@@ -100,8 +112,9 @@ public class WfFilterController {
 
     @PutMapping("/{filterId}")
     @Operation(summary = "005_改筛选器（类型不可改：请求里的 resourceType 会被忽略，保持库里那份）")
-    public Result<Map<String, Object>> update(@PathVariable String filterId,
-                                              @RequestBody WfRequests.FilterOperation request) {
+    @BizApi(summary = "update", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> update(@PathVariable @BizParam(name = "filterId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String filterId,
+                                              @RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.FilterOperation request) {
         WfFilter existing = filterService.getFilter(filterId);
         WfFilter target = new WfFilter();
         target.setId(filterId);
@@ -121,16 +134,20 @@ public class WfFilterController {
 
     @DeleteMapping("/{filterId}")
     @Operation(summary = "006_删筛选器（不存在就报错，不静默返回成功）")
-    public Result<Void> delete(@PathVariable String filterId) {
+    @BizApi(summary = "delete", description = "", tags = { "z-wf" })
+    public Result<Void> delete(@PathVariable @BizParam(name = "filterId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String filterId) {
         filterService.deleteFilter(filterId);
         return Result.success();
     }
 
     @GetMapping("/{filterId}/results")
     @Operation(summary = "007_跑这张筛选器：按它自己的类型返回任务 / 实例 / 故障")
-    public Result<WfFilterResult> results(@PathVariable String filterId,
-                                          @RequestParam(required = false) Integer pageNum,
-                                          @RequestParam(required = false) Integer pageSize) {
+    @BizApi(summary = "results", description = "", tags = { "z-wf" })
+    public Result<WfFilterResult> results(@PathVariable @BizParam(name = "filterId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String filterId,
+                                          @RequestParam(required = false)
+                                          @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageNum,
+                                          @RequestParam(required = false)
+                                          @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageSize) {
         return Result.success(filterService.run(filterId,
                 pageNum == null ? 1 : pageNum, pageSize == null ? 20 : pageSize));
     }
@@ -247,3 +264,6 @@ public class WfFilterController {
         return view;
     }
 }
+
+
+

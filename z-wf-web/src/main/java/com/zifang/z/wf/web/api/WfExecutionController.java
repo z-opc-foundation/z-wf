@@ -1,26 +1,26 @@
 package com.zifang.z.wf.web.api;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
+import com.zifang.util.core.meta.Result;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.meta.api.annotation.BizField;
+import com.zifang.z.meta.api.annotation.BizParam;
+import com.zifang.z.wf.core.model.WfExecution;
+import com.zifang.z.wf.core.persistence.WfExecutionQuery;
+import com.zifang.z.wf.core.service.WfEngineException;
+import com.zifang.z.wf.core.service.WfExecutionQueryService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
-
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.zifang.util.core.meta.Result;
-import com.zifang.z.wf.core.model.WfExecution;
-import com.zifang.z.wf.core.persistence.WfExecutionQuery;
-import com.zifang.z.wf.core.service.WfEngineException;
-import com.zifang.z.wf.core.service.WfExecutionQueryService;
-
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 执行令牌查询 Controller —— 「哪条 token 停在哪」。
@@ -50,14 +50,22 @@ public class WfExecutionController {
 
     @GetMapping
     @Operation(summary = "001_查令牌：按流程实例 / 节点 / 状态 / 变量查它停在哪")
-    public Result<Map<String, Object>> list(@RequestParam(required = false) String processInstanceId,
-                                            @RequestParam(required = false) String activityId,
-                                            @RequestParam(required = false) String state,
-                                            @RequestParam(required = false) String variableName,
-                                            @RequestParam(required = false) String variableValue,
-                                            @RequestParam(required = false) Boolean unfinishedOnly,
-                                            @RequestParam(required = false) Integer pageNum,
-                                            @RequestParam(required = false) Integer pageSize) {
+    @BizApi(summary = "list", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> list(@RequestParam(required = false) @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "activityId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String activityId,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "state", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String state,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "variableName", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String variableName,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "variableValue", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String variableValue,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "unfinishedOnly", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) Boolean unfinishedOnly,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageNum,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageSize) {
         WfExecutionQuery query = new WfExecutionQuery()
                 .setProcessInstanceId(processInstanceId)
                 .setActivityId(activityId)
@@ -81,11 +89,16 @@ public class WfExecutionController {
 
     @GetMapping("/count")
     @Operation(summary = "002_只取总数：接监控打点用，比拉全量列表便宜得多")
-    public Result<Map<String, Object>> count(@RequestParam(required = false) String processInstanceId,
-                                             @RequestParam(required = false) String activityId,
-                                             @RequestParam(required = false) String state,
-                                             @RequestParam(required = false) String variableName,
-                                             @RequestParam(required = false) String variableValue) {
+    @BizApi(summary = "count", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> count(@RequestParam(required = false) @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "activityId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String activityId,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "state", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String state,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "variableName", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String variableName,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "variableValue", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String variableValue) {
         WfExecutionQuery query = new WfExecutionQuery()
                 .setProcessInstanceId(processInstanceId)
                 .setActivityId(activityId)
@@ -138,3 +151,6 @@ public class WfExecutionController {
         return payload;
     }
 }
+
+
+

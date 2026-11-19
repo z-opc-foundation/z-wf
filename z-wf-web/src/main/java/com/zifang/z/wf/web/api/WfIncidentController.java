@@ -1,28 +1,28 @@
 package com.zifang.z.wf.web.api;
 
+import com.zifang.util.core.meta.Result;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.meta.api.annotation.BizField;
+import com.zifang.z.meta.api.annotation.BizParam;
+import com.zifang.z.wf.core.model.WfJobType;
+import com.zifang.z.wf.core.persistence.WfIncidentQuery;
+import com.zifang.z.wf.core.service.WfEngineException;
+import com.zifang.z.wf.core.service.WfIncidentService;
+import com.zifang.z.wf.core.view.WfIncidentView;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.annotation.Resource;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
-import jakarta.annotation.Resource;
-
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
-
-import com.zifang.util.core.meta.Result;
-import com.zifang.z.wf.core.model.WfJobType;
-import com.zifang.z.wf.core.persistence.WfIncidentQuery;
-import com.zifang.z.wf.core.service.WfEngineException;
-import com.zifang.z.wf.core.service.WfIncidentService;
-import com.zifang.z.wf.core.view.WfIncidentView;
-
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
 
 /**
  * 运行期故障查询 Controller —— "哪些事情没干成，而且正在为此付出代价"。
@@ -53,16 +53,26 @@ public class WfIncidentController {
 
     @GetMapping
     @Operation(summary = "001_查故障：哪些 job 失败了、重试还剩几次、报的是什么错")
+    @BizApi(summary = "list", description = "", tags = { "z-wf" })
     public Result<Map<String, Object>> list(
-            @RequestParam(required = false) String processInstanceId,
-            @RequestParam(required = false) String definitionKey,
-            @RequestParam(required = false) String type,
-            @RequestParam(required = false) String activityId,
-            @RequestParam(required = false) Boolean retriesExhausted,
-            @RequestParam(required = false) Long failedBefore,
-            @RequestParam(required = false) String errorMessageContains,
-            @RequestParam(required = false) Integer pageNum,
-            @RequestParam(required = false) Integer pageSize) {
+            @RequestParam(required = false)
+            @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+            @RequestParam(required = false)
+            @BizParam(name = "definitionKey", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String definitionKey,
+            @RequestParam(required = false)
+            @BizParam(name = "type", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String type,
+            @RequestParam(required = false)
+            @BizParam(name = "activityId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String activityId,
+            @RequestParam(required = false)
+            @BizParam(name = "retriesExhausted", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) Boolean retriesExhausted,
+            @RequestParam(required = false)
+            @BizParam(name = "failedBefore", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long failedBefore,
+            @RequestParam(required = false)
+            @BizParam(name = "errorMessageContains", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String errorMessageContains,
+            @RequestParam(required = false)
+            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageNum,
+            @RequestParam(required = false)
+            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageSize) {
         WfIncidentQuery query = new WfIncidentQuery()
                 .setProcessInstanceId(processInstanceId)
                 .setDefinitionKey(definitionKey)
@@ -89,10 +99,14 @@ public class WfIncidentController {
 
     @GetMapping("/count")
     @Operation(summary = "002_只取总数：接监控打点用，比拉全量列表便宜得多")
-    public Result<Map<String, Object>> count(@RequestParam(required = false) String processInstanceId,
-                                             @RequestParam(required = false) String definitionKey,
-                                             @RequestParam(required = false) String type,
-                                             @RequestParam(required = false) Boolean retriesExhausted) {
+    @BizApi(summary = "count", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> count(@RequestParam(required = false) @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "definitionKey", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String definitionKey,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "type", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String type,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "retriesExhausted", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) Boolean retriesExhausted) {
         WfIncidentQuery query = new WfIncidentQuery()
                 .setProcessInstanceId(processInstanceId)
                 .setDefinitionKey(definitionKey)
@@ -143,3 +157,4 @@ public class WfIncidentController {
         return payload;
     }
 }
+

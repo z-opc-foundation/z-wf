@@ -1,27 +1,27 @@
 package com.zifang.z.wf.web.api;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
-import jakarta.annotation.Resource;
-
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
-
 import com.zifang.util.core.meta.Result;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.meta.api.annotation.BizField;
+import com.zifang.z.meta.api.annotation.BizParam;
 import com.zifang.z.wf.core.model.WfJobType;
 import com.zifang.z.wf.core.persistence.WfSubscriptionQuery;
 import com.zifang.z.wf.core.service.WfEngineException;
 import com.zifang.z.wf.core.service.WfSubscriptionService;
 import com.zifang.z.wf.core.view.WfSubscriptionView;
-
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.annotation.Resource;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 订阅查询 Controller —— "现在有哪些流程在等什么"。
@@ -46,15 +46,24 @@ public class WfSubscriptionController {
 
     @GetMapping
     @Operation(summary = "001_查订阅：流程现在在等消息 / 等信号 / 等超时 / 等外部 worker")
-    public Result<Map<String, Object>> list(@RequestParam(required = false) String processInstanceId,
-                                            @RequestParam(required = false) String definitionKey,
-                                            @RequestParam(required = false) String type,
-                                            @RequestParam(required = false) String eventName,
-                                            @RequestParam(required = false) String activityId,
-                                            @RequestParam(required = false) Long waitingLongerThanMillis,
-                                            @RequestParam(required = false) Boolean locked,
-                                            @RequestParam(required = false) Integer pageNum,
-                                            @RequestParam(required = false) Integer pageSize) {
+    @BizApi(summary = "list", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> list(@RequestParam(required = false) @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "definitionKey", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String definitionKey,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "type", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String type,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "eventName", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String eventName,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "activityId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String activityId,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "waitingLongerThanMillis", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long waitingLongerThanMillis,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "locked", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) Boolean locked,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageNum,
+                                            @RequestParam(required = false)
+                                            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageSize) {
         WfSubscriptionQuery query = new WfSubscriptionQuery()
                 .setProcessInstanceId(processInstanceId)
                 .setDefinitionKey(definitionKey)
@@ -77,9 +86,12 @@ public class WfSubscriptionController {
 
     @GetMapping("/count")
     @Operation(summary = "002_只取总数：接监控打点用，比拉全量列表便宜得多")
-    public Result<Map<String, Object>> count(@RequestParam(required = false) String processInstanceId,
-                                             @RequestParam(required = false) String definitionKey,
-                                             @RequestParam(required = false) String type) {
+    @BizApi(summary = "count", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> count(@RequestParam(required = false) @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "definitionKey", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String definitionKey,
+                                             @RequestParam(required = false)
+                                             @BizParam(name = "type", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String type) {
         WfSubscriptionQuery query = new WfSubscriptionQuery()
                 .setProcessInstanceId(processInstanceId)
                 .setDefinitionKey(definitionKey);
@@ -129,3 +141,6 @@ public class WfSubscriptionController {
         return payload;
     }
 }
+
+
+

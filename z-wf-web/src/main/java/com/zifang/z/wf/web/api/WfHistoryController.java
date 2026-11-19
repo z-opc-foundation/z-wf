@@ -1,20 +1,10 @@
 package com.zifang.z.wf.web.api;
 
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
-
-import jakarta.annotation.Resource;
-
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
-
 import com.zifang.util.core.meta.Result;
 import com.zifang.util.core.meta.page.PageResult;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.meta.api.annotation.BizField;
+import com.zifang.z.meta.api.annotation.BizParam;
 import com.zifang.z.wf.core.model.WfActivityInstance;
 import com.zifang.z.wf.core.model.WfComment;
 import com.zifang.z.wf.core.model.WfHistoricIncident;
@@ -28,17 +18,27 @@ import com.zifang.z.wf.core.persistence.WfProcessInstanceQuery;
 import com.zifang.z.wf.core.persistence.WfTaskQuery;
 import com.zifang.z.wf.core.persistence.WfVariableAuditQuery;
 import com.zifang.z.wf.core.service.WfEngineException;
-import com.zifang.z.wf.core.service.WfHistoryService;
 import com.zifang.z.wf.core.service.WfHistoricIncidentService;
+import com.zifang.z.wf.core.service.WfHistoryService;
 import com.zifang.z.wf.core.service.WfJobService;
 import com.zifang.z.wf.core.service.WfRuntimeService;
 import com.zifang.z.wf.core.service.WfTaskService;
-import com.zifang.z.wf.web.dto.WfViews;
 import com.zifang.z.wf.core.view.WfHistoricIncidentView;
+import com.zifang.z.wf.web.dto.WfViews;
 import com.zifang.z.wf.web.mapper.WfViewMapper;
-
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.annotation.Resource;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
 
 /**
  * 历史查询与 Job 管理。
@@ -87,18 +87,30 @@ public class WfHistoryController {
 
     @GetMapping("/activities")
     @Operation(summary = "001_查历史活动（可组合条件 + 真实分页）")
+    @BizApi(summary = "activities", description = "", tags = { "z-wf" })
     public Result<PageResult<WfViews.ActivityInstanceView>> activities(
-            @RequestParam(required = false) String processInstanceId,
-            @RequestParam(required = false) String processDefinitionKey,
-            @RequestParam(required = false) String activityId,
-            @RequestParam(required = false) String activityType,
-            @RequestParam(required = false) String assignee,
-            @RequestParam(required = false) Long startedAfter,
-            @RequestParam(required = false) Long startedBefore,
-            @RequestParam(required = false) Long minDurationMillis,
-            @RequestParam(defaultValue = "false") boolean orderByDurationDesc,
-            @RequestParam(defaultValue = "1") int pageNum,
-            @RequestParam(defaultValue = "20") int pageSize) {
+            @RequestParam(required = false)
+            @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+            @RequestParam(required = false)
+            @BizParam(name = "processDefinitionKey", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processDefinitionKey,
+            @RequestParam(required = false)
+            @BizParam(name = "activityId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String activityId,
+            @RequestParam(required = false)
+            @BizParam(name = "activityType", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String activityType,
+            @RequestParam(required = false)
+            @BizParam(name = "assignee", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String assignee,
+            @RequestParam(required = false)
+            @BizParam(name = "startedAfter", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long startedAfter,
+            @RequestParam(required = false)
+            @BizParam(name = "startedBefore", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long startedBefore,
+            @RequestParam(required = false)
+            @BizParam(name = "minDurationMillis", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long minDurationMillis,
+            @RequestParam(defaultValue = "false")
+            @BizParam(name = "orderByDurationDesc", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) boolean orderByDurationDesc,
+            @RequestParam(defaultValue = "1")
+            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageNum,
+            @RequestParam(defaultValue = "20")
+            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageSize) {
 
         WfHistoricActivityInstanceQuery query = new WfHistoricActivityInstanceQuery()
                 .setProcessInstanceId(processInstanceId)
@@ -124,9 +136,11 @@ public class WfHistoryController {
 
     @GetMapping("/activities/average-duration")
     @Operation(summary = "002_各环节平均耗时（找瓶颈）")
+    @BizApi(summary = "averageDuration", description = "", tags = { "z-wf" })
     public Result<java.util.Map<String, Long>> averageDuration(
-            @RequestParam String processDefinitionKey,
-            @RequestParam(defaultValue = "100") int sampleLimit) {
+            @RequestParam @BizParam(name = "processDefinitionKey", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processDefinitionKey,
+            @RequestParam(defaultValue = "100")
+            @BizParam(name = "sampleLimit", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int sampleLimit) {
         return Result.success(historyService.getAverageDurationByActivity(
                 processDefinitionKey, sampleLimit));
     }
@@ -135,13 +149,20 @@ public class WfHistoryController {
 
     @GetMapping("/tasks")
     @Operation(summary = "003_查历史任务（只含已办结）")
+    @BizApi(summary = "tasks", description = "", tags = { "z-wf" })
     public Result<PageResult<WfViews.TaskSummary>> tasks(
-            @RequestParam(required = false) String processInstanceId,
-            @RequestParam(required = false) String definitionId,
-            @RequestParam(required = false) String assignee,
-            @RequestParam(required = false) String completerId,
-            @RequestParam(defaultValue = "1") int pageNum,
-            @RequestParam(defaultValue = "20") int pageSize) {
+            @RequestParam(required = false)
+            @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+            @RequestParam(required = false)
+            @BizParam(name = "definitionId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String definitionId,
+            @RequestParam(required = false)
+            @BizParam(name = "assignee", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String assignee,
+            @RequestParam(required = false)
+            @BizParam(name = "completerId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String completerId,
+            @RequestParam(defaultValue = "1")
+            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageNum,
+            @RequestParam(defaultValue = "20")
+            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageSize) {
 
         WfTaskQuery query = new WfTaskQuery()
                 .setProcessInstanceId(processInstanceId)
@@ -159,12 +180,18 @@ public class WfHistoryController {
 
     @GetMapping("/processes")
     @Operation(summary = "004_查历史流程实例（含三种终态）")
+    @BizApi(summary = "processes", description = "", tags = { "z-wf" })
     public Result<PageResult<WfViews.ProcessInstanceView>> processes(
-            @RequestParam(required = false) String processDefinitionKey,
-            @RequestParam(required = false) String businessKey,
-            @RequestParam(required = false) String startUserId,
-            @RequestParam(defaultValue = "1") int pageNum,
-            @RequestParam(defaultValue = "20") int pageSize) {
+            @RequestParam(required = false)
+            @BizParam(name = "processDefinitionKey", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processDefinitionKey,
+            @RequestParam(required = false)
+            @BizParam(name = "businessKey", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String businessKey,
+            @RequestParam(required = false)
+            @BizParam(name = "startUserId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String startUserId,
+            @RequestParam(defaultValue = "1")
+            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageNum,
+            @RequestParam(defaultValue = "20")
+            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageSize) {
 
         WfProcessInstanceQuery query = new WfProcessInstanceQuery()
                 .setDefinitionKey(processDefinitionKey)
@@ -180,7 +207,8 @@ public class WfHistoryController {
 
     @DeleteMapping("/cleanup")
     @Operation(summary = "005_清理历史（只删已结束流程）")
-    public Result<Integer> cleanup(@RequestParam Long before) {
+    @BizApi(summary = "cleanup", description = "", tags = { "z-wf" })
+    public Result<Integer> cleanup(@RequestParam @BizParam(name = "before", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long before) {
         if (before == null) {
             // service 层也会拒，但在这里挡一次能让错误信息更贴近调用方的语境
             throw new WfEngineException("清理时间点不能为空："
@@ -193,12 +221,18 @@ public class WfHistoryController {
 
     @GetMapping("/jobs")
     @Operation(summary = "006_查 job（按到期时刻正序）")
+    @BizApi(summary = "jobs", description = "", tags = { "z-wf" })
     public Result<PageResult<WfViews.JobView>> jobs(
-            @RequestParam(required = false) String processInstanceId,
-            @RequestParam(required = false) String elementId,
-            @RequestParam(required = false) Boolean retriesExhausted,
-            @RequestParam(defaultValue = "1") int pageNum,
-            @RequestParam(defaultValue = "20") int pageSize) {
+            @RequestParam(required = false)
+            @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+            @RequestParam(required = false)
+            @BizParam(name = "elementId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String elementId,
+            @RequestParam(required = false)
+            @BizParam(name = "retriesExhausted", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) Boolean retriesExhausted,
+            @RequestParam(defaultValue = "1")
+            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageNum,
+            @RequestParam(defaultValue = "20")
+            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageSize) {
 
         WfJobQuery query = new WfJobQuery()
                 .setProcessInstanceId(processInstanceId)
@@ -212,9 +246,12 @@ public class WfHistoryController {
 
     @GetMapping("/jobs/exhausted")
     @Operation(summary = "007_重试耗尽的 job（漏发的提醒在这里查）")
+    @BizApi(summary = "exhaustedJobs", description = "", tags = { "z-wf" })
     public Result<PageResult<WfViews.JobView>> exhaustedJobs(
-            @RequestParam(defaultValue = "1") int pageNum,
-            @RequestParam(defaultValue = "20") int pageSize) {
+            @RequestParam(defaultValue = "1")
+            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageNum,
+            @RequestParam(defaultValue = "20")
+            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageSize) {
         WfJobQuery query = new WfJobQuery().setRetriesExhausted(Boolean.TRUE)
                 .setPageNum(pageNum).setPageSize(pageSize);
         return Result.success(new PageResult<>(
@@ -224,14 +261,16 @@ public class WfHistoryController {
 
     @PostMapping("/jobs/execute")
     @Operation(summary = "008_执行到期 job（引擎不自带定时器，由宿主调它）")
-    public Result<Integer> executeJobs(@RequestParam(required = false) Long now) {
+    @BizApi(summary = "executeJobs", description = "", tags = { "z-wf" })
+    public Result<Integer> executeJobs(@RequestParam(required = false) @BizParam(name = "now", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long now) {
         return Result.success(jobService.executeDueJobs(
                 now == null ? new Date() : new Date(now)));
     }
 
     @PostMapping("/jobs/execute-async")
     @Operation(summary = "010_执行到期异步 job（asyncBefore/asyncAfter 续跑）")
-    public Result<Integer> executeAsyncJobs(@RequestParam(required = false) Long now) {
+    @BizApi(summary = "executeAsyncJobs", description = "", tags = { "z-wf" })
+    public Result<Integer> executeAsyncJobs(@RequestParam(required = false) @BizParam(name = "now", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long now) {
         return Result.success(jobService.executeAsyncJobs(
                 now == null ? new Date() : new Date(now)));
     }
@@ -240,14 +279,22 @@ public class WfHistoryController {
 
     @GetMapping("/variable-changes")
     @Operation(summary = "009_查变量变更审计（这个变量什么时候被谁改的）")
+    @BizApi(summary = "variableChanges", description = "", tags = { "z-wf" })
     public Result<PageResult<WfViews.VariableChangeView>> variableChanges(
-            @RequestParam(required = false) String processInstanceId,
-            @RequestParam(required = false) String variableName,
-            @RequestParam(required = false) String changedBy,
-            @RequestParam(required = false) Long changedFrom,
-            @RequestParam(required = false) Long changedTo,
-            @RequestParam(defaultValue = "1") int pageNum,
-            @RequestParam(defaultValue = "20") int pageSize) {
+            @RequestParam(required = false)
+            @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+            @RequestParam(required = false)
+            @BizParam(name = "variableName", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String variableName,
+            @RequestParam(required = false)
+            @BizParam(name = "changedBy", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String changedBy,
+            @RequestParam(required = false)
+            @BizParam(name = "changedFrom", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long changedFrom,
+            @RequestParam(required = false)
+            @BizParam(name = "changedTo", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long changedTo,
+            @RequestParam(defaultValue = "1")
+            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageNum,
+            @RequestParam(defaultValue = "20")
+            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageSize) {
 
         WfVariableAuditQuery query = new WfVariableAuditQuery()
                 .setProcessInstanceId(processInstanceId)
@@ -280,19 +327,32 @@ public class WfHistoryController {
      */
     @GetMapping("/incidents")
     @Operation(summary = "011_查历史故障（曾经失败过；按首次/最近失败时刻切时间窗）")
+    @BizApi(summary = "查<b>历史故障</b>：哪些 job <b>曾经</b>失败过", description = "查 历史故障 ：哪些 job 曾经 失败过。 与 GET /api/wf/incidents（当前故障）刻意分开成两个端点， 而不是给它加个参数。两者的 数据来源就不是一回事 ： 当前故障是现场从 job 扫出来的（job 没了就没有了）， 历史故障是失败那一刻写下的记录。合成一个端点会让调用方以为自己筛的是同一个东西， 而两条数据的覆盖面并不重合 —— 「已经恢复的」只有历史里有。 firstFailureFrom / lastFailureBefore 就是「上周三那批」的写法。", tags = { "z-wf" })
     public Result<PageResult<WfHistoricIncidentView>> historicIncidents(
-            @RequestParam(required = false) String jobId,
-            @RequestParam(required = false) String processInstanceId,
-            @RequestParam(required = false) String definitionKey,
-            @RequestParam(required = false) String activityId,
-            @RequestParam(required = false) String type,
-            @RequestParam(required = false) String errorType,
-            @RequestParam(required = false) String errorMessageContains,
-            @RequestParam(required = false) Long firstFailureFrom,
-            @RequestParam(required = false) Long lastFailureBefore,
-            @RequestParam(required = false) Integer minFailureCount,
-            @RequestParam(defaultValue = "1") int pageNum,
-            @RequestParam(defaultValue = "20") int pageSize) {
+            @RequestParam(required = false)
+            @BizParam(name = "jobId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String jobId,
+            @RequestParam(required = false)
+            @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+            @RequestParam(required = false)
+            @BizParam(name = "definitionKey", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String definitionKey,
+            @RequestParam(required = false)
+            @BizParam(name = "activityId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String activityId,
+            @RequestParam(required = false)
+            @BizParam(name = "type", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String type,
+            @RequestParam(required = false)
+            @BizParam(name = "errorType", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String errorType,
+            @RequestParam(required = false)
+            @BizParam(name = "errorMessageContains", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String errorMessageContains,
+            @RequestParam(required = false)
+            @BizParam(name = "firstFailureFrom", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long firstFailureFrom,
+            @RequestParam(required = false)
+            @BizParam(name = "lastFailureBefore", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long lastFailureBefore,
+            @RequestParam(required = false)
+            @BizParam(name = "minFailureCount", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer minFailureCount,
+            @RequestParam(defaultValue = "1")
+            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageNum,
+            @RequestParam(defaultValue = "20")
+            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageSize) {
 
         WfHistoricIncidentQuery query = new WfHistoricIncidentQuery()
                 .setJobId(jobId)
@@ -318,7 +378,8 @@ public class WfHistoryController {
 
     @PostMapping("/incidents/delete-before")
     @Operation(summary = "012_清理某时刻之前的历史故障（**独立于 deleteHistoryBefore**）")
-    public Result<Integer> deleteHistoricIncidentsBefore(@RequestParam Long before) {
+    @BizApi(summary = "deleteHistoricIncidentsBefore", description = "", tags = { "z-wf" })
+    public Result<Integer> deleteHistoricIncidentsBefore(@RequestParam @BizParam(name = "before", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long before) {
         return Result.success(historicIncidentService.deleteIncidentsBefore(new Date(before)));
     }
 
@@ -348,3 +409,6 @@ public class WfHistoryController {
         return views;
     }
 }
+
+
+

@@ -1,28 +1,28 @@
 package com.zifang.z.wf.web.api;
 
-import java.text.SimpleDateFormat;
-import java.text.ParseException;
-import java.util.Date;
-import java.util.List;
-import java.util.Map;
-
-import jakarta.annotation.Resource;
-
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
-
 import com.zifang.util.core.meta.Result;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.meta.api.annotation.BizField;
+import com.zifang.z.meta.api.annotation.BizParam;
 import com.zifang.z.wf.core.model.WfMetric;
 import com.zifang.z.wf.core.service.WfEngineException;
 import com.zifang.z.wf.core.service.WfManagementService;
 import com.zifang.z.wf.core.service.WfMetricRow;
 import com.zifang.z.wf.core.service.WfMetricsQuery;
 import com.zifang.z.wf.core.view.WfTableInfo;
-
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.annotation.Resource;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 引擎自省 Controller —— 「我连的是什么、底下有什么、有多少」。
@@ -52,6 +52,7 @@ public class WfManagementController {
      */
     @GetMapping("/properties")
     @Operation(summary = "001_引擎属性（版本 / schema 版本 / 存储形态，不含任何凭据）")
+    @BizApi(summary = "引擎属性：名字、版本、schema 版本、底下是表还是进程内集合", description = "引擎属性：名字、版本、schema 版本、底下是表还是进程内集合。 刻意 不含连接信息 ：自省接口常被监控无差别暴露， 而\"这是哪个引擎、什么版本\"完全不需要凭据。", tags = { "z-wf" })
     public Result<Map<String, Object>> properties() {
         return Result.success(managementService.getProperties());
     }
@@ -64,6 +65,7 @@ public class WfManagementController {
      */
     @GetMapping("/tables")
     @Operation(summary = "002_存储清单：名字 + 类型（表/集合）+ 行数")
+    @BizApi(summary = "存储清单：每项的名字、类型（表 / 集合）与行数", description = "存储清单：每项的名字、类型（表 / 集合）与行数。 kind 显式标出底下到底是表还是进程内集合 —— 内存模式下看到 ZWF_TASK 而不标类型，人会理所当然地跑去数据库里找。", tags = { "z-wf" })
     public Result<List<WfTableInfo>> tables() {
         return Result.success(managementService.getTables());
     }
@@ -76,7 +78,8 @@ public class WfManagementController {
      */
     @GetMapping("/tables/count")
     @Operation(summary = "003_某一项的行数（名字不存在时报 400，不返回 0）")
-    public Result<Long> tableCount(@RequestParam String name) {
+    @BizApi(summary = "单项条数", description = "单项条数。 名字不认识返回 400 而不是 0：拼错一个表名得到 0， 会把排障方向从「我拼错了」带偏到「谁把它清空了」。", tags = { "z-wf" })
+    public Result<Long> tableCount(@RequestParam @BizParam(name = "name", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String name) {
         return Result.success(managementService.getTableCount(name));
     }
 
@@ -99,11 +102,15 @@ public class WfManagementController {
      */
     @GetMapping("/metrics")
     @Operation(summary = "004_引擎指标（实例数 / 时长直方图 / 按办理人工作量；窗口按启动或创建时间）")
+    @BizApi(summary = "引擎指标（第 44 轮）：实例数 / 端到端时长 / 任务时长 / 按办理人的工作量", description = "引擎指标（第 44 轮）：实例数 / 端到端时长 / 任务时长 / 按办理人的工作量。 对应 Camunda 的 ManagementService#createMetricsQuery。 返回的列表 末尾固定有一行 name=\"__ALL__\" ： 直方图靠它给总数与最值，调用方不必自己把各桶相加 —— 而\"忘了相加\"是这类接口最常见的用法错误。 指标名写错返回 400 ，不静默当成 0： 看板上的 0 会被当成业务结论，而\"你拼错了指标名\"不是业务结论。 / task-duration / task-users， 大小写不敏感", tags = { "z-wf" })
     public Result<List<WfMetricRow>> metrics(
-            @RequestParam String metric,
-            @RequestParam(required = false) String startDate,
-            @RequestParam(required = false) String endDate,
-            @RequestParam(required = false) String definitionKey) {
+            @RequestParam @BizParam(name = "metric", type = BizField.FieldType.STRING, description = "{@code process-instances} / {@code process-instance-duration}", position = BizParam.Position.QUERY) String metric,
+            @RequestParam(required = false)
+            @BizParam(name = "startDate", type = BizField.FieldType.STRING, description = "窗口下界（含），ISO-8601；不给 = 不限", position = BizParam.Position.QUERY) String startDate,
+            @RequestParam(required = false)
+            @BizParam(name = "endDate", type = BizField.FieldType.STRING, description = "窗口上界（含），ISO-8601；不给 = 不限", position = BizParam.Position.QUERY) String endDate,
+            @RequestParam(required = false)
+            @BizParam(name = "definitionKey", type = BizField.FieldType.STRING, description = "限定某个流程定义；不给 = 全部", position = BizParam.Position.QUERY) String definitionKey) {
         WfMetricsQuery query = new WfMetricsQuery(parseMetric(metric))
                 .setStartDate(parseDate(startDate, "startDate"))
                 .setEndDate(parseDate(endDate, "endDate"))
@@ -173,3 +180,4 @@ public class WfManagementController {
         }
     }
 }
+

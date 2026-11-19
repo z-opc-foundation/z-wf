@@ -1,11 +1,15 @@
 package com.zifang.z.wf.web.api;
 
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-
+import com.zifang.util.core.meta.Result;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.meta.api.annotation.BizField;
+import com.zifang.z.meta.api.annotation.BizParam;
+import com.zifang.z.wf.core.model.WfProcessInstance;
+import com.zifang.z.wf.core.service.WfExternalTaskService;
+import com.zifang.z.wf.core.view.WfExternalTaskView;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
-
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -14,13 +18,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.zifang.util.core.meta.Result;
-import com.zifang.z.wf.core.model.WfProcessInstance;
-import com.zifang.z.wf.core.service.WfExternalTaskService;
-import com.zifang.z.wf.core.view.WfExternalTaskView;
-
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 外部任务 —— 流程里交给外部 worker 做的那一步。
@@ -45,7 +45,8 @@ public class WfExternalTaskController {
 
     @PostMapping("/fetch")
     @Operation(summary = "001_按主题领活（原子选出+上锁，租约制）")
-    public Result<List<WfExternalTaskView>> fetch(@RequestBody FetchRequest request) {
+    @BizApi(summary = "fetch", description = "", tags = { "z-wf" })
+    public Result<List<WfExternalTaskView>> fetch(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) FetchRequest request) {
         if (request == null) {
             throw new com.zifang.z.wf.core.service.WfEngineException("请求体不能为空");
         }
@@ -56,8 +57,9 @@ public class WfExternalTaskController {
 
     @PostMapping("/{taskId}/complete")
     @Operation(summary = "002_交差：把外部结果交给流程，token 继续往下走")
-    public Result<Map<String, Object>> complete(@PathVariable String taskId,
-                                                @RequestBody CompleteRequest request) {
+    @BizApi(summary = "complete", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> complete(@PathVariable @BizParam(name = "taskId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String taskId,
+                                                @RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) CompleteRequest request) {
         if (request == null) {
             throw new com.zifang.z.wf.core.service.WfEngineException("请求体不能为空");
         }
@@ -68,7 +70,8 @@ public class WfExternalTaskController {
 
     @PostMapping("/{taskId}/fail")
     @Operation(summary = "003_报失败：解锁并扣重试（失败多半是瞬时的，不解锁等于永久卡死）")
-    public Result<Void> fail(@PathVariable String taskId, @RequestBody FailRequest request) {
+    @BizApi(summary = "fail", description = "", tags = { "z-wf" })
+    public Result<Void> fail(@PathVariable @BizParam(name = "taskId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String taskId, @RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) FailRequest request) {
         if (request == null) {
             throw new com.zifang.z.wf.core.service.WfEngineException("请求体不能为空");
         }
@@ -80,8 +83,9 @@ public class WfExternalTaskController {
     @PostMapping("/{taskId}/bpmn-error")
     @Operation(summary = "004_报错交回：报一个带错误码的业务错误，流程走错误边界"
             + "（与 fail 的区别是「确定失败」对「再试一次」）")
-    public Result<Map<String, Object>> bpmnError(@PathVariable String taskId,
-                                                 @RequestBody BpmnErrorRequest request) {
+    @BizApi(summary = "bpmnError", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> bpmnError(@PathVariable @BizParam(name = "taskId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String taskId,
+                                                 @RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) BpmnErrorRequest request) {
         if (request == null) {
             throw new com.zifang.z.wf.core.service.WfEngineException("请求体不能为空");
         }
@@ -93,29 +97,36 @@ public class WfExternalTaskController {
 
     @PostMapping("/{taskId}/release")
     @Operation(summary = "005_主动释放：解锁但不扣重试（如部署回滚、认错 topic）")
-    public Result<Void> release(@PathVariable String taskId, @RequestParam String workerId) {
+    @BizApi(summary = "release", description = "", tags = { "z-wf" })
+    public Result<Void> release(@PathVariable @BizParam(name = "taskId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String taskId, @RequestParam @BizParam(name = "workerId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String workerId) {
         externalTaskService.release(taskId, workerId);
         return Result.success();
     }
 
     @GetMapping
     @Operation(summary = "006_查外部任务（管理端/排障）")
-    public Result<List<WfExternalTaskView>> list(@RequestParam(required = false) String topic,
-                                                 @RequestParam(required = false) Integer pageNum,
-                                                 @RequestParam(required = false) Integer pageSize) {
+    @BizApi(summary = "list", description = "", tags = { "z-wf" })
+    public Result<List<WfExternalTaskView>> list(@RequestParam(required = false) @BizParam(name = "topic", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String topic,
+                                                 @RequestParam(required = false)
+                                                 @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageNum,
+                                                 @RequestParam(required = false)
+                                                 @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageSize) {
         return Result.success(externalTaskService.listTasks(topic, pageNum, pageSize));
     }
 
     @GetMapping("/count")
     @Operation(summary = "007_某主题积压了多少活")
-    public Result<Long> count(@RequestParam(required = false) String topic) {
+    @BizApi(summary = "count", description = "", tags = { "z-wf" })
+    public Result<Long> count(@RequestParam(required = false) @BizParam(name = "topic", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String topic) {
         return Result.success(externalTaskService.countTasks(topic));
     }
 
     @GetMapping("/locked")
     @Operation(summary = "008_某个 worker 当前锁着哪些活")
-    public Result<List<WfExternalTaskView>> locked(@RequestParam String workerId,
-                                                   @RequestParam(required = false) String topic) {
+    @BizApi(summary = "locked", description = "", tags = { "z-wf" })
+    public Result<List<WfExternalTaskView>> locked(@RequestParam @BizParam(name = "workerId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String workerId,
+                                                   @RequestParam(required = false)
+                                                   @BizParam(name = "topic", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String topic) {
         return Result.success(externalTaskService.listLockedBy(topic, workerId));
     }
 
@@ -277,3 +288,6 @@ public class WfExternalTaskController {
         }
     }
 }
+
+
+

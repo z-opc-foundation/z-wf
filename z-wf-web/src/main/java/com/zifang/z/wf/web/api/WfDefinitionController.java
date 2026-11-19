@@ -1,12 +1,18 @@
 package com.zifang.z.wf.web.api;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-
+import com.zifang.util.core.meta.Result;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.meta.api.annotation.BizField;
+import com.zifang.z.meta.api.annotation.BizParam;
+import com.zifang.z.wf.core.definition.WfDefinition;
+import com.zifang.z.wf.core.service.WfDeploymentEntry;
+import com.zifang.z.wf.core.service.WfDeploymentOrder;
+import com.zifang.z.wf.core.service.WfDeploymentQuery;
+import com.zifang.z.wf.core.service.WfEngineException;
+import com.zifang.z.wf.core.service.WfRepositoryService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
-
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -15,16 +21,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.zifang.util.core.meta.Result;
-import com.zifang.z.wf.core.definition.WfDefinition;
-import com.zifang.z.wf.core.service.WfDeploymentEntry;
-import com.zifang.z.wf.core.service.WfDeploymentOrder;
-import com.zifang.z.wf.core.service.WfDeploymentQuery;
-import com.zifang.z.wf.core.service.WfEngineException;
-import com.zifang.z.wf.core.service.WfRepositoryService;
-
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 流程定义的部署与停用管理。
@@ -48,10 +48,14 @@ public class WfDefinitionController {
 
     @GetMapping
     @Operation(summary = "001_查流程定义（key/名称模糊 + 停用状态）")
+    @BizApi(summary = "list", description = "", tags = { "z-wf" })
     public Result<List<Map<String, Object>>> list(
-            @RequestParam(required = false) String keyLike,
-            @RequestParam(required = false) String nameLike,
-            @RequestParam(required = false) Boolean suspended) {
+            @RequestParam(required = false)
+            @BizParam(name = "keyLike", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String keyLike,
+            @RequestParam(required = false)
+            @BizParam(name = "nameLike", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String nameLike,
+            @RequestParam(required = false)
+            @BizParam(name = "suspended", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) Boolean suspended) {
 
         List<Map<String, Object>> rows = new ArrayList<>();
         for (WfDefinition definition
@@ -63,7 +67,8 @@ public class WfDefinitionController {
 
     @GetMapping("/versions")
     @Operation(summary = "002_查某定义的全部版本（新 → 旧）")
-    public Result<List<Map<String, Object>>> versions(@RequestParam String key) {
+    @BizApi(summary = "versions", description = "", tags = { "z-wf" })
+    public Result<List<Map<String, Object>>> versions(@RequestParam @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String key) {
         List<Map<String, Object>> rows = new ArrayList<>();
         for (WfDefinition definition : repositoryService.getDefinitionVersions(key)) {
             rows.add(toView(definition));
@@ -84,19 +89,32 @@ public class WfDefinitionController {
      */
     @GetMapping("/history")
     @Operation(summary = "009_查部署历史（跨 key 全部版本，可按分类/时间窗/有无原始 XML 筛）")
+    @BizApi(summary = "部署历史：<b>跨所有 key 的全部版本</b>（第 47 轮）", description = "部署历史： 跨所有 key 的全部版本 （第 47 轮）。 与 #versions 的分工 ：那个要先知道 key，且只答那一个 key； 这个不预设任何 key，答的是「这段时间里 / 这个分类下 / 这批 key 上， 到底部署过什么」。存量界面上没有第二种能力。 返回 分页信封 （records / total / pageNum / pageSize）而不是裸列表 —— 部署历史天然会越积越多，而裸列表只能靠\"截断\"来限流， 截断的那一份 看起来就是全部 。", tags = { "z-wf" })
     public Result<Map<String, Object>> history(
-            @RequestParam(required = false) String key,
-            @RequestParam(required = false) String keyLike,
-            @RequestParam(required = false) String nameLike,
-            @RequestParam(required = false) String category,
-            @RequestParam(required = false) Boolean suspended,
-            @RequestParam(required = false) Boolean defaultDefinition,
-            @RequestParam(required = false) Boolean hasSourceXml,
-            @RequestParam(required = false) Long deployedFrom,
-            @RequestParam(required = false) Long deployedTo,
-            @RequestParam(required = false) String orderBy,
-            @RequestParam(required = false, defaultValue = "1") Integer pageNum,
-            @RequestParam(required = false, defaultValue = "50") Integer pageSize) {
+            @RequestParam(required = false)
+            @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String key,
+            @RequestParam(required = false)
+            @BizParam(name = "keyLike", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String keyLike,
+            @RequestParam(required = false)
+            @BizParam(name = "nameLike", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String nameLike,
+            @RequestParam(required = false)
+            @BizParam(name = "category", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String category,
+            @RequestParam(required = false)
+            @BizParam(name = "suspended", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) Boolean suspended,
+            @RequestParam(required = false)
+            @BizParam(name = "defaultDefinition", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) Boolean defaultDefinition,
+            @RequestParam(required = false)
+            @BizParam(name = "hasSourceXml", type = BizField.FieldType.BOOLEAN, description = "", position = BizParam.Position.QUERY) Boolean hasSourceXml,
+            @RequestParam(required = false)
+            @BizParam(name = "deployedFrom", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long deployedFrom,
+            @RequestParam(required = false)
+            @BizParam(name = "deployedTo", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Long deployedTo,
+            @RequestParam(required = false)
+            @BizParam(name = "orderBy", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String orderBy,
+            @RequestParam(required = false, defaultValue = "1")
+            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageNum,
+            @RequestParam(required = false, defaultValue = "50")
+            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageSize) {
 
         WfDeploymentQuery query = new WfDeploymentQuery()
                 .setKey(key)
@@ -196,9 +214,11 @@ public class WfDefinitionController {
      */
     @GetMapping("/data")
     @Operation(summary = "008_查某定义某一版的数据声明（dataObject/dataStore/数据关联，本引擎只读不执行）")
+    @BizApi(summary = "某定义某一版的<b>数据声明清单</b>（第 46 轮）", description = "某定义某一版的 数据声明清单 （第 46 轮）。 为什么单独一个端点而不是并进 #list ：数据声明是 「走查一份流程到底在用哪些数据」的答案，而走查是低频动作； 列表端点每个定义都要多带四段结构，日常打开流程列表的人一个都用不上。 返回体里刻意带上 engineReadsData=false ： 本引擎 不执行数据关联、不对 dataStore 做存取 （见 WfDataObject / WfDataStore 的类注释，与 Camunda 7 一致）。 只列声明不说这一点，调用方会以为\"列出来的就是引擎在管的\"—— 而那正是第 46 轮改动前最坏的一类静默：写了等于没写，且没有任何提示。 让这条事实出现在 响应体里 而不是只写在文档里，是为了它跟着接口一起被看见。", tags = { "z-wf" })
     public Result<Map<String, Object>> dataDeclarations(
-            @RequestParam String key,
-            @RequestParam(required = false) Integer version) {
+            @RequestParam @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String key,
+            @RequestParam(required = false)
+            @BizParam(name = "version", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer version) {
         // 刻意<b>不用</b> getDefinitionOrLatest：那个方法在版本不存在时会回落到最新版本。
         // 查数据声明时静默换一版，等于回答了另一个模型的问题，而响应里的
         // version 字段会把版本号照实写出来，调用方更难发现。
@@ -295,41 +315,47 @@ public class WfDefinitionController {
 
     @GetMapping("/model")
     @Operation(summary = "003_回读原始 BPMN XML（模型编辑器集成用）")
-    public Result<String> model(@RequestParam String key, @RequestParam Integer version) {
+    @BizApi(summary = "model", description = "", tags = { "z-wf" })
+    public Result<String> model(@RequestParam @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String key, @RequestParam @BizParam(name = "version", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer version) {
         return Result.success(repositoryService.getProcessModel(key, version));
     }
 
     @GetMapping("/diagram")
     @Operation(summary = "010_回读流程图元（节点坐标 + 连线折点，供前端渲染）")
+    @BizApi(summary = "diagram", description = "", tags = { "z-wf" })
     public Result<com.zifang.z.wf.core.view.WfDiagramInfo> diagram(
-            @RequestParam String key, @RequestParam Integer version) {
+            @RequestParam @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String key, @RequestParam @BizParam(name = "version", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer version) {
         return Result.success(repositoryService.getProcessDiagram(key, version));
     }
 
     @DeleteMapping("/definition")
     @Operation(summary = "007_物理删除某个版本（仍有在途实例时拒绝）")
-    public Result<Void> delete(@RequestParam String key, @RequestParam Integer version) {
+    @BizApi(summary = "delete", description = "", tags = { "z-wf" })
+    public Result<Void> delete(@RequestParam @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String key, @RequestParam @BizParam(name = "version", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer version) {
         repositoryService.deleteDefinition(key, version);
         return Result.success();
     }
 
     @PostMapping("/suspend")
     @Operation(summary = "004_停用某个版本（不再接新单，在跑的实例不受影响）")
-    public Result<Void> suspend(@RequestParam String key, @RequestParam Integer version) {
+    @BizApi(summary = "suspend", description = "", tags = { "z-wf" })
+    public Result<Void> suspend(@RequestParam @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String key, @RequestParam @BizParam(name = "version", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer version) {
         repositoryService.suspendDefinition(key, version);
         return Result.success();
     }
 
     @PostMapping("/activate")
     @Operation(summary = "005_启用某个版本")
-    public Result<Void> activate(@RequestParam String key, @RequestParam Integer version) {
+    @BizApi(summary = "activate", description = "", tags = { "z-wf" })
+    public Result<Void> activate(@RequestParam @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String key, @RequestParam @BizParam(name = "version", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer version) {
         repositoryService.activateDefinition(key, version);
         return Result.success();
     }
 
     @PostMapping("/deploy")
     @Operation(summary = "006_部署 BPMN XML")
-    public Result<Map<String, Object>> deploy(@RequestBody DeployRequest request) {
+    @BizApi(summary = "deploy", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> deploy(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) DeployRequest request) {
         if (request == null || request.getXml() == null || request.getXml().trim().isEmpty()) {
             // 空 XML 会在解析器里报一句与调用方语境无关的错，这里先挡一次
             throw new com.zifang.z.wf.core.service.WfEngineException("部署内容不能为空");
@@ -342,20 +368,23 @@ public class WfDefinitionController {
 
     @PostMapping("/default")
     @Operation(summary = "011_设为默认流程定义（调用方不知道 key 时的发起入口）")
-    public Result<Map<String, Object>> setDefault(@RequestParam String key,
-                                                  @RequestParam Integer version) {
+    @BizApi(summary = "setDefault", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> setDefault(@RequestParam @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String key,
+                                                  @RequestParam @BizParam(name = "version", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer version) {
         return Result.success(toView(repositoryService.setDefaultDefinition(key, version)));
     }
 
     @DeleteMapping("/default")
     @Operation(summary = "012_取消默认流程定义")
-    public Result<Void> clearDefault(@RequestParam String key, @RequestParam Integer version) {
+    @BizApi(summary = "clearDefault", description = "", tags = { "z-wf" })
+    public Result<Void> clearDefault(@RequestParam @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String key, @RequestParam @BizParam(name = "version", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer version) {
         repositoryService.clearDefaultDefinition(key, version);
         return Result.success();
     }
 
     @GetMapping("/default")
     @Operation(summary = "013_查当前默认流程定义（没设过则返回 null）")
+    @BizApi(summary = "getDefault", description = "", tags = { "z-wf" })
     public Result<Map<String, Object>> getDefault() {
         WfDefinition definition = repositoryService.getDefaultDefinition();
         // 没设过默认是正常状态（回 data=null），不是异常：
@@ -403,3 +432,6 @@ public class WfDefinitionController {
         }
     }
 }
+
+
+

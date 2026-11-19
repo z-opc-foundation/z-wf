@@ -1,20 +1,18 @@
 package com.zifang.z.wf.web.api;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
-
+import com.zifang.util.core.meta.Result;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.wf.core.persistence.WfPersistence;
+import com.zifang.z.wf.core.service.WfRepositoryService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
-
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.zifang.util.core.meta.Result;
-import com.zifang.z.wf.core.persistence.WfPersistence;
-import com.zifang.z.wf.core.service.WfRepositoryService;
-
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * 健康检查 Controller。
@@ -38,6 +36,7 @@ public class WfHealthController {
 
     @GetMapping("/health")
     @Operation(summary = "001_健康检查")
+    @BizApi(summary = "health", description = "", tags = { "z-wf" })
     public Result<Map<String, Object>> health() {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("status", "UP");
@@ -54,3 +53,6 @@ public class WfHealthController {
         return Result.success(body);
     }
 }
+
+
+

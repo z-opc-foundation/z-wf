@@ -68,6 +68,7 @@
     </modules>
 
     <properties>
+        <z-meta.version>1.0.2</z-meta.version>
         <!--
             版本 2.0.0 是**刻意的破坏性大版本**，不是随手抬的：
             坐标 io.github.yuku123:z-wf 在 Central 上的 1.0.4/1.0.5/1.0.6 是
@@ -201,6 +202,11 @@
                 <version>${swagger-annotations.version}</version>
             </dependency>
             
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-meta-api</artifactId>
+                <version>${z-meta.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 

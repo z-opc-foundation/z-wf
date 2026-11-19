@@ -1,15 +1,14 @@
 package com.zifang.z.wf.admin.web;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
-
+import com.zifang.util.core.meta.Result;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.wf.core.service.WfRepositoryService;
 import jakarta.annotation.Resource;
-
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.zifang.util.core.meta.Result;
-import com.zifang.z.wf.core.service.WfRepositoryService;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * 探针专用健康端点（免鉴权）。
@@ -40,6 +39,7 @@ public class WfProbeController {
      * 探针端点。返 org 的统一信封（{@code Result}），与其它接口同形。
      */
     @GetMapping("/api/wf/health/probe")
+    @BizApi(summary = "探针端点。返 org 的统一信封（Result），与其它接口同形", description = "探针端点。返 org 的统一信封（Result），与其它接口同形。", tags = { "z-wf" })
     public Result<Map<String, Object>> probe() {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("status", "UP");
@@ -54,3 +54,6 @@ public class WfProbeController {
         return Result.success(body);
     }
 }
+
+
+

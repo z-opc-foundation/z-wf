@@ -1,16 +1,15 @@
 package com.zifang.z.wf.starter.rpc;
 
-import java.util.List;
-import java.util.Map;
-
-import jakarta.annotation.Resource;
-
-import org.springframework.stereotype.Service;
-
+import com.zifang.z.meta.api.annotation.BizMethod;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfTask;
 import com.zifang.z.wf.core.service.WfRuntimeService;
 import com.zifang.z.wf.core.service.WfTaskService;
+import jakarta.annotation.Resource;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+import java.util.Map;
 
 /**
  * RPC 服务实现。
@@ -32,6 +31,7 @@ public class WfProcessRpcServiceImpl implements WfProcessRpcService {
     private WfTaskService taskService;
 
     @Override
+    @BizMethod(name = "startProcess", module = "z-wf", description = "", operation = BizMethod.Operation.ACTION)
     public String startProcess(String definitionKey, String businessKey, String userId,
                                Map<String, Object> variables) {
         return runtimeService.startProcessInstance(
@@ -39,13 +39,18 @@ public class WfProcessRpcServiceImpl implements WfProcessRpcService {
     }
 
     @Override
+    @BizMethod(name = "getTodoList", module = "z-wf", description = "", operation = BizMethod.Operation.QUERY)
     public List<WfTask> getTodoList(String userId, int pageNum, int pageSize) {
         return taskService.getTodoList(userId, null, pageNum, pageSize);
     }
 
     @Override
+    @BizMethod(name = "completeTask", module = "z-wf", description = "", operation = BizMethod.Operation.ACTION)
     public WfProcessInstance completeTask(String taskId, String userId, String comment,
                                           Map<String, Object> variables) {
         return runtimeService.completeTask(taskId, userId, comment, variables);
     }
 }
+
+
+

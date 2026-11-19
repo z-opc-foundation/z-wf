@@ -1,24 +1,12 @@
 package com.zifang.z.wf.web.api;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-
-import jakarta.annotation.Resource;
-
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
-
 import com.zifang.util.core.meta.Result;
+import com.zifang.util.json.JsonUtil;
 import com.zifang.util.json.model.JsonArray;
 import com.zifang.util.json.model.JsonObject;
-import com.zifang.util.json.JsonUtil;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.meta.api.annotation.BizField;
+import com.zifang.z.meta.api.annotation.BizParam;
 import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.definition.WfDefinitionException;
 import com.zifang.z.wf.core.definition.WfFlow;
@@ -26,9 +14,21 @@ import com.zifang.z.wf.core.definition.WfNode;
 import com.zifang.z.wf.core.service.WfRepositoryService;
 import com.zifang.z.wf.core.view.WfDiagramInfo;
 import com.zifang.z.wf.core.view.WfShape;
-
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.annotation.Resource;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 流程设计 Controller —— z-camuda {@code ProcessModelController} 的兼容实现。
@@ -66,7 +66,8 @@ public class WfModelCompatController {
      */
     @GetMapping("/graph")
     @Operation(summary = "011_获取流程设计稿")
-    public Result<Map<String, Object>> getGraph(@RequestParam String processKey) {
+    @BizApi(summary = "取某个流程 key 的最新设计稿 (LogicFlow 图数据)", description = "取某个流程 key 的最新设计稿 (LogicFlow 图数据)。 没有设计稿但已有流程定义时，把定义结构转回 LogicFlow 图（坐标取 BPMN DI，缺坐标时网格兜底），保证设计器总能打开；两者都没有才给骨架图。 source ∈ designed / definition / empty", tags = { "z-wf" })
+    public Result<Map<String, Object>> getGraph(@RequestParam @BizParam(name = "processKey", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processKey) {
         if (processKey == null || processKey.trim().isEmpty()) {
             return Result.fail("processKey 不能为空");
         }
@@ -108,7 +109,8 @@ public class WfModelCompatController {
      */
     @PostMapping("/graph")
     @Operation(summary = "012_保存流程设计稿")
-    public Result<String> saveGraph(@RequestBody Map<String, String> request) {
+    @BizApi(summary = "保存设计稿 (LogicFlow 图数据)，同 key 覆盖式", description = "保存设计稿 (LogicFlow 图数据)，同 key 覆盖式。 只做形状自检（非空 / 有节点 / 有 start），语义错误留到部署时才报， 避免用户画到一半就被拦 —— 与 z-camuda 行为一致。", tags = { "z-wf" })
+    public Result<String> saveGraph(@RequestBody @BizParam(name = "request", type = BizField.FieldType.JSON, description = "", position = BizParam.Position.BODY) Map<String, String> request) {
         String processKey = trim(request.get("processKey"));
         String graph = request.get("graph");
         if (processKey == null) {
@@ -135,7 +137,8 @@ public class WfModelCompatController {
      */
     @PostMapping("/deploy")
     @Operation(summary = "013_发布流程")
-    public Result<Map<String, Object>> deploy(@RequestBody Map<String, String> request) {
+    @BizApi(summary = "把已保存的设计稿发布为新的流程定义版本", description = "把已保存的设计稿发布为新的流程定义版本。 本引擎原生支持 LogicFlow JSON（{\"logicflow\": {...}}）， 所以不走 BPMN 中转：包装后直接 deployJson，天然产生新版本。", tags = { "z-wf" })
+    public Result<Map<String, Object>> deploy(@RequestBody @BizParam(name = "request", type = BizField.FieldType.JSON, description = "{@code {processKey, name}}；name 为空时用流程 key", position = BizParam.Position.BODY) Map<String, String> request) {
         String processKey = trim(request.get("processKey"));
         String name = trim(request.get("name"));
         if (processKey == null) {
@@ -172,6 +175,7 @@ public class WfModelCompatController {
      */
     @GetMapping("/keys")
     @Operation(summary = "014_列出可设计的流程")
+    @BizApi(summary = "列出「有设计稿」与「已部署但还没有设计稿」的流程 key，各自一份", description = "列出「有设计稿」与「已部署但还没有设计稿」的流程 key，各自一份。", tags = { "z-wf" })
     public Result<Map<String, List<String>>> listKeys() {
         List<String> designed = repositoryService.findDesignedKeys();
         List<String> deployedOnly = new ArrayList<>();
@@ -383,3 +387,4 @@ public class WfModelCompatController {
         return out.append('"').toString();
     }
 }
+

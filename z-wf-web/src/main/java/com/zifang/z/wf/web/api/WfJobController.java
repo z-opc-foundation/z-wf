@@ -1,11 +1,16 @@
 package com.zifang.z.wf.web.api;
 
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-
+import com.zifang.util.core.meta.Result;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.meta.api.annotation.BizField;
+import com.zifang.z.meta.api.annotation.BizParam;
+import com.zifang.z.wf.core.persistence.WfJobQuery;
+import com.zifang.z.wf.core.service.WfJobService;
+import com.zifang.z.wf.web.dto.WfViews;
+import com.zifang.z.wf.web.mapper.WfViewMapper;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
-
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -13,14 +18,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.zifang.util.core.meta.Result;
-import com.zifang.z.wf.core.persistence.WfJobQuery;
-import com.zifang.z.wf.core.service.WfJobService;
-import com.zifang.z.wf.web.dto.WfViews;
-import com.zifang.z.wf.web.mapper.WfViewMapper;
-
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Job 的运维入口 —— 查、提前触发。
@@ -55,8 +55,10 @@ public class WfJobController {
 
     @PostMapping("/{jobId}/trigger")
     @Operation(summary = "001_提前触发一条 job（不等它到期）")
-    public Result<Map<String, Object>> trigger(@PathVariable String jobId,
-                                               @RequestParam(required = false) String userId) {
+    @BizApi(summary = "trigger", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> trigger(@PathVariable @BizParam(name = "jobId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String jobId,
+                                               @RequestParam(required = false)
+                                               @BizParam(name = "userId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String userId) {
         boolean fired = jobService.triggerJob(jobId, userId);
         Map<String, Object> body = new LinkedHashMap<>();
         // **必须把 triggered 一起返回**：false 表示"该响没响"（流程已结束、
@@ -70,11 +72,16 @@ public class WfJobController {
 
     @GetMapping
     @Operation(summary = "002_查 job（管理端/排障）")
-    public Result<List<WfViews.JobView>> list(@RequestParam(required = false) String processInstanceId,
-                                              @RequestParam(required = false) String elementId,
-                                              @RequestParam(required = false) String type,
-                                              @RequestParam(required = false) Integer pageNum,
-                                              @RequestParam(required = false) Integer pageSize) {
+    @BizApi(summary = "list", description = "", tags = { "z-wf" })
+    public Result<List<WfViews.JobView>> list(@RequestParam(required = false) @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+                                              @RequestParam(required = false)
+                                              @BizParam(name = "elementId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String elementId,
+                                              @RequestParam(required = false)
+                                              @BizParam(name = "type", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String type,
+                                              @RequestParam(required = false)
+                                              @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageNum,
+                                              @RequestParam(required = false)
+                                              @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageSize) {
         WfJobQuery query = new WfJobQuery()
                 .setProcessInstanceId(processInstanceId)
                 .setElementId(elementId)
@@ -89,8 +96,10 @@ public class WfJobController {
 
     @GetMapping("/count")
     @Operation(summary = "003_某类 job 还剩多少条")
-    public Result<Long> count(@RequestParam(required = false) String processInstanceId,
-                              @RequestParam(required = false) String type) {
+    @BizApi(summary = "count", description = "", tags = { "z-wf" })
+    public Result<Long> count(@RequestParam(required = false) @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+                              @RequestParam(required = false)
+                              @BizParam(name = "type", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String type) {
         WfJobQuery query = new WfJobQuery().setProcessInstanceId(processInstanceId)
                 .setPageNum(1).setPageSize(1);
         if (type != null && !type.trim().isEmpty()) {
@@ -102,10 +111,15 @@ public class WfJobController {
 
     @GetMapping("/exhausted")
     @Operation(summary = "004_重试耗尽的 job（失败清单）")
-    public Result<List<WfViews.JobView>> exhausted(@RequestParam(required = false) Integer pageNum,
-                                                   @RequestParam(required = false) Integer pageSize) {
+    @BizApi(summary = "exhausted", description = "", tags = { "z-wf" })
+    public Result<List<WfViews.JobView>> exhausted(@RequestParam(required = false) @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageNum,
+                                                   @RequestParam(required = false)
+                                                   @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) Integer pageSize) {
         return Result.success(viewMapper.toJobViews(
                 jobService.findExhaustedJobs(pageNum == null ? 1 : pageNum,
                         pageSize == null ? 50 : pageSize)));
     }
 }
+
+
+

@@ -1,16 +1,9 @@
 package com.zifang.z.wf.web.api;
 
-import java.util.Date;
-
-import jakarta.annotation.Resource;
-
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
 import com.zifang.util.core.meta.Result;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.meta.api.annotation.BizField;
+import com.zifang.z.meta.api.annotation.BizParam;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfTask;
 import com.zifang.z.wf.core.service.WfRuntimeService;
@@ -18,9 +11,16 @@ import com.zifang.z.wf.core.service.WfTaskService;
 import com.zifang.z.wf.web.dto.WfRequests;
 import com.zifang.z.wf.web.dto.WfViews;
 import com.zifang.z.wf.web.mapper.WfViewMapper;
-
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.annotation.Resource;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Date;
 
 /**
  * 任务操作 Controller —— 六类任务流转。
@@ -55,7 +55,8 @@ public class WfTaskOperationController {
      */
     @PostMapping("/candidate")
     @Operation(summary = "调整候选池（加/减候选用户或候选组）")
-    public Result<WfViews.TaskSummary> candidate(@RequestBody CandidateRequest request) {
+    @BizApi(summary = "调整候选池。四个动作合在一个端点上，用 type 区分", description = "调整候选池。四个动作合在一个端点上，用 type 区分 （candidateUser/candidateGroup × add/remove）—— 拆成四个端点的话前端要维护四份几乎一样的调用，而它们的入参本来就是同一个。", tags = { "z-wf" })
+    public Result<WfViews.TaskSummary> candidate(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) CandidateRequest request) {
         if (request == null) {
             throw new com.zifang.z.wf.core.service.WfEngineException("请求体不能为空");
         }
@@ -122,21 +123,24 @@ public class WfTaskOperationController {
 
     @PostMapping("/suspend")
     @Operation(summary = "挂起待办（等条件成立；挂起期间仍可见但不能办理）")
-    public Result<WfViews.TaskSummary> suspend(@RequestBody WfRequests.TaskOperation request) {
+    @BizApi(summary = "suspend", description = "", tags = { "z-wf" })
+    public Result<WfViews.TaskSummary> suspend(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.TaskOperation request) {
         return Result.success(viewMapper.toSummary(
                 taskService.suspendTask(request.getTaskId(), request.getUserId())));
     }
 
     @PostMapping("/activate")
     @Operation(summary = "恢复被挂起的待办")
-    public Result<WfViews.TaskSummary> activate(@RequestBody WfRequests.TaskOperation request) {
+    @BizApi(summary = "activate", description = "", tags = { "z-wf" })
+    public Result<WfViews.TaskSummary> activate(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.TaskOperation request) {
         return Result.success(viewMapper.toSummary(
                 taskService.activateTask(request.getTaskId(), request.getUserId())));
     }
 
     @PostMapping("/transfer")
     @Operation(summary = "001_转办（责任人转移）")
-    public Result<WfViews.TaskSummary> transfer(@RequestBody WfRequests.TaskOperation request) {
+    @BizApi(summary = "transfer", description = "", tags = { "z-wf" })
+    public Result<WfViews.TaskSummary> transfer(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.TaskOperation request) {
         WfTask task = taskService.transfer(request.getTaskId(), request.getUserId(),
                 request.getTargetUserId(), request.getComment());
         return Result.success(viewMapper.toSummary(task));
@@ -144,7 +148,8 @@ public class WfTaskOperationController {
 
     @PostMapping("/delegate")
     @Operation(summary = "002_委派（处理权转移，责任不变）")
-    public Result<WfViews.TaskSummary> delegate(@RequestBody WfRequests.TaskOperation request) {
+    @BizApi(summary = "delegate", description = "", tags = { "z-wf" })
+    public Result<WfViews.TaskSummary> delegate(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.TaskOperation request) {
         WfTask task = taskService.delegate(request.getTaskId(), request.getUserId(),
                 request.getTargetUserId(), request.getComment());
         return Result.success(viewMapper.toSummary(task));
@@ -152,7 +157,8 @@ public class WfTaskOperationController {
 
     @PostMapping("/claim")
     @Operation(summary = "003_认领（从候选池取走）")
-    public Result<WfViews.TaskSummary> claim(@RequestBody WfRequests.TaskOperation request) {
+    @BizApi(summary = "claim", description = "", tags = { "z-wf" })
+    public Result<WfViews.TaskSummary> claim(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.TaskOperation request) {
         WfTask task = taskService.claim(request.getTaskId(), request.getUserId(),
                 request.getTargetGroups());
         return Result.success(viewMapper.toSummary(task));
@@ -160,14 +166,16 @@ public class WfTaskOperationController {
 
     @PostMapping("/unclaim")
     @Operation(summary = "004_取消认领（放回候选池）")
-    public Result<WfViews.TaskSummary> unclaim(@RequestBody WfRequests.TaskOperation request) {
+    @BizApi(summary = "unclaim", description = "", tags = { "z-wf" })
+    public Result<WfViews.TaskSummary> unclaim(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.TaskOperation request) {
         WfTask task = taskService.unclaim(request.getTaskId(), request.getUserId());
         return Result.success(viewMapper.toSummary(task));
     }
 
     @PostMapping("/withdraw")
     @Operation(summary = "005_撤回（放回候选池）")
-    public Result<WfViews.TaskSummary> withdraw(@RequestBody WfRequests.TaskOperation request) {
+    @BizApi(summary = "withdraw", description = "", tags = { "z-wf" })
+    public Result<WfViews.TaskSummary> withdraw(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.TaskOperation request) {
         WfTask task = taskService.withdraw(request.getTaskId(), request.getUserId(),
                 request.getComment());
         return Result.success(viewMapper.toSummary(task));
@@ -175,8 +183,9 @@ public class WfTaskOperationController {
 
     @PostMapping("/force-complete")
     @Operation(summary = "006_强制完成（跳过办理人权限，需网关层限制访问）")
+    @BizApi(summary = "forceComplete", description = "", tags = { "z-wf" })
     public Result<WfViews.ProcessInstanceView> forceComplete(
-            @RequestBody WfRequests.TaskOperation request) {
+            @RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.TaskOperation request) {
         WfProcessInstance instance = taskService.forceComplete(request.getTaskId(),
                 request.getUserId(), request.getComment(), request.getVariables());
         return Result.success(viewMapper.toProcessView(instance));
@@ -184,7 +193,8 @@ public class WfTaskOperationController {
 
     @PostMapping("/jump")
     @Operation(summary = "007_跳转（把 token 移到指定节点，需网关层限制访问）")
-    public Result<WfViews.ProcessInstanceView> jump(@RequestBody WfRequests.TaskOperation request) {
+    @BizApi(summary = "jump", description = "", tags = { "z-wf" })
+    public Result<WfViews.ProcessInstanceView> jump(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.TaskOperation request) {
         WfProcessInstance instance = taskService.jump(request.getTaskId(), request.getUserId(),
                 request.getTargetActivityId(), request.getComment());
         return Result.success(viewMapper.toProcessView(instance));
@@ -211,7 +221,8 @@ public class WfTaskOperationController {
      */
     @PutMapping("/management")
     @Operation(summary = "008_调整管理属性（优先级 / 到期时间 / 候选池；null 表示这一项不改）")
-    public Result<WfViews.TaskSummary> management(@RequestBody ManagementRequest request) {
+    @BizApi(summary = "调整管理属性：优先级 / 到期时间 / 候选用户 / 候选组（第 45 轮补 REST 入口）", description = "调整管理属性：优先级 / 到期时间 / 候选用户 / 候选组（第 45 轮补 REST 入口）。 service 层的 WfTaskService#updateTask 早就存在 ， 但一直没有 HTTP 入口 —— 于是「调高优先级」「延长办理期限」这两件 审批系统天天要做的事，前端只能改数据库。 ⇒ 这一条把那个半套补齐。 null 表示\"这一项不改\"，而不是\"把它清空\" ： 改期与优先级都很难表达\"清空截止时间\"这个意图 （清空 DDL 列与\"没有过\"在业务上不是一回事）， 与 WfProcessInstance#name「空串报错、null 才表示清空」是同一条规矩。 候选用户与候选组传空数组才是\"清空\"。 时间用毫秒时间戳 ，与本仓所有视图（WfViews.TaskSummary#dueDate） 和 WfFilterService 的时间条件保持同一口径 —— 存字符串的日期在不同库、不同机器上会按本地时区解释， 同一段调用换个环境就查出一批不同的单。", tags = { "z-wf" })
+    public Result<WfViews.TaskSummary> management(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) ManagementRequest request) {
         if (request == null || request.getTaskId() == null || request.getTaskId().trim().isEmpty()) {
             throw new com.zifang.z.wf.core.service.WfEngineException("taskId 不能为空");
         }
@@ -281,3 +292,6 @@ public class WfTaskOperationController {
         }
     }
 }
+
+
+

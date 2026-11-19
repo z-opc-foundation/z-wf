@@ -1,12 +1,17 @@
 package com.zifang.z.wf.web.api;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-
+import com.zifang.util.core.meta.Result;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.meta.api.annotation.BizField;
+import com.zifang.z.meta.api.annotation.BizParam;
+import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
+import com.zifang.z.wf.core.definition.dmn.WfDmnHitPolicy;
+import com.zifang.z.wf.core.engine.dmn.WfDmnDecisionResult;
+import com.zifang.z.wf.core.service.WfDecisionService;
+import com.zifang.z.wf.core.service.WfEngineException;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
-
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -15,15 +20,10 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.zifang.util.core.meta.Result;
-import com.zifang.z.wf.core.definition.dmn.WfDmnDecision;
-import com.zifang.z.wf.core.definition.dmn.WfDmnHitPolicy;
-import com.zifang.z.wf.core.engine.dmn.WfDmnDecisionResult;
-import com.zifang.z.wf.core.service.WfDecisionService;
-import com.zifang.z.wf.core.service.WfEngineException;
-
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * DMN 决策表 Controller —— 部署决策表、按 key 求值。
@@ -53,7 +53,8 @@ public class WfDecisionController {
 
     @PostMapping("/deploy")
     @Operation(summary = "001_部署 DMN XML（一个文件里的多个 decision 全部部署，返回各自的 key 与版本）")
-    public Result<Map<String, Object>> deploy(@RequestBody DeployRequest request) {
+    @BizApi(summary = "deploy", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> deploy(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) DeployRequest request) {
         if (request == null || request.getDmnXml() == null || request.getDmnXml().trim().isEmpty()) {
             // 空内容会在解析器里报一句与调用方语境无关的错，这里先挡一次
             throw new WfEngineException("部署内容不能为空");
@@ -73,13 +74,15 @@ public class WfDecisionController {
 
     @GetMapping("/{key}")
     @Operation(summary = "002_取某个 key 的最新版本")
-    public Result<Map<String, Object>> latest(@PathVariable String key) {
+    @BizApi(summary = "latest", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> latest(@PathVariable @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String key) {
         return Result.success(toView(require(key)));
     }
 
     @GetMapping("/{key}/versions")
     @Operation(summary = "003_列某个 key 的所有版本（新版本在前）")
-    public Result<Map<String, Object>> versions(@PathVariable String key) {
+    @BizApi(summary = "versions", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> versions(@PathVariable @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String key) {
         List<WfDmnDecision> found = decisionService.findDecisionsByKey(key);
         if (found.isEmpty()) {
             throw notFound(key);
@@ -96,8 +99,9 @@ public class WfDecisionController {
 
     @GetMapping("/{key}/versions/{version}")
     @Operation(summary = "004_取指定版本")
-    public Result<Map<String, Object>> version(@PathVariable String key,
-                                                @PathVariable int version) {
+    @BizApi(summary = "version", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> version(@PathVariable @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String key,
+                                                @PathVariable @BizParam(name = "version", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.PATH) int version) {
         WfDmnDecision decision = decisionService.findDecisionByKey(key, version);
         if (decision == null) {
             throw notFound(key, version);
@@ -107,8 +111,9 @@ public class WfDecisionController {
 
     @PostMapping("/{key}/evaluate")
     @Operation(summary = "005_求值：给一组变量，拿到决策结论")
-    public Result<Map<String, Object>> evaluate(@PathVariable String key,
-                                                 @RequestBody EvaluateRequest request) {
+    @BizApi(summary = "evaluate", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> evaluate(@PathVariable @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String key,
+                                                 @RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) EvaluateRequest request) {
         WfDmnDecisionResult result = decisionService.evaluateDecision(key,
                 request == null ? null : request.getVariables());
         return Result.success(toResultView(result));
@@ -116,7 +121,8 @@ public class WfDecisionController {
 
     @DeleteMapping("/{key}/versions/{version}")
     @Operation(summary = "006_删掉指定版本（不存在就报错，不静默返回成功）")
-    public Result<Void> delete(@PathVariable String key, @PathVariable int version) {
+    @BizApi(summary = "delete", description = "", tags = { "z-wf" })
+    public Result<Void> delete(@PathVariable @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.PATH) String key, @PathVariable @BizParam(name = "version", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.PATH) int version) {
         if (!decisionService.deleteDecision(key, version)) {
             throw notFound(key, version);
         }
@@ -245,3 +251,4 @@ public class WfDecisionController {
         }
     }
 }
+

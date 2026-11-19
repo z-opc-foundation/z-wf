@@ -1,23 +1,10 @@
 package com.zifang.z.wf.web.api;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-
-import jakarta.annotation.Resource;
-
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
-
 import com.zifang.util.core.meta.Result;
 import com.zifang.util.core.meta.page.PageResult;
+import com.zifang.z.meta.api.annotation.BizApi;
+import com.zifang.z.meta.api.annotation.BizField;
+import com.zifang.z.meta.api.annotation.BizParam;
 import com.zifang.z.wf.core.definition.WfDefinition;
 import com.zifang.z.wf.core.model.WfProcessInstance;
 import com.zifang.z.wf.core.model.WfProcessStatus;
@@ -30,10 +17,23 @@ import com.zifang.z.wf.core.service.WfTaskService;
 import com.zifang.z.wf.web.dto.WfRequests;
 import com.zifang.z.wf.web.dto.WfViews;
 import com.zifang.z.wf.web.mapper.WfViewMapper;
-
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.annotation.Resource;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * 审批中心 Controller —— 前端审批页的统一入口。
@@ -72,8 +72,9 @@ public class WfApprovalCenterController {
 
     @GetMapping("/dashboard")
     @Operation(summary = "001_获取仪表盘统计")
+    @BizApi(summary = "dashboard", description = "", tags = { "z-wf" })
     public Result<WfViews.DashboardStats> dashboard(
-            @Parameter(description = "当前用户ID") @RequestParam String userId) {
+            @Parameter(description = "当前用户ID") @RequestParam @BizParam(name = "userId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String userId) {
 
         WfViews.DashboardStats stats = new WfViews.DashboardStats();
         List<WfTask> todo = taskService.getTodoList(userId, null, 1, 10000);
@@ -93,11 +94,15 @@ public class WfApprovalCenterController {
 
     @GetMapping("/tasks/todo")
     @Operation(summary = "002_我的待办")
+    @BizApi(summary = "todoList", description = "", tags = { "z-wf" })
     public Result<PageResult<WfViews.TaskSummary>> todoList(
-            @RequestParam String userId,
-            @RequestParam(required = false) String groups,
-            @RequestParam(defaultValue = "1") int pageNum,
-            @RequestParam(defaultValue = "20") int pageSize) {
+            @RequestParam @BizParam(name = "userId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String userId,
+            @RequestParam(required = false)
+            @BizParam(name = "groups", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String groups,
+            @RequestParam(defaultValue = "1")
+            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageNum,
+            @RequestParam(defaultValue = "20")
+            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageSize) {
 
         List<String> groupList = splitCsv(groups);
         // 分页下推 + 真实 total。此前是"拉 10000 条再在内存里切"，
@@ -109,10 +114,13 @@ public class WfApprovalCenterController {
 
     @GetMapping("/tasks/done")
     @Operation(summary = "003_我的已办")
+    @BizApi(summary = "doneList", description = "", tags = { "z-wf" })
     public Result<PageResult<WfViews.TaskSummary>> doneList(
-            @RequestParam String userId,
-            @RequestParam(defaultValue = "1") int pageNum,
-            @RequestParam(defaultValue = "20") int pageSize) {
+            @RequestParam @BizParam(name = "userId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String userId,
+            @RequestParam(defaultValue = "1")
+            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageNum,
+            @RequestParam(defaultValue = "20")
+            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageSize) {
 
         List<WfTask> rows = taskService.getDoneList(userId, pageNum, pageSize);
         return Result.success(new PageResult<>(viewMapper.toSummaries(rows),
@@ -121,14 +129,16 @@ public class WfApprovalCenterController {
 
     @GetMapping("/tasks/get")
     @Operation(summary = "004_任务详情")
-    public Result<WfViews.TaskDetail> taskDetail(@RequestParam String taskId) {
+    @BizApi(summary = "taskDetail", description = "", tags = { "z-wf" })
+    public Result<WfViews.TaskDetail> taskDetail(@RequestParam @BizParam(name = "taskId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String taskId) {
         return Result.success(viewMapper.toDetail(taskService.getTask(taskId)));
     }
 
     @PostMapping("/tasks/complete")
     @Operation(summary = "005_办理任务（审批通过/驳回）")
+    @BizApi(summary = "completeTask", description = "", tags = { "z-wf" })
     public Result<WfViews.ProcessInstanceView> completeTask(
-            @RequestBody WfRequests.CompleteTask request) {
+            @RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.CompleteTask request) {
         String userId = request.getUserId();
         if (userId == null || userId.trim().isEmpty()) {
             // z-camuda 前端不发 userId，办结人就是任务 assignee
@@ -153,11 +163,15 @@ public class WfApprovalCenterController {
 
     @GetMapping("/tasks/claimable")
     @Operation(summary = "006_可认领任务")
+    @BizApi(summary = "claimableList", description = "", tags = { "z-wf" })
     public Result<PageResult<WfViews.TaskSummary>> claimableList(
-            @RequestParam String userId,
-            @RequestParam(required = false) String groups,
-            @RequestParam(defaultValue = "1") int pageNum,
-            @RequestParam(defaultValue = "20") int pageSize) {
+            @RequestParam @BizParam(name = "userId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String userId,
+            @RequestParam(required = false)
+            @BizParam(name = "groups", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String groups,
+            @RequestParam(defaultValue = "1")
+            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageNum,
+            @RequestParam(defaultValue = "20")
+            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageSize) {
 
         List<String> groupList = splitCsv(groups);
         List<WfTask> rows = taskService.getClaimableList(userId, groupList, pageNum, pageSize);
@@ -169,11 +183,15 @@ public class WfApprovalCenterController {
 
     @GetMapping("/my-processes")
     @Operation(summary = "007_我发起的流程")
+    @BizApi(summary = "myProcesses", description = "", tags = { "z-wf" })
     public Result<PageResult<WfViews.ProcessInstanceView>> myProcesses(
-            @RequestParam String userId,
-            @RequestParam(required = false) String status,
-            @RequestParam(defaultValue = "1") int pageNum,
-            @RequestParam(defaultValue = "20") int pageSize) {
+            @RequestParam @BizParam(name = "userId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String userId,
+            @RequestParam(required = false)
+            @BizParam(name = "status", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String status,
+            @RequestParam(defaultValue = "1")
+            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageNum,
+            @RequestParam(defaultValue = "20")
+            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageSize) {
 
         WfProcessInstanceQuery query = new WfProcessInstanceQuery()
                 .setStartUserId(userId)
@@ -189,7 +207,8 @@ public class WfApprovalCenterController {
 
     @GetMapping("/processes/get")
     @Operation(summary = "008_流程详情（实例+待办+轨迹+评论）")
-    public Result<WfViews.ProcessDetail> processDetail(@RequestParam String processInstanceId) {
+    @BizApi(summary = "processDetail", description = "", tags = { "z-wf" })
+    public Result<WfViews.ProcessDetail> processDetail(@RequestParam @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId) {
         WfProcessInstance instance = runtimeService.getProcessInstance(processInstanceId);
         if (instance == null) {
             return Result.fail("流程实例不存在: " + processInstanceId);
@@ -206,7 +225,8 @@ public class WfApprovalCenterController {
 
     @PostMapping("/processes/start")
     @Operation(summary = "009_发起流程")
-    public Result<Map<String, Object>> startProcess(@RequestBody WfRequests.StartProcess request) {
+    @BizApi(summary = "startProcess", description = "", tags = { "z-wf" })
+    public Result<Map<String, Object>> startProcess(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.StartProcess request) {
         String definitionKey = resolveDefinitionKey(request);
         if (definitionKey == null) {
             return Result.fail("definitionKey/processKey 不能为空");
@@ -242,7 +262,8 @@ public class WfApprovalCenterController {
      */
     @PostMapping("/processes/start-default")
     @Operation(summary = "009b_按默认流程发起（不传 key）")
-    public Result<String> startDefaultProcess(@RequestBody WfRequests.StartProcess request) {
+    @BizApi(summary = "按<b>默认</b>流程发起", description = "按 默认 流程发起。 独立端点而不是给 /processes/start 加个「key 为空就走默认」的分支 ： 那样「忘了传 key」和「想走默认」会走同一条路，而前者几乎总是调用方的 bug。 分开之后，忘了传 key 会立刻报「definitionKey 不能为空」， 走默认则是一条明确的意图。", tags = { "z-wf" })
+    public Result<String> startDefaultProcess(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.StartProcess request) {
         String processId = runtimeService.startDefaultProcessInstance(
                 resolveBusinessKey(request), resolveUserId(request),
                 request.getDeptId(), request.getVariables());
@@ -262,7 +283,8 @@ public class WfApprovalCenterController {
      */
     @PostMapping("/processes/start-by-event")
     @Operation(summary = "009b_按消息/信号发起流程（外部系统回调触发）")
-    public Result<String> startByEvent(@RequestBody WfRequests.StartByEvent request) {
+    @BizApi(summary = "按消息 / 信号启动流程", description = "按消息 / 信号启动流程。 与 /processes/start 分成两个端点而不是加个参数 ： 两者是 不同的触发源 ，不是同一个操作的两种叫法。合并成一个端点加 if 分支，调用方就会把\"收到订单\"和\"用户点了发起\"写成同一段代码的 两种参数组合，而它们在引擎里走的是不同的入口节点、不同的定义查找方式。", tags = { "z-wf" })
+    public Result<String> startByEvent(@RequestBody @BizParam(name = "request", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.BODY) WfRequests.StartByEvent request) {
         if (request == null) {
             throw new WfEngineException("请求体不能为空");
         }
@@ -294,6 +316,7 @@ public class WfApprovalCenterController {
 
     @GetMapping("/processes/definitions")
     @Operation(summary = "010_可发起的流程定义")
+    @BizApi(summary = "definitions", description = "", tags = { "z-wf" })
     public Result<List<WfViews.DefinitionView>> definitions() {
         List<WfViews.DefinitionView> result = new ArrayList<>();
         for (WfDefinition definition : repositoryService.getAllDefinitions()) {
@@ -312,7 +335,8 @@ public class WfApprovalCenterController {
 
     @GetMapping("/processes/versions")
     @Operation(summary = "011_流程定义历史版本")
-    public Result<List<WfViews.DefinitionView>> definitionVersions(@RequestParam String key) {
+    @BizApi(summary = "definitionVersions", description = "", tags = { "z-wf" })
+    public Result<List<WfViews.DefinitionView>> definitionVersions(@RequestParam @BizParam(name = "key", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String key) {
         List<WfViews.DefinitionView> result = new ArrayList<>();
         for (WfDefinition definition : repositoryService.getDefinitionVersions(key)) {
             WfViews.DefinitionView view = new WfViews.DefinitionView();
@@ -327,19 +351,32 @@ public class WfApprovalCenterController {
 
     @GetMapping("/processes/search")
     @Operation(summary = "012_按业务键/状态/变量搜索流程（变量：只给 variableName 是问存在性；配合 valueEquals / GreaterThan / LessThan / From+To 四选一）")
+    @BizApi(summary = "searchProcesses", description = "", tags = { "z-wf" })
     public Result<PageResult<WfViews.ProcessInstanceView>> searchProcesses(
-            @RequestParam(required = false) String businessKey,
-            @RequestParam(required = false) String definitionKey,
-            @RequestParam(required = false) String userId,
-            @RequestParam(required = false) String status,
-            @RequestParam(required = false) String variableName,
-            @RequestParam(required = false) String variableValueEquals,
-            @RequestParam(required = false) Double variableValueGreaterThan,
-            @RequestParam(required = false) Double variableValueLessThan,
-            @RequestParam(required = false) Double variableValueFrom,
-            @RequestParam(required = false) Double variableValueTo,
-            @RequestParam(defaultValue = "1") int pageNum,
-            @RequestParam(defaultValue = "20") int pageSize) {
+            @RequestParam(required = false)
+            @BizParam(name = "businessKey", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String businessKey,
+            @RequestParam(required = false)
+            @BizParam(name = "definitionKey", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String definitionKey,
+            @RequestParam(required = false)
+            @BizParam(name = "userId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String userId,
+            @RequestParam(required = false)
+            @BizParam(name = "status", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String status,
+            @RequestParam(required = false)
+            @BizParam(name = "variableName", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String variableName,
+            @RequestParam(required = false)
+            @BizParam(name = "variableValueEquals", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String variableValueEquals,
+            @RequestParam(required = false)
+            @BizParam(name = "variableValueGreaterThan", type = BizField.FieldType.DECIMAL, description = "", position = BizParam.Position.QUERY) Double variableValueGreaterThan,
+            @RequestParam(required = false)
+            @BizParam(name = "variableValueLessThan", type = BizField.FieldType.DECIMAL, description = "", position = BizParam.Position.QUERY) Double variableValueLessThan,
+            @RequestParam(required = false)
+            @BizParam(name = "variableValueFrom", type = BizField.FieldType.DECIMAL, description = "", position = BizParam.Position.QUERY) Double variableValueFrom,
+            @RequestParam(required = false)
+            @BizParam(name = "variableValueTo", type = BizField.FieldType.DECIMAL, description = "", position = BizParam.Position.QUERY) Double variableValueTo,
+            @RequestParam(defaultValue = "1")
+            @BizParam(name = "pageNum", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageNum,
+            @RequestParam(defaultValue = "20")
+            @BizParam(name = "pageSize", type = BizField.FieldType.INTEGER, description = "", position = BizParam.Position.QUERY) int pageSize) {
 
         WfProcessInstanceQuery query = new WfProcessInstanceQuery()
                 .setPageNum(pageNum).setPageSize(pageSize);
@@ -418,8 +455,10 @@ public class WfApprovalCenterController {
 
     @DeleteMapping("/processes")
     @Operation(summary = "013_终止流程实例")
-    public Result<Void> terminateProcess(@RequestParam String processInstanceId,
-                                         @RequestParam(required = false) String reason) {
+    @BizApi(summary = "terminateProcess", description = "", tags = { "z-wf" })
+    public Result<Void> terminateProcess(@RequestParam @BizParam(name = "processInstanceId", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String processInstanceId,
+                                         @RequestParam(required = false)
+                                         @BizParam(name = "reason", type = BizField.FieldType.STRING, description = "", position = BizParam.Position.QUERY) String reason) {
         runtimeService.terminate(processInstanceId, reason);
         return Result.success();
     }
@@ -540,3 +579,6 @@ public class WfApprovalCenterController {
         return WfProcessStatus.valueOf(status.trim().toUpperCase(Locale.ROOT));
     }
 }
+
+
+
