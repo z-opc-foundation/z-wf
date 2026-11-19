@@ -251,6 +251,11 @@
             <artifactId>z-meta-api</artifactId>
             <version>1.0.2</version>
         </dependency>
+    <dependency>
+        <groupId>io.github.yuku123</groupId>
+        <artifactId>z-ext-spring-boot-starter</artifactId>
+        <version>1.1.0</version>
+</dependency>
     </dependencies>
 
     <build>
