@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import {Link, useNavigate} from 'react-router-dom';
 import {approvalApi} from '../../services/api';
+import {useWfBase} from '../../routing';
 import {EmptyState, ErrorState} from '@yuku123/z-frontend-common/ui';
 import {DashboardStats, Task} from '../../types/workflow';
 
@@ -27,6 +28,7 @@ const styles: Record<string, any> = {
 
 const Dashboard: React.FC = () => {
     const navigate = useNavigate();
+    const wfBase = useWfBase();
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<Error | null>(null);
     const [stats, setStats] = useState<DashboardStats>({
@@ -86,7 +88,7 @@ const Dashboard: React.FC = () => {
                             styles={{content: {color: '#1677ff'}}}
                         />
                         <div className={styles.statFooter}>
-                            <Link to="/workflow/todo">
+                            <Link to={`${wfBase}/todo`}>
                                 去处理 <RightOutlined/>
                             </Link>
                         </div>
@@ -101,7 +103,7 @@ const Dashboard: React.FC = () => {
                             styles={{content: {color: '#52c41a'}}}
                         />
                         <div className={styles.statFooter}>
-                            <Link to="/workflow/done">
+                            <Link to={`${wfBase}/done`}>
                                 查看全部 <RightOutlined/>
                             </Link>
                         </div>
@@ -116,7 +118,7 @@ const Dashboard: React.FC = () => {
                             styles={{content: {color: '#722ed1'}}}
                         />
                         <div className={styles.statFooter}>
-                            <Link to="/workflow/my-processes">
+                            <Link to={`${wfBase}/my-processes`}>
                                 查看全部 <RightOutlined/>
                             </Link>
                         </div>
@@ -132,7 +134,7 @@ const Dashboard: React.FC = () => {
             待办任务
           </span>
                 }
-                extra={<Link to="/workflow/todo">查看更多</Link>}
+                extra={<Link to={`${wfBase}/todo`}>查看更多</Link>}
                 loading={loading}
                 className={styles.todoCard}
             >
@@ -147,7 +149,7 @@ const Dashboard: React.FC = () => {
                                     <Button
                                         type="primary"
                                         size="small"
-                                        onClick={() => navigate(`/workflow/task/${task.taskId}`)}
+                                        onClick={() => navigate(`${wfBase}/task/${encodeURIComponent(task.taskId)}`)}
                                     >
                                         处理
                                     </Button>,

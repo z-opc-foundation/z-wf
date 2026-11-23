@@ -8,10 +8,7 @@ import ProcessDesigner from './wf/pages/ProcessDesigner'
 import ProcessDetail from './wf/pages/ProcessDetail'
 import TaskDetail from './wf/pages/TaskDetail'
 
-/**
- * 路由表用绝对路径 /workflow/*：页面内部 navigate 与 <Link> 都写死了
- * /workflow/todo、/workflow/designer/:id 等（主壳原样），suit 必须挂 layout 路由同前缀。
- */
+/** 独立壳的默认路由；wf/pages 内部导航从挂载路径推导根，宿主也可 configureWf({wfBase})。 */
 
 export {default as Dashboard} from './wf/pages/Dashboard'
 export {default as TodoList} from './wf/pages/TodoList'

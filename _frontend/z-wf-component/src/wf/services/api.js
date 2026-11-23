@@ -19,12 +19,16 @@
  * 因为这三个文件的导出名与其他模块大量重名。
  */
 import {createRequest} from '@yuku123/z-frontend-common'
+import {configureWfBase} from '../routing.js'
 
 const rawRequest = createRequest({baseURL: '', tokenKey: 'zwf_token'})
 
 export function configureWf(config) {
     if (config && config.apiBase !== undefined) {
         rawRequest.defaults.baseURL = config.apiBase
+    }
+    if (config && 'wfBase' in config) {
+        configureWfBase(config.wfBase)
     }
 }
 
@@ -67,6 +71,9 @@ export const approvalApi = {
         request.get('/approval-center/tasks/done', {params: {userId, pageNum, pageSize}}),
     getTaskDetail: (taskId) => request.get('/approval-center/tasks/get', {params: {taskId}}),
     completeTask: (taskId, payload) => request.post('/approval-center/tasks/complete', payload, {params: {taskId}}),
+    // WfTaskOperationController：四个字段均在 JSON 请求体内，沿用统一 API 根与 Result 解包。
+    transferTask: (taskId, {userId, targetUserId, comment}) =>
+        request.post('/wf/task/transfer', {taskId, userId, targetUserId, comment}),
     getMyProcesses: (userId, pageNum = 1, pageSize = 10) =>
         request.get('/approval-center/my-processes', {params: {userId, pageNum, pageSize}}),
     getProcessDetail: (processInstanceId) =>

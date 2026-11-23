@@ -7,6 +7,7 @@ import {
     ReloadOutlined,
 } from '@ant-design/icons';
 import {approvalApi} from '../../services/api';
+import {useWfBase} from '../../routing';
 import {ErrorState, ListTable} from '@yuku123/z-frontend-common/ui';
 import {PageResult, ProcessInstance} from '../../types';
 import dayjs from 'dayjs';
@@ -17,6 +18,7 @@ const {confirm} = Modal;
 
 const MyProcesses: React.FC = () => {
     const navigate = useNavigate();
+    const wfBase = useWfBase();
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<Error | null>(null);
     const [data, setData] = useState<PageResult<ProcessInstance>>({
@@ -152,7 +154,7 @@ const MyProcesses: React.FC = () => {
                     <Button
                         type="primary"
                         size="small"
-                        onClick={() => navigate(`/workflow/process/${record.processInstanceId}`)}
+                        onClick={() => navigate(`${wfBase}/process/${encodeURIComponent(record.processInstanceId)}`)}
                     >
                         详情
                     </Button>

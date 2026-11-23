@@ -10,6 +10,7 @@ import {
     UserOutlined,
 } from '@ant-design/icons';
 import {approvalApi, designerApi} from '../../services/api';
+import {useWfBase} from '../../routing';
 import {EmptyState, ErrorState, PageHeader} from '@yuku123/z-frontend-common/ui';
 import {ApprovalHistory, ProcessInstance} from '../../types';
 import dayjs from 'dayjs';
@@ -21,6 +22,7 @@ const {Step} = Steps;
 const ProcessDetail: React.FC = () => {
     const {processInstanceId} = useParams<{ processInstanceId: string }>();
     const navigate = useNavigate();
+    const wfBase = useWfBase();
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<Error | null>(null);
     const [process, setProcess] = useState<ProcessInstance | null>(null);
@@ -114,7 +116,7 @@ const ProcessDetail: React.FC = () => {
         return (
             <div className={styles.emptyContainer}>
                 <Empty description="流程实例不存在或已被删除"/>
-                <Button type="primary" onClick={() => navigate(-1)} style={{marginTop: 16}}>
+                <Button type="primary" onClick={() => navigate(`${wfBase}/my-processes`)} style={{marginTop: 16}}>
                     返回
                 </Button>
             </div>
@@ -123,7 +125,7 @@ const ProcessDetail: React.FC = () => {
 
     return (
         <div className={styles.container}>
-            <PageHeader title="流程详情" back={() => navigate('/workflow/my-processes')}/>
+            <PageHeader title="流程详情" back={() => navigate(`${wfBase}/my-processes`)}/>
             <Card className={styles.card}>
                 <div className={styles.header}>
                     <div className={styles.headerActions}>

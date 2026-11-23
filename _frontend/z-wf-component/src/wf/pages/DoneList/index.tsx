@@ -3,6 +3,7 @@ import {useNavigate} from 'react-router-dom';
 import {Button, Space, Tag, Tooltip, Typography,} from 'antd';
 import {HistoryOutlined, ReloadOutlined} from '@ant-design/icons';
 import {approvalApi} from '../../services/api';
+import {useWfBase} from '../../routing';
 import {ErrorState, ListTable} from '@yuku123/z-frontend-common/ui';
 import {PageResult, Task} from '../../types';
 import dayjs from 'dayjs';
@@ -12,6 +13,7 @@ const {Title} = Typography;
 
 const DoneList: React.FC = () => {
     const navigate = useNavigate();
+    const wfBase = useWfBase();
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<Error | null>(null);
     const [data, setData] = useState<PageResult<Task>>({
@@ -84,7 +86,7 @@ const DoneList: React.FC = () => {
                 <Space size="small">
                     <Button
                         type="link" size="small"
-                        onClick={() => navigate(`/workflow/task/${record.taskId}`)}
+                        onClick={() => navigate(`${wfBase}/task/${encodeURIComponent(record.taskId)}`)}
                     >
                         查看
                     </Button>

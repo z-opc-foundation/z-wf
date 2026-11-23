@@ -13,6 +13,7 @@ import {
     SearchOutlined,
 } from '@ant-design/icons';
 import {approvalApi} from '../../services/api';
+import {useWfBase} from '../../routing';
 import {EmptyState, ErrorState} from '@yuku123/z-frontend-common/ui';
 import {ProcessDefinition} from '../../types';
 import dayjs from 'dayjs';
@@ -23,6 +24,7 @@ const {confirm} = Modal;
 
 const ProcessList: React.FC = () => {
     const navigate = useNavigate();
+    const wfBase = useWfBase();
     const [form] = Form.useForm();
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<Error | null>(null);
@@ -178,7 +180,7 @@ const ProcessList: React.FC = () => {
                     <Button
                         type="primary"
                         size="small"
-                        onClick={() => navigate(`/workflow/designer/${record.id}`)}
+                        onClick={() => navigate(`${wfBase}/designer/${encodeURIComponent(record.id)}`)}
                     >
                         设计
                     </Button>

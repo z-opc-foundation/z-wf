@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import {useNavigate, useParams} from 'react-router-dom';
 import {
     Badge,
@@ -12,7 +12,6 @@ import {
     message,
     Modal,
     Radio,
-    Select,
     Space,
     Spin,
     Tag,
@@ -25,11 +24,11 @@ import {
     ClockCircleOutlined,
     CloseCircleOutlined,
     CloseOutlined,
-    ExclamationCircleOutlined,
     PlayCircleOutlined,
     UserOutlined,
 } from '@ant-design/icons';
 import {approvalApi, designerApi} from '../../services/api';
+import {useWfBase} from '../../routing';
 import {EmptyState, ErrorState, PageHeader} from '@yuku123/z-frontend-common/ui';
 import {ApprovalHistory, Task} from '../../types';
 import dayjs from 'dayjs';
@@ -37,11 +36,10 @@ import styles from './index.module.css';
 
 const {Title, Text} = Typography;
 const {TextArea} = Input;
-const {confirm} = Modal;
-
 const TaskDetail: React.FC = () => {
     const {taskId} = useParams<{ taskId: string }>();
     const navigate = useNavigate();
+    const wfBase = useWfBase();
     const [form] = Form.useForm();
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<Error | null>(null);
@@ -49,11 +47,17 @@ const TaskDetail: React.FC = () => {
     const [task, setTask] = useState<Task | null>(null);
     const [history, setHistory] = useState<ApprovalHistory[]>([]);
     const [action, setAction] = useState<'approve' | 'reject'>('approve');
+    const [transferOpen, setTransferOpen] = useState(false);
+    const [targetUserId, setTargetUserId] = useState('');
+    const [transferComment, setTransferComment] = useState('');
+    const [transferring, setTransferring] = useState(false);
+    const transferPending = useRef(false);
 
     const fetchTaskDetail = async () => {
         if (!taskId) return;
         try {
             setLoading(true);
+            setError(null);
             // 2026-10-04 修：轨迹端点 /api/wf/process/trail 收的是**流程实例 id**，
             // 原来直接把 taskId 传进去，引擎查不到任何 activity，页面表现为「审批历史恒空」，
             // 而且不报错。先取任务详情拿 processInstanceId 再查轨迹。
@@ -80,7 +84,7 @@ const TaskDetail: React.FC = () => {
     }, [taskId]);
 
     const handleSubmit = async (values: any) => {
-        if (!taskId) return;
+        if (!taskId || transferPending.current || submitting) return;
         try {
             setSubmitting(true);
             await approvalApi.completeTask(taskId, {
@@ -89,7 +93,7 @@ const TaskDetail: React.FC = () => {
                 formData: values.formData,
             });
             message.success('审批操作成功');
-            navigate('/workflow/todo');
+            navigate(`${wfBase}/todo`);
         } catch (error) {
             console.error('审批操作失败:', error);
             message.error('审批操作失败');
@@ -98,24 +102,44 @@ const TaskDetail: React.FC = () => {
         }
     };
 
-    const handleTransfer = () => {
-        confirm({
-            title: '转交任务',
-            icon: <ExclamationCircleOutlined/>,
-            content: (
-                <div style={{marginTop: 16}}>
-                    <Select
-                        showSearch
-                        placeholder="选择转交人"
-                        style={{width: '100%'}}
-                        options={[]}
-                    />
-                </div>
-            ),
-            onOk: () => {
-                message.success('转交成功');
-            },
-        });
+    const handleTransfer = async () => {
+        // ref 同步锁住同一轮渲染内的重复点击，不能只依赖异步 state。
+        if (!taskId || transferPending.current || submitting) return;
+        const target = targetUserId.trim();
+        if (!target) {
+            message.warning('请输入目标用户 ID');
+            return;
+        }
+        let userId = '';
+        try {
+            const info = JSON.parse(localStorage.getItem('userInfo') || '{}');
+            userId = String(info?.userId || info?.userCode || info?.id || info?.userName || '').trim();
+        } catch { /* 无有效身份时拒绝提交，不假冒任务处理人。 */ }
+        if (!userId) {
+            message.error('无法识别当前登录用户，请重新登录后转交');
+            return;
+        }
+
+        transferPending.current = true;
+        setTransferring(true);
+        try {
+            await approvalApi.transferTask(taskId, {
+                userId,
+                targetUserId: target,
+                comment: transferComment.trim(),
+            });
+            message.success('转交成功');
+            setTransferOpen(false);
+            setTargetUserId('');
+            setTransferComment('');
+            await fetchTaskDetail();
+        } catch (error) {
+            // 请求失败保留弹窗及输入，以便修正或重试。
+            message.error(error instanceof Error ? error.message : '转交失败');
+        } finally {
+            transferPending.current = false;
+            setTransferring(false);
+        }
     };
 
     const getActionIcon = (action: string) => {
@@ -162,7 +186,7 @@ const TaskDetail: React.FC = () => {
         return (
             <div className={styles.emptyContainer}>
                 <Empty description="任务不存在或已被处理"/>
-                <Button type="primary" onClick={() => navigate(-1)} style={{marginTop: 16}}>
+                <Button type="primary" onClick={() => navigate(`${wfBase}/todo`)} style={{marginTop: 16}}>
                     返回
                 </Button>
             </div>
@@ -171,7 +195,42 @@ const TaskDetail: React.FC = () => {
 
     return (
         <div className={styles.container}>
-            <PageHeader title="任务详情" back={() => navigate(-1)}/>
+            <PageHeader title="任务详情" back={() => { if (!transferPending.current) navigate(`${wfBase}/todo`); }}/>
+            <Modal
+                title="转交任务"
+                open={transferOpen}
+                onOk={handleTransfer}
+                onCancel={() => { if (!transferPending.current) setTransferOpen(false); }}
+                okText="确认转交"
+                cancelText="取消"
+                confirmLoading={transferring}
+                okButtonProps={{disabled: !targetUserId.trim() || transferring}}
+                cancelButtonProps={{disabled: transferring}}
+                closable={!transferring}
+                keyboard={!transferring}
+                maskClosable={!transferring}
+            >
+                <Form layout="vertical">
+                    <Form.Item label="目标用户 ID" required extra="请输入系统中真实的用户 ID，不是用户姓名。">
+                        <Input
+                            aria-label="目标用户 ID"
+                            placeholder="请输入目标用户 ID"
+                            value={targetUserId}
+                            onChange={(event) => setTargetUserId(event.target.value)}
+                            disabled={transferring}
+                        />
+                    </Form.Item>
+                    <Form.Item label="转交说明">
+                        <TextArea
+                            aria-label="转交说明"
+                            value={transferComment}
+                            onChange={(event) => setTransferComment(event.target.value)}
+                            disabled={transferring}
+                            maxLength={500}
+                        />
+                    </Form.Item>
+                </Form>
+            </Modal>
             <Card className={styles.card}>
                 <div className={styles.header}>
                     <div className={styles.headerActions}>
@@ -265,14 +324,15 @@ const TaskDetail: React.FC = () => {
                                                     type="primary"
                                                     htmlType="submit"
                                                     loading={submitting}
+                                                    disabled={transferring}
                                                     icon={<CheckCircleOutlined/>}
                                                 >
                                                     提交
                                                 </Button>
-                                                <Button onClick={handleTransfer} icon={<UserOutlined/>}>
+                                                <Button onClick={() => setTransferOpen(true)} disabled={submitting || transferring} icon={<UserOutlined/>}>
                                                     转交
                                                 </Button>
-                                                <Button onClick={() => navigate(-1)}>取消</Button>
+                                                <Button disabled={transferring} onClick={() => navigate(`${wfBase}/todo`)}>取消</Button>
                                             </Space>
                                         </Form.Item>
                                     </Form>

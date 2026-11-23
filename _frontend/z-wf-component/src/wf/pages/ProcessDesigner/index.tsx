@@ -1,6 +1,6 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {useNavigate, useParams} from 'react-router-dom';
-import {Button, Divider, Drawer, Form, Input, message, Popconfirm, Radio, Select,} from 'antd';
+import {Button, Divider, Drawer, Form, Input, message, Popconfirm, Radio, Select, Spin,} from 'antd';
 import {
     ArrowLeftOutlined,
     DeleteOutlined,
@@ -14,6 +14,7 @@ import {
 } from '@ant-design/icons';
 import FlowDesigner, {FlowDesignerRef} from '../../components/FlowDesigner';
 import {approvalApi, designerApi} from '../../services/api';
+import {useWfBase} from '../../routing';
 import {ProcessDefinition} from '../../types';
 import styles from './index.module.css';
 
@@ -29,8 +30,9 @@ const approverOptions = [
 ];
 
 const ProcessDesigner: React.FC = () => {
-    const {processDefinitionId} = useParams<{ processDefinitionId: string }>();
+    const {id: processDefinitionId} = useParams<{ id: string }>();
     const navigate = useNavigate();
+    const wfBase = useWfBase();
     const designerRef = useRef<FlowDesignerRef>(null);
     const [form] = Form.useForm();
 
@@ -45,43 +47,43 @@ const ProcessDesigner: React.FC = () => {
     const [drawerVisible, setDrawerVisible] = useState(false);
     const [graphData, setGraphData] = useState<any>(null);
 
-    // 加载流程定义信息
+    // manifest 与宿主内嵌路由都用 :id；设计稿接口仍使用定义的 key。
     useEffect(() => {
-        if (processDefinitionId) {
-            fetchProcessDefinition();
-        }
-    }, [processDefinitionId]);
+        let cancelled = false;
+        setProcessInfo(null);
+        setProcessKey('');
+        setGraphData(null);
+        setDrawerVisible(false);
+        setLoading(true);
 
-    const fetchProcessDefinition = async () => {
-        try {
-            setLoading(true);
-            // 获取流程定义列表，找到当前编辑的流程
-            const definitions = await approvalApi.getProcessDefinitions();
-            const current = definitions.find(d => d.id === processDefinitionId);
-            if (current) {
+        const load = async () => {
+            try {
+                const definitions = await approvalApi.getProcessDefinitions();
+                if (cancelled) return;
+                const current = definitions.find(d => d.id === processDefinitionId);
+                if (!current?.key) {
+                    message.warning('未找到有效流程定义，可能已被删除或未发布');
+                    return;
+                }
+                const flowData = await designerApi.getFlowGraph(String(current.key));
+                if (cancelled) return;
                 setProcessInfo(current);
-                // 后端 getProcessDefinitions 返回的 key 就是流程定义 key
-                setProcessKey(String(current.key ?? ''));
-            } else {
-                message.warning('未找到该流程定义，可能已被删除或未发布');
+                setGraphData(flowData);
+                // 图加载成功前不允许保存，避免用空白画布覆盖已有设计稿。
+                setProcessKey(String(current.key));
+            } catch (error) {
+                if (!cancelled) {
+                    console.error('加载流程定义失败:', error);
+                    message.error('加载流程定义失败');
+                }
+            } finally {
+                if (!cancelled) setLoading(false);
             }
-
-            if (!current?.key) {
-                // 没有 key 就无法定位设计稿, 再往下调只会拿到 400，不如停在这里
-                setGraphData(null);
-                return;
-            }
-
-            // 获取流程图数据
-            const flowData = await designerApi.getFlowGraph(String(current.key));
-            setGraphData(flowData);
-        } catch (error) {
-            console.error('加载流程定义失败:', error);
-            message.error('加载流程定义失败');
-        } finally {
-            setLoading(false);
-        }
-    };
+        };
+        if (processDefinitionId) void load();
+        else setLoading(false);
+        return () => { cancelled = true; };
+    }, [processDefinitionId]);
 
     // 保存流程图
     const handleSave = async () => {
@@ -169,7 +171,7 @@ const ProcessDesigner: React.FC = () => {
                 <div className={styles.toolbarLeft}>
                     <Button
                         icon={<ArrowLeftOutlined/>}
-                        onClick={() => navigate('/workflow/processes')}
+                        onClick={() => navigate(`${wfBase}/processes`)}
                     >
                         返回
                     </Button>
@@ -201,6 +203,7 @@ const ProcessDesigner: React.FC = () => {
                     <Button
                         icon={<SaveOutlined/>}
                         loading={saving}
+                        disabled={loading || !processKey}
                         onClick={handleSave}
                     >
                         保存
@@ -216,6 +219,7 @@ const ProcessDesigner: React.FC = () => {
                             type="primary"
                             icon={<PlayCircleOutlined/>}
                             loading={deploying}
+                            disabled={loading || !processKey}
                         >
                             部署
                         </Button>
@@ -225,12 +229,15 @@ const ProcessDesigner: React.FC = () => {
 
             {/* 流程设计器 */}
             <div className={styles.designerContainer}>
-                <FlowDesigner
-                    ref={designerRef}
-                    initialData={graphData}
-                    readOnly={false}
-                    onNodeClick={handleOpenNodeProperties}
-                />
+                <Spin spinning={loading}>
+                    <FlowDesigner
+                        key={processDefinitionId}
+                        ref={designerRef}
+                        initialData={graphData}
+                        readOnly={loading || !processKey}
+                        onNodeClick={handleOpenNodeProperties}
+                    />
+                </Spin>
             </div>
 
             {/* 节点属性面板 */}
