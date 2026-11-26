@@ -1,0 +1,118 @@
+# z-wf Docker Compose — 三服务编排 (mysql + z-config 注册中心 + z-wf 服务端)
+#
+# 使用:
+#   docker compose up -d             # 启动
+#   docker compose ps                # 查看状态
+#   docker compose logs -f z-wf      # 查看 z-wf 日志
+#   docker compose down              # 停止
+#
+# 端口映射:
+#   z-config       -> 8848 (Netty + HTTP)
+#   z-wf           -> 8080 (审批中心 REST API)
+#   mysql          -> 3306
+#
+# 首次起来后验证:
+#   curl http://localhost:8080/api/wf/health
+#   curl 'http://localhost:8080/api/approval-center/tasks/todo?userId=ceo'
+#   接口文档 http://localhost:8080/doc.html  (Knife4j)
+
+version: '3.8'
+
+services:
+  # ============================================================
+  # MySQL (z-config 与 z-wf 共享; 生产环境建议拆开)
+  # ============================================================
+  mysql:
+    image: mysql:8.0
+    container_name: zwf-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: zconfig
+      MYSQL_USER: zconfig
+      MYSQL_PASSWORD: zconfig_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    networks:
+      - zwf-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot123"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ============================================================
+  # z-config-server (服务注册中心 + 配置中心)
+  # ============================================================
+  z-config:
+    build:
+      context: ../z-config
+      dockerfile: Dockerfile
+    image: ${ZCONFIG_IMAGE:-z-config:latest}
+    container_name: zwf-zconfig
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/zconfig?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
+      SPRING_DATASOURCE_USERNAME: zconfig
+      SPRING_DATASOURCE_PASSWORD: zconfig_pass
+    ports:
+      - "8848:8848"
+    networks:
+      - zwf-network
+    restart: unless-stopped
+
+  # ============================================================
+  # z-wf-server (工作流引擎服务端, 注册到 z-config)
+  # ============================================================
+  z-wf:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${ZWF_IMAGE:-z-wf:latest}
+    container_name: zwf-server
+    depends_on:
+      - z-config
+      - mysql
+    environment:
+      JVM_OPTS: "-Xms512m -Xmx1024m"
+      # 数据源（凭据一律经环境变量注入，不写进镜像层）
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/z_wf?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: root123
+      SPRING_DATASOURCE_DRIVER: com.mysql.cj.jdbc.Driver
+      # z-wf 引擎
+      Z_WF_PERSISTENCE: "jdbc"
+      # 启动时自动建 ZWF_* 六张表。生产环境建议先手工执行 DDL 后置 false，
+      # 让 schema 变更走评审而不是靠容器启动副作用
+      Z_WF_AUTO_INITIALIZE_SCHEMA: "true"
+      Z_WF_DEPLOY_ON_STARTUP: "true"
+      # 条件求值失败时是否放行。审批场景必须保持 false：
+      # 条件写错时宁可卡住等人处理，也不要静默放行
+      Z_WF_FAIL_OPEN: "false"
+      # z-config 注册中心
+      Z_CONFIG_ENABLED: "true"
+      Z_CONFIG_SERVER_ADDR: z-config:8848
+      Z_CONFIG_NAMESPACE: docker
+      # z-rpc 服务端
+      Z_RPC_ENABLED: "true"
+      Z_RPC_PROTOCOL: zrpc
+      Z_RPC_REGISTRY_TYPE: z-config
+      Z_RPC_REGISTRY_ADDRESS: z-config:8848
+      Z_RPC_SERVICE: z-wf
+    ports:
+      - "8080:8080"
+    networks:
+      - zwf-network
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+
+networks:
+  zwf-network:
+    driver: bridge

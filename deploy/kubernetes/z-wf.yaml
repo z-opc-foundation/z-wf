@@ -1,0 +1,370 @@
+# ============================================================
+# z-wf 流程引擎中间件 —— 部署到家庭 k3s 集群
+# ============================================================
+# 与 z-ops 同构的部署形态（独立 ns + 独立 Service + 独立 Deployment），
+# 符合 z-opc AGENTS.md 原则 21：板块之间只有 HTTP 边界、没有 jar 边界。
+#
+# 镜像**不进** registry：节点上 docker build 后 `docker save | gzip | k3s ctr images import -`
+#   （04-main.yaml 记了这个坑：`ctr images import -` 从 stdin 读，直接喂文件会报
+#    "unrecognized image format"；必须是 cat 管道）
+#
+# 使用：
+#   kubectl apply -f z-wf.yaml
+#   kubectl -n z-wf get svc z-wf-admin
+#   # 集群内验证：
+#   kubectl -n z-wf exec deploy/z-wf-admin -- wget -q -O- http://127.0.0.1:8080/api/wf/health
+#
+# ⚠ 部署前必读（这三条是「代码齐备但从没上线过」的坑，2026-10-21 实测）：
+#   1) **DDL 方言**：原 DDL 按 H2 写（CLOB + CREATE INDEX IF NOT EXISTS），
+#      真 MySQL 8.0 上两条都是 ERROR 1064 ⇒ 容器起不来。
+#      已修（z-wf-core 的 WfDdlDialect），实测 MySQL 8.0.46 建出 13 张表 + 29 索引 + 幂等。
+#   2) **库已存在，不要建**：SPRING_DATASOURCE_URL 现在走 Secret（aliyun-db / db-url），
+#      指向的是**共享 RDS 的 `oc` 库**（与 z_team_* / z_ops_* / z-wf 的 13 张 ZWF_* 表同库）
+#      ⇒ **不需要** `CREATE DATABASE`，更**不要** CREATE DATABASE z_wf
+#      （那会多出一个空库，而连接串根本不走它）。
+#      ⚠ 部署前必须先有 Secret aliyun-db（含 db-url / db-username / db-password），
+#        否则 Pod 起不来（缺 secret 键）—— 步骤顺序见 deploy/kubernetes/README.md §2。
+#   3) **无 DataSource 会静默降级**：z.wf.persistence=jdbc 但拿不到 DataSource 时，
+#      WfAutoConfiguration 会回落内存实现（日志一行 WARN）⇒ 流程数据重启即丢。
+#      本清单用 readiness 探针查 /api/wf/health（该端点真查库，不是只报进程活着），
+#      降级时它会 DOWN ⇒ 不会把「假健康」当成好。
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: z-wf
+  labels:
+    app.kubernetes.io/part-of: z-wf
+
+---
+# ===== Service =====
+# ClusterIP 为主：z-wf 是中间件，只给集群内板块按服务名调用。
+# 另开 NodePort 供宿主机排障（不进 Ingress，避免把流程引擎暴露到公网）。
+apiVersion: v1
+kind: Service
+metadata:
+  name: z-wf-admin
+  namespace: z-wf
+  labels:
+    app.kubernetes.io/name: z-wf-admin
+    app.kubernetes.io/part-of: z-wf
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: z-wf-admin
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: z-wf-admin-np
+  namespace: z-wf
+  labels:
+    app.kubernetes.io/name: z-wf-admin
+    app.kubernetes.io/part-of: z-wf
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: z-wf-admin
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      # 排障用直连口。生产集群的 NodePort 号段在 30300~31999 段
+      # （z-vector 30333 / z-ops 30886 / z-opc 30890 / z-task 31882 …），
+      # 这里取 31887，落在同一号段内且未被占用。
+      nodePort: 31887
+
+---
+# ===== Deployment =====
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: z-wf-admin
+  namespace: z-wf
+  labels:
+    app.kubernetes.io/name: z-wf-admin
+    app.kubernetes.io/part-of: z-wf
+spec:
+  replicas: 1
+  # Recreate：单副本 + 不用滚动更新。
+  # 流程引擎有 jobs 表在跑定时器（TIMER 型 job），
+  # 滚动更新会出现「新旧两个实例同时扫同一批到期 job」⇒ 同一 job 被执行两次。
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: z-wf-admin
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: z-wf-admin
+        app.kubernetes.io/part-of: z-wf
+    spec:
+      # 2026-11-17 订正：目标节点改为 **zifang002**（原 zifang001 已不在集群，
+      #   现集群只有单节点 zifang002 = 192.168.31.136，镜像在它上面 build + import）。
+      nodeSelector:
+        kubernetes.io/hostname: zifang002
+      containers:
+        - name: z-wf
+          # 镜像不进 registry：本地 build + docker save + k3s ctr images import
+          #
+          # ⚠ 2026-10-22 18:0x 订正：镜像 **z-wf:2 → z-wf:3**
+          #   z-wf:2 是 08:54 构建的**旧 jar**，里面**没有**入站鉴权代码
+          #   （实测运行中 jar 里 `WfAuthInterceptor` / `health/probe` 命中数都是 0）。
+          #   ⇒ 用旧镜像带这份清单 = 探针打 `/api/wf/health/probe`（旧镜像没有）⇒ 404
+          #     ⇒ readiness 恒失败 ⇒ **域挂**；且鉴权 env 也不生效（代码不在）⇒ 假安全感。
+          #   ⇒ 必须**重建镜像**（本地打 jar → deploy/Dockerfile.runtime → --platform linux/amd64）。
+          #   ⇒ 用**新 tag**（:3）而不是覆盖 :2 —— 同 tag 覆盖后旧 digest 会被 GC，
+          #     覆盖前先另存 tar 才能回滚；新 tag 则天然留住了 :2 作回滚锚点。
+          #
+          # ⚠ 2026-11-17 订正：**z-wf:3 → z-wf:4**
+          #   :3 是 2026-10-22 的镜像，**不含 z-camuda 兼容层**（`/api/approval-center/*`
+          #   与 WfApprovalCenterController）。兼容层是 2026-11-12 之后加的代码，
+          #   z-lc 的 CamudaAdapter 正是打这个路径 ⇒ 用 :3 上线 z-lc 审批流必然 404。
+          #   :4 = 2026-11-17 01:11 本地打的 jar（含兼容层）→ zifang002 上 build 的 runtime 镜像。
+          # ⚠ 2026-11-17 订正：**z-wf:4 → z-wf:5**
+          #   :4 的 jar 里 `/api/approval-center/processes/start` 的 data 还是**裸字符串**，
+          #   而 z-camuda 原版那个端点返回**对象**（data.processInstanceId）——
+          #   z-lc 的 CamudaAdapter 逐格读 data.processInstanceId，拿字符串会落
+          #   「data 不是一个对象」而把**已经建出来的流程实例**记成 FAILED
+          #   （2026-11-17 集群实测：引擎侧实例已在，z-lc 账上却是 FAILED）。
+          #   :5 把该端点的 data 改成 {processInstanceId: ...}，与 z-camuda 同形状
+          #   （z-wf 自己的前端 ProcessList 本来就按 result.processInstanceId 取值，一并修好）。
+          image: z-wf:5
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # ===== 数据源（JDBC 持久化，13 张 ZWF_* 表）=====
+            # 生产库 = 阿里云 RDS 的 oc 库（与 z-ops / z-opc 系各仓共用同一个库，
+            # 见 z-ops 04-admin.yaml 的 OPS_DB_NAME=oc；RDS 地址口径与 z-opc 主启动器
+            # application.properties 的 z.base.db.default.host 一致）。
+            # z-wf 的 13 张 ZWF_* 表与 z_team_* / z_ops_* 等表同库 ⇒ 备份与权限口径一致。
+            # 库本身已存在（共享 RDS），**不需要**手工 CREATE DATABASE。
+            #
+            # ⚠ 2026-10-22 修订：地址与账号也走 Secret，**Deployment 里不留明文主机名**。
+            #   原写法把 RDS 主机名写成字面量（理由是「env.value 不做 $(VAR) 插值」⇒
+            #   只能写字面量）—— 但那会把库地址写进 git 历史，而组织边界是
+            #   「除 z-opc / lead 外，任何 z-* 仓不得再有敏感 commit」。
+            #   z-opc 主启动器（生产在跑，z-opc-main 2 副本就绪）用的是 secretKeyRef
+            #   拉整条 db-url ⇒ 本仓照抄该口径，不再依赖 env 展开语义。
+            #   ⇒ Secret aliyun-db 需含 db-url / db-username / db-password 三个键
+            #     （**从 z-opc ns 抄**：z-ops 的同名 secret 只有 db-host/db-password，
+            #      缺 db-url/db-username ⇒ 抄 z-ops 会让容器直接起不来）。
+            #   ⇒ 建库地址的顺序（先 ns 后 secret）见 deploy/kubernetes/README.md §2。
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: aliyun-db
+                  key: db-url
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: aliyun-db
+                  key: db-username
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: aliyun-db
+                  key: db-password
+            - name: SPRING_DATASOURCE_DRIVER
+              value: com.mysql.cj.jdbc.Driver
+
+            # ===== z-wf 引擎 =====
+            - name: Z_WF_ENABLED
+              value: "true"
+            # ===== 入站鉴权（2026-10-22，TASK-20261022-024）=====
+            # z-wf **不经网关、不挂主壳 SSO 闸门** ⇒ 它必须自带入站鉴权：
+            # 2026-10-22 首次上线时 9 条读端点匿名可读、20 条写端点全部已注册。
+            # 改法是应用层拦截器（z-wf-admin 的 WfAuthInterceptor），
+            # 「把路径加进主壳 sso.intercept-paths」对它**无效**。
+            #
+            # ⚠ 两枚凭据都从 Secret 注入，**清单里不留明文**：
+            #   z-wf-auth / auth-tokens      服务令牌（机器对机器：z-team AI 领活、z-ops 派发）
+            #                                元素形如 name:secret（name 只进审计日志）
+            #                                ⚠ name:secret 是**配置格式**；**请求头只送 secret 部分**
+            #                                  （Authorization: Bearer <secret>）——
+            #                                  送整串 name:secret 会得 401（2026-10-22 19:0x 实测）
+            #   z-wf-auth / sso-jwt-secret   主壳 SSO 票据的 HS256 密钥（与 z-ctc 同一枚）
+            #                                ⇒ 主壳同口径的 Authorization: Bearer <jwt>
+            #                                  或 Cookie sso_token / zctc_token 可直接调 z-wf
+            # ⚠ optional: true：Secret 没灌时容器照常起（不因缺 Secret 而 CrashLoop），
+            #   但**所有 /api/** 会 fail-closed 返 503（fail-closed，不是放行）。
+            #   灌 Secret 的步骤见 deploy/kubernetes/README.md §3.1。
+            - name: Z_WF_AUTH_ENABLED
+              value: "true"
+            - name: Z_WF_AUTH_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: z-wf-auth
+                  key: auth-tokens
+                  optional: true
+            - name: Z_WF_SSO_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: z-wf-auth
+                  key: sso-jwt-secret
+                  optional: true
+            # ===== 访问日志（可观测性）=====
+            # Tomcat access log 记「连接层」（来源 IP/UA/状态码/耗时）；
+            # 应用层的 [WF-ACCESS] 审计行记「用的哪个凭据 + 调了哪个端点」——
+            # 后者才是「事后可归因」的那一层。
+            - name: Z_WF_ACCESS_LOG_ENABLED
+              value: "true"
+            - name: Z_WF_ACCESS_LOG_DIR
+              value: /tmp/zwf-tmp            # 生产走 jdbc（内存版重启即丢）
+            - name: Z_WF_PERSISTENCE
+              value: jdbc
+            # schema 自动建表：本仓没有独立 DDL 脚本（DDL 内嵌在 JdbcWorkflowPersistence），
+            # 所以 auto-initialize 是唯一的建表途径。
+            # ⚠ DDL 方言已修（WfDdlDialect），MySQL 8.0 实测建 13 表 + 29 索引 + 幂等。
+            # 若将来补了独立 DDL 脚本，改成 false 并手工执行 —— 让 schema 变更走评审，
+            # 而不是靠容器启动副作用。
+            #
+            # ⚠ 2026-11-17 订正：改成 **false**（生产 oc 库的 13 张 zwf_* 表已存在）。
+            #   只读核实（2026-11-17，pymysql + information_schema，oc 库 610 张表）：
+            #   zwf_activity / zwf_batch / zwf_batch_element / zwf_comment / zwf_compensation /
+            #   zwf_decision / zwf_definition / zwf_execution / zwf_filter / zwf_incident_history /
+            #   zwf_job / zwf_process / zwf_task —— 13 张齐全。
+            #   ⇒ 表已在，auto-initialize 只会再跑一遍幂等 DDL；生产库按「只读」口径，
+            #     不让容器启动副作用碰 schema（Z_WF_AUTO_INITIALIZE_SCHEMA=false）。
+            - name: Z_WF_AUTO_INITIALIZE_SCHEMA
+              value: "false"
+            # fail-closed：条件求值失败时卡住等人处理（审批场景的正确默认值）。
+            # 打开等于明确接受「条件写错会静默通过」，只在非审批场景才应开。
+            - name: Z_WF_FAIL_OPEN
+              value: "false"
+            - name: Z_WF_DEPLOY_ON_STARTUP
+              value: "true"
+
+            # ===== 外部依赖（默认关闭；中间件按需开）=====
+            # z-config（配置中心）：本仓默认 false。z-wf 自身的配置全部走上面的环境变量，
+            # 不依赖 z-config ⇒ 保持 false，少一个依赖少一个故障域。
+            - name: Z_CONFIG_ENABLED
+              value: "false"
+            # z-rpc（RPC）：z-wf 的 RPC 契约层刻意零依赖（见 WfProcessRpcServiceImpl 注释），
+            # 只有 z-rpc 真在 classpath 时才由 starter 加 @ZRpcService。
+            # 走 HTTP 边界调用是这套组织的既定方式 ⇒ 默认关闭。
+            - name: Z_RPC_ENABLED
+              value: "false"
+
+            # ===== JVM =====
+            - name: JVM_OPTS
+              value: "-Xms512m -Xmx1024m -XX:+UseG1GC"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp/zwf-tmp
+          # 探针打 /api/wf/health/probe：**该端点真查一次库**（不是只报进程活着），
+          # 存储不可用时 status 变 DOWN ⇒ 「静默降级到内存实现」会被探针发现。
+          #
+          # ⚠ 2026-10-22（TASK-20261022-024）：探针路径从 /api/wf/health 换成
+          #   /api/wf/health/probe。原因是入站鉴权上线后 /api/wf/** 全部要凭据，
+          #   而 **kubelet 的 httpGet 探针带不了自定义请求头**
+          #   （httpHeaders 只能写字面量、不能引用 Secret）⇒ 探针带不来 Authorization。
+          #   /api/wf/health/probe 是专给探针的免鉴权端点，只回 status/engine，
+          #   **不含**流程定义数、实例列表等业务数据。
+          #   ⚠ 别把探针改回 /api/wf/health：那条路径在验收口径的 17 条受测读路径里，
+          #     豁免它 = 验收指标 ①（匿名可读数 = 0）直接不成立。
+          readinessProbe:
+            httpGet:
+              path: /api/wf/health/probe
+              port: 8080
+            # ⚠ timeoutSeconds 必须**显式写**：不写就是取 Kubernetes 默认值 **1 秒**
+            #   （kubectl explain ...timeoutSeconds：Defaults to 1 second），
+            #   而「删掉该字段」与「写 1」等价，**都修不好**（2026-10-23 TASK-20261023-043）。
+            #   取值 5s 的依据：该端点实测热态 p50=182.7ms / p95=201.8ms / max=202.9ms
+            #   （集群内 20 次采样，2026-10-23），kubelet 侧记录的服务端耗时最高 325ms
+            #   ⇒ 5s ≈ 25×p95、15×实测最高值、5×当初被击穿的 1s 门槛。
+            #   且 5s < periodSeconds(15) ⇒ 不改变探针节奏。
+            timeoutSeconds: 5
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 8
+          livenessProbe:
+            httpGet:
+              path: /api/wf/health/probe
+              port: 8080
+            # ⚠ 同 readiness：**必须显式写 timeoutSeconds**（默认 1s ⇒ 慢路径直接误判存活失败）。
+            #   取值 10s（比 readiness 更宽）：liveness 连续 6 次失败（6×30s=180s）才重启容器，
+            #   一次 GC / 阿里云 RDS 抖动不该把容器换掉 ⇒ 给存活探针留更足的余量。
+            #   10s < periodSeconds(30) ⇒ 不改变探针节奏。
+            timeoutSeconds: 10
+            # 启动比 z-ops 慢：要先连库 + 建 13 张表 + 部署流程定义
+            # （实测启动耗时 14.4s，initialDelaySeconds=120 已经很宽裕）
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            failureThreshold: 6
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+# ===== NetworkPolicy =====
+# 2026-10-22（TASK-20261022-024）：z-wf 此前**没有任何** NetworkPolicy，
+# 而它是当天新增的 NodePort 暴露面（31887）。本条把入站来源收成白名单。
+#
+# ⚠ 本集群的 NetworkPolicy **确实生效**（实测，不是"写了就算"）：
+#   z-wf 的 Pod 访问 z-ctc 的 ClusterIP（z-ctc-admin.z-ctc.svc.cluster.local:8888）
+#   **超时**，而访问自己同 ns 的 ClusterIP 正常
+#   ⇒ z-ctc ns 的 netpol 没有放行 z-wf 的 Pod，跨 ns 的 pod→pod 被拦住了。
+#   （另：kube-system 里**没有** CNI/netpol 的 Pod —— 生效的是 k3s 内置的
+#     kube-router netpol controller，不是独立 Deployment，别去 kube-system 里找。）
+#
+# 口径与 z-ops / z-ctc / z-opc 的 netpol-denyall-ingress 保持同族（TASK-20261021-036）。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: netpol-denyall-ingress
+  namespace: z-wf
+  labels:
+    zopc.foundation/batch: "4"
+    zopc.foundation/purpose: min-deny-all-ingress
+    zopc.foundation/task: TASK-20261022-024
+spec:
+  podSelector: {}          # 覆盖 ns 内全部 Pod（含 z-wf-admin）
+  policyTypes:
+    - Ingress
+  ingress:
+    # ① 同 ns 内部互访
+    - from:
+        - podSelector: {}
+    # ② 集群内的调用方（板与板之间只有 HTTP 边界）：
+    #    z-opc 主壳 / z-team（AI 领活的机器领活契约）/ z-ops / z-ctc
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: z-opc
+          podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: z-team
+          podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: z-ops
+          podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: z-ctc
+          podSelector: {}
+        # ⚠ 2026-11-17 补：**z-lc**（审批流绑定侧）
+        #   z-lc-admin 的 CamudaAdapter 打 `/api/approval-center/processes/start`，
+        #   base-url 指向本服务 ⇒ z-lc ns 必须进白名单，否则连接被 netpol 静默丢包
+        #   （表现是 z-lc 侧审批流一直 FAILED，而 z-wf 侧日志一条请求都没有）。
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: z-lc
+          podSelector: {}
+    # ③ 节点 / 宿主机侧：kubelet 探针（源 IP 是节点 IP）+ 宿主机排障直连 NodePort
+    #    ⚠ 这一条不能省：省了 kubelet 探针会被自己的 netpol 挡住 ⇒ Pod 永远 NotReady。
+    - from:
+        - ipBlock:
+            cidr: 192.168.31.0/24
+      ports:
+        - port: 8080
+          protocol: TCP

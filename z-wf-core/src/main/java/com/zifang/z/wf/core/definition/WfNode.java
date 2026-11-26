@@ -1,0 +1,1124 @@
+package com.zifang.z.wf.core.definition;
+
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 流程节点定义 —— 流程图的顶点。
+ *
+ * <p>节点类型决定运行时行为（见 {@link WfNodeType}），字段承载该行为所需的配置：
+ * <ul>
+ *   <li>{@code userTask}：{@link #assignee} / {@link #candidateGroups} / {@link #candidateUsers} / {@link #formKey}</li>
+ *   <li>{@code serviceTask}：{@link #delegateClass} 或 {@link #delegateExpression}</li>
+ *   <li>{@code scriptTask}：{@link #script}（EL 表达式）</li>
+ *   <li>{@code receiveTask}：{@link #messageName}（关联外部消息）</li>
+ *   <li>{@code exclusiveGateway} / {@link #inclusiveGateway}：默认流由连线的 {@code defaultFlow} 决定</li>
+ * </ul>
+ *
+ * @author zifang
+ */
+public class WfNode implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    /** 节点 ID —— 流程定义内唯一。 */
+    private String id;
+
+    /** 节点名称（待办列表、轨迹展示用）。 */
+    private String name;
+
+    /** 节点类型。 */
+    private WfNodeType type = WfNodeType.TASK;
+
+    /** 节点分类（业务分组，如 "审批" / "通知"），供待办筛选。 */
+    private String category;
+
+    /** 表单编码，userTask 关联审批表单。 */
+    private String formKey;
+
+    /** 默认办理人（用户 ID）。 */
+    private String assignee;
+
+    /** 候选人用户 ID 集合 —— 可认领。 */
+    private List<String> candidateUsers = new ArrayList<>();
+
+    /** 候选组集合 —— 可认领。 */
+    private List<String> candidateGroups = new ArrayList<>();
+
+    /** 任务创建时的优先级，默认 {@link #DEFAULT_PRIORITY}。 */
+    private int priority = DEFAULT_PRIORITY;
+
+    /**
+     * 任务相对时长（ISO-8601 duration，如 {@code PT24H}），
+     * 相对于流程实例启动时间或上游任务完成时间计算到期时刻；为空表示不限期。
+     */
+    private String dueDateDuration;
+
+    /** 任务完成所需变量（全部存在才允许完成），用于"填完表单才能提交"。 */
+    private List<String> requiredVariables = new ArrayList<>();
+
+    /** serviceTask：delegate 实现类的全限定名。 */
+    private String delegateClass;
+
+    /**
+     * serviceTask：delegate Bean 的 EL 表达式。
+     *
+     * <p><b>与 {@link #delegateClass} 互斥</b>（Camunda 对
+     * {@code camunda:class} / {@code camunda:expression} / {@code camunda:delegateExpression}
+     * 是同样的要求），同时配会在部署期报错。
+     * 之所以要拦：运行期只会挑其中一个，而"我明明写了类名却一直没执行"
+     * 在图上与轨迹上都看不出原因。
+     */
+    private String delegateExpression;
+
+    /** scriptTask：EL 表达式脚本。 */
+    private String script;
+
+    /** receiveTask：关联的消息名（外部 trigger 时按此匹配）。 */
+    private String messageName;
+
+    /**
+     * 信号名。信号边界事件（{@code signalEventDefinition}）专用。
+     *
+     * <p>与 {@link #messageName} 分开而不是共用一个字段：消息是"发给某个实例"的，
+     * 信号是"广播给所有订阅者"的，两者匹配规则不同，共用一个字段迟早写混。
+     */
+    private String signalName;
+
+    /**
+     * 升级码（{@code escalationEventDefinition} 的 {@code escalationRef}）。
+     *
+     * <p>与 {@link #signalName} 分开：信号名是"叫醒谁"，升级码是"**打断谁**" ——
+     * 后者会把宿主上的待办作废、token 搬到边界上（换人办的话得在边界出线上写 assignee，
+     * 引擎不替作者决定）。共用一个字段的话，收到信号的那条分支与收到升级的那条分支
+     * 在图上一模一样，而引擎的处理完全相反。
+     *
+     * <p>BPMN 里它引的是一个 {@code <escalation>} 定义；本实现只取那个定义的
+     * {@code id} 当匹配键（{@code escalationRef} 的直接取值），
+     * 不解析 {@code <escalation>} 元素本身 —— 那一层目前没有任何语义需要它。
+     */
+    private String escalationCode;
+
+    /**
+     * 链接名（{@code linkEventDefinition}），对应 BPMN 的 {@code @name}。
+     *
+     * <p><b>不复用 {@link #name}</b>：{@code name} 是"给人看的节点名"，
+     * 在轨迹上、在待办里、在图上显示；{@code linkName} 是"给引擎看的配对键"。
+     * 两者恰好在 link 事件上重合（都来自 XML 的 {@code @name}），但用途完全不同 ——
+     * 一旦复用，将来给 link 事件加一个显示名（很多建模工具会这么做），
+     * 配对关系就跟着改了，而且改得悄无声息。
+     *
+     * <p>只存这两个类型上有值：解析期按类型写入，其余节点该字段恒为 null。
+     */
+    private String linkName;
+
+    /**
+     * 外部任务主题名。给了 topic 的 serviceTask 不在引擎里执行，
+     * 而是停在这一步等外部 worker 领走。
+     *
+     * <p>用 serviceTask + 扩展属性而不是新增 BPMN 元素 {@code <externalTask>}：
+     * 那不是 BPMN 2.0 的元素，Camunda 也是靠 {@code camunda:type="external"} 标注在
+     * serviceTask 上。新造一个元素类型会让从 Camunda/Flowable 导出的 XML 全都认不出。
+     */
+    private String topic;
+
+    // ==================== 复杂网关 ====================
+
+    /**
+     * 复杂网关的判别变量（通常是 {@code ${变量名}}）。
+     *
+     * <p>引擎取它的<b>值</b>，再去出线上找 {@code caseValue} 相同的线。
+     * 留空时部署期报 ERROR —— 没有它就退化成"永远走默认线"的死网关，
+     * 而流程照样能跑完，只是永远走同一条路。
+     */
+    private String caseVariable;
+
+    /**
+     * 复杂网关的汇合方式：{@code joining}（默认，等齐再合并）还是
+     * {@code competing}（穿透，各条 token 各自往下）。
+     *
+     * <p><b>为什么需要它</b>：BPMN 文件本身回答不了"这个网关是合并还是穿透"，
+     * 而这两种行为在图上长得一模一样。
+     * <p><b>不要以为 Camunda 能给你一个参考答案</b>：Camunda 7 与 8
+     * <b>执行期都不支持复杂网关</b>（官方论坛 2025-04：「Camunda（neither 7 nor 8）
+     * support the complex gateway during execution. Web and Desktop Modeler support
+     * the symbol for diagramming, but it's more useful for documentation that it is
+     * for execution」），而它的 BPMN 2.0 参考里网关只有 XOR / Parallel / Inclusive /
+     * Event-based 四页，没有复杂网关页。所以"从 Camunda 导出的模型"里
+     * 复杂网关的汇合行为是<b>没有来源的</b>，只能由本实现给一个确定答案。
+     *
+     * <p><b>为什么默认 joining</b>：改默认值等于改已上线模型的行为 ——
+     * 同一个文件在升级前后走出不同的图，而没有任何提示。
+     * 需要穿透的显式写 {@code zifang:complexJoin="competing"}。
+     *
+     * <p><b>不是所有网关都需要它</b>：排他网关恒为穿透（对齐 Camunda，
+     * 理由见 {@code WfEngine#isJoin}），并行/包容恒为合并。
+     * 只有复杂网关两边都说得通，才把它做成可配的。
+     */
+    private String complexJoin;
+
+    /**
+     * 复杂网关汇合的<b>阈值</b>：攒够几条分支的 token 就放行，不必等齐。
+     *
+     * <p>对应「N 取 M 到齐」。典型场景是 2/3 会签：法务、财务、合规三路并行，
+     * 只要法务与财务都批了就继续，合规慢慢批 —— 那是 WCP-30
+     * <i>Structured Partial Join</i>。不配这个属性时是"全到齐才合并"（现有行为）。
+     *
+     * <p><b>这里只收一个正整数，不收表达式</b>，尽管 BPMN 2.0 规范把
+     * {@code activationCondition} 定义成布尔表达式：
+     * <ul>
+     *   <li>本引擎的条件求值走流程变量命名空间，而"已抵达几条"是<b>引擎内部的计数</b>，
+     *       把它塞进变量表就要占一个用户可见的名字，且迟早与业务变量撞名。
+     *       撞名的症状是某天有人建了个同名变量，阈值静默变成另一个数。</li>
+     *   <li>真正要表达的无非"够 N 条"，一个整数把它说完了；
+     *       剩下的自由度（"第一条到就走"）用 {@code activationCondition="1"} 表达即可。</li>
+     * </ul>
+     * 非法取值（空串之外的非正整数）在部署期报 ERROR，见
+     * {@code WfDefinitionValidator#validateActivationCondition}。
+     *
+     * <p><b>与 {@link #complexJoin} 互斥</b>：{@code competing} 是穿透 ——
+     * 每条 token 各自往下，根本没有"攒够几条"这个说法。
+     */
+    private String activationCondition;
+
+    // ==================== 异步执行（asyncBefore / asyncAfter） ====================
+
+    /**
+     * 进入这个节点前先挂起：token 到达即挂 job，节点本身<b>还没执行</b>。
+     *
+     * <p>续跑时要<b>进入</b>这个节点（把它的行为真正跑一遍），与 {@link #asyncAfter}
+     * 的续跑方向正好相反 —— 这是两种模式必须分开的原因，也是它们用不同
+     * {@link com.zifang.z.wf.core.model.WfJobType} 的原因。
+     */
+    private boolean asyncBefore;
+
+    /**
+     * 这个节点执行完之后、离开之前挂起：节点已经跑过了，token 停在本节点上等 job。
+     *
+     * <p>续跑时才真正离开本节点、沿出线前进。挂在 userTask 上时，
+     * 意味着"人已经办完了，但流程还要在离开这一步前排一次队"。
+     */
+    private boolean asyncAfter;
+
+    /**
+     * {@code camunda:exclusive} / {@code zifang:exclusive}：这个异步 job <b>互斥</b>，
+     * 即<b>不与同一流程实例的其它 exclusive job 并发执行</b>。
+     *
+     * <p><b>默认值是 {@code true}</b>（与 Camunda 一致），而不是"不写就是 false"：
+     * Camunda 7 官方扩展属性表原文（docs.camunda.org/manual/7.21/reference/bpmn20/
+     * custom-extensions/extension-attributes/#exclusive）：
+     * "Exclusive Jobs are the default configuration. All asynchronous continuations
+     * and timer events are thus exclusive by default."
+     * 要放开并发得显式写 {@code exclusive="false"}。
+     * ⇒ 反过来做（默认不互斥）会让「照搬 Camunda 模型但没写这个属性」的那一批
+     * 悄悄失去 Camunda 给的保证，而图上看不出任何区别。
+     *
+     * <p><b>此前本实现压根不读这个属性</b>：从 Camunda 导出的模型带着
+     * {@code camunda:exclusive="false"}，照搬过来被静默丢弃 ——
+     * 作者以为关掉了互斥，实际什么都没发生。
+     *
+     * <p>Camunda 那条约束同样对齐：<b>只有在 {@code asyncBefore} / {@code asyncAfter}
+     * 为 true 时这个属性才有意义</b>（原表 Constraints 行：
+     * "The camunda:exclusive attribute is only evaluated if the attribute
+     * camunda:asyncBefore or camunda:asyncAfter is set to true"）。
+     * 写在非异步节点上由校验器报 WARN。
+     */
+    private boolean exclusive = true;
+
+    /** callActivity / subProcess：被引用的流程定义 key。 */
+    private String calledElementKey;
+
+    /** 流程结束事件的流程结果表达式（决定流程实例的 outcome，如 approved / rejected）。 */
+    private String resultExpression;
+
+    /**
+     * 结果写进哪个变量名。
+     *
+     * <p>与 {@link #resultExpression} 是一对且<b>缺一不可</b>：
+     * 前者说"写进哪"，后者说"怎么算"。
+     * 不做成一个属性是因为 {@code ${a+b}} 与 {@code a+b} 从字符串形状上
+     * 分不出"要算的"和"变量名"，猜错会把值静默写进没人读的变量。
+     */
+    private String resultVariable;
+
+    // ==================== 业务规则任务 ====================
+
+    /**
+     * 要求值哪张决策表（DMN 的 {@code <decision id>}）。
+     *
+     * <p>可以写成 {@code ${decisionKey}} 表达式，在<b>节点执行那一刻</b>求值 ——
+     * 选哪张表可以是运行时才定下来的事。
+     * 判别式是<b>有没有 {@code ${}} 前缀</b>：裸串一律当字面 key。
+     * 把裸串也拿去求值的话，{@code approvalLevel} 会被当成一个变量名，
+     * 求值器对未定义变量 fail-closed 返回 null，于是所有决策都变成"找不到"。
+     */
+    private String decisionRef;
+
+    /**
+     * 用哪个版本的决策：{@code latest}（默认，求最新）或 {@code version}（配合
+     * {@link #decisionRefVersion} 指死版本）。
+     *
+     * <p>Camunda 还有 {@code deployment}（求与流程一起部署的那版）与
+     * {@code versionTag}（按版本标签取），<b>本实现明确不支持</b>，
+     * 部署期报错而不是悄悄当成 latest：
+     * 前者需要"BPMN 与 DMN 同一个部署单元"这个概念，而本仓两者是分别部署的
+     * （两个服务、两条 REST 端点），没有共享的部署单元可言；
+     * 后者需要 {@code ZWF_DECISION} 上有标签列，而本仓的决策只有版本号。
+     */
+    private String decisionRefBinding;
+
+    /** {@code decisionRefBinding="version"} 时指定用哪一版。 */
+    private String decisionRefVersion;
+
+    /**
+     * 决策结果怎么映射成一个值：{@code singleEntry} / {@code singleResult} /
+     * {@code collectEntries} / {@code resultList}（默认）。
+     *
+     * <p>四个名字与 Camunda 一致，因为它们描述的是**结果的形状**而不是本仓的私有约定：
+     * 表里命中一条且只有一个输出列时该拿什么，取决于下游要的是一个值还是一张表。
+     */
+    private String mapDecisionResult;
+
+    /** 扩展属性。 */
+    private Map<String, Object> properties = new HashMap<>();
+
+    // ==================== 错误 / 边界事件 ====================
+
+    /**
+     * 错误码，对应 BPMN 的 {@code errorEventDefinition/@errorRef}。
+     *
+     * <p>空字符串在 BPMN 里表示"捕获所有错误"，本实现<b>刻意不支持</b>：
+     * 宽泛捕获会把不相关的异常也吸走，让本该崩的流程继续走下去。
+     * 必须显式写明捕获哪一种错误。
+     */
+    private String errorCode;
+
+    /**
+     * 非中断型边界事件（{@code cancelActivity="false"}）。
+     *
+     * <p>区别只有一处，但那一处是全部：触发时<b>宿主 token 不动</b>。
+     * 中断型是把宿主那条 token 搬到边界事件上（宿主待办作废、token 走补偿分支），
+     * 非中断型是<b>另起一条 token</b>从边界事件出发，宿主照常办理，
+     * 两条路径在下游的汇合点碰头。
+     *
+     * <p>实现上并不需要"另一套状态"：边界订阅的存活期本来就是"宿主活跃期间"，
+     * 中断型与非中断型在这一点上完全一样。真正要做的是<b>不搬 token</b>，
+     * 以及让汇合判定认得这两条是同一批（靠 parentId，见
+     * {@code WfEngine#samePeer}）。
+     */
+    private boolean nonInterrupting;
+
+    /**
+     * {@code parallelMultiple="true"}：边界事件<b>按多实例的每个实例各建一个</b>。
+     *
+     * <p><b>这个属性与"能不能重复触发"毫无关系</b> —— 反复触发是
+     * {@code timeCycle} 循环定时器的事。此处原先的注释写的是
+     * 「同一事件可以重复触发」，校验器照着它报 ERROR，两者说的是同一件不存在的事：
+     * 读了这句的人会以为 {@code parallelMultiple} 是个"重复提醒"开关，
+     * 而它真正的含义是<b>边界事件挂几个</b>。
+     *
+     * <p>BPMN 2.0 的语义（默认 {@code false}）：
+     * <ul>
+     *   <li>{@code false}：边界事件属于<b>整个活动</b>。会签三个人，
+     *       超时边界只起一个表；到点触发时<b>销毁全部实例</b>
+     *       （Camunda 7 官方 BPMN 2.0 实现参考原文：
+     *       "all instances that are still active will be destroyed"）。</li>
+     *   <li>{@code true}：<b>每个实例各有各的边界事件</b>。三个人起三条表，
+     *       各自从自己进入这一刻起算；触发一个只打断那一个，其余实例照办。
+     *       这才是"每个人各自有 SLA"能落地的那一种。</li>
+     * </ul>
+     *
+     * <p>宿主不是多实例时这个属性<b>没有意义</b>（只有一个实例可挂），
+     * 校验器报 WARN 而不是 ERROR：行为仍然确定（等同 {@code false}），
+     * 不会挂死也不会算错，只是作者的心愿不会实现。
+     *
+     * <p>Camunda 7 / 8 <b>都只实现 {@code false} 那一种</b>，
+     * {@code true} 是本实现按规范补的，见 {@code _doc/001_arch/01-capability-gap.md} 第 33 轮记录。
+     */
+    private boolean parallelMultiple;
+
+    /**
+     * 边界事件挂在哪个节点上（{@code attachedToRef}）。
+     * 只有 {@link WfNodeType#BOUNDARY_EVENT} 会用。
+     */
+    private String attachedToRef;
+
+    /**
+     * 定时器边界的触发时刻怎么算，见 {@link WfTimerType}。
+     *
+     * <p>为 null 表示这个边界事件不是定时器边界。
+     *
+     * <p>与 {@link #errorCode} 是<b>互斥</b>的两条触发路径：BPMN 里一个
+     * boundaryEvent 只会挂一种 eventDefinition。解析时若两者都出现，
+     * 以 {@code error} 为准并让校验器报 ERROR —— 不静默挑一个。
+     */
+    private WfTimerType timerType;
+
+    /**
+     * 定时器表达式：
+     * <ul>
+     *   <li>{@link WfTimerType#DURATION} —— ISO-8601 时长，如 {@code PT5M}，
+     *       支持 D/H/M/S 与它们的组合；此处也可写 {@code ${变量}} 形式的流程变量</li>
+     *   <li>{@link WfTimerType#DATE} —— ISO-8601 时刻，如 {@code 2026-12-31T18:00:00Z}</li>
+     *   <li>{@link WfTimerType#CYCLE} —— ISO-8601 循环周期，如 {@code R3/PT10M}；
+     *       本实现<b>不支持</b>循环定时器，解析出来只为给出可操作的报错</li>
+     * </ul>
+     */
+    private String timerExpression;
+
+    public WfTimerType getTimerType() {
+        return timerType;
+    }
+
+    public void setTimerType(WfTimerType timerType) {
+        this.timerType = timerType;
+    }
+
+    public String getTimerExpression() {
+        return timerExpression;
+    }
+
+    public void setTimerExpression(String timerExpression) {
+        this.timerExpression = timerExpression;
+    }
+
+    /** 这个边界事件是否由定时器触发。 */
+    public boolean isTimerBoundary() {
+        return timerType != null;
+    }
+
+    public boolean isNonInterrupting() {
+        return nonInterrupting;
+    }
+
+    public void setNonInterrupting(boolean nonInterrupting) {
+        this.nonInterrupting = nonInterrupting;
+    }
+
+    public boolean isParallelMultiple() {
+        return parallelMultiple;
+    }
+
+    public void setParallelMultiple(boolean parallelMultiple) {
+        this.parallelMultiple = parallelMultiple;
+    }
+
+    /** 消息边界（{@code messageEventDefinition}）。 */
+    public boolean isMessageBoundary() {
+        return signalName == null && !isBlank(messageName);
+    }
+
+    /** 信号边界（{@code signalEventDefinition}）。 */
+    public boolean isSignalBoundary() {
+        return !isBlank(signalName);
+    }
+
+    /** 三种边界里任意一种（都是"宿主停着时可能被外部打断"）。 */
+    public boolean isEventBoundary() {
+        return isTimerBoundary() || isMessageBoundary() || isSignalBoundary()
+                || isEscalationEvent();
+    }
+
+    // ==================== 事件定义（边界事件与中间捕获事件共用） ====================
+
+    /**
+     * 消息事件定义（{@code messageEventDefinition}）。
+     *
+     * <p>与 {@link #isMessageBoundary()} 分开：后者额外要求"没有信号"，那是
+     * <b>边界</b>事件的取舍（两种定义同时出现时边界事件只认信号），
+     * 而这里要回答的是"这个节点等的是不是一条消息"，与它挂在哪儿无关。
+     */
+    public boolean isMessageEvent() {
+        return !isBlank(messageName);
+    }
+
+    /** 信号事件定义（{@code signalEventDefinition}）。 */
+    public boolean isSignalEvent() {
+        return !isBlank(signalName);
+    }
+
+    /** 定时器事件定义（{@code timerEventDefinition}）。 */
+    public boolean isTimerEvent() {
+        return timerType != null;
+    }
+
+    /**
+     * 本节点是否带任意一种事件定义 —— 也就是"它在等什么 / 要抛什么"。
+     *
+     * <p>校验器靠它判断一个没有事件定义的捕获事件是不是"永远等不到"，
+     * 那等价于一条死路。
+     *
+     * <p><b>包含 {@link #isEscalationEvent()}，尽管升级捕获并不被支持</b>：
+     * 这条判定回答的是"作者有没有写事件定义"，不是"本引擎等不等得住"。
+     * 少算一种的话，一个只写了 {@code escalationEventDefinition} 的捕获事件会落到
+     * 「没有任何事件定义」那条兜底报错上，作者会以为自己的写法没被识别，
+     * 而真正的原因（升级捕获暂不支持，且缺的是哪一块）就永远说不出口了。
+     * 支持与否由 {@code WfDefinitionValidator#validateCatchEvent} 单独判。
+     */
+    public boolean hasEventDefinition() {
+        return isMessageEvent() || isSignalEvent() || isTimerEvent() || isEscalationEvent();
+    }
+
+    /**
+     * 本引擎当前能真的等住的<b>独立</b>捕获事件种类（不是事件网关的分支）。
+     *
+     * <p><b>只有消息与信号</b>。独立的定时器捕获事件（流程里直接写一个
+     * "等 5 分钟再继续"的中间捕获事件）要等 {@code duedate} 到点、由扫描器捞起来，
+     * 而那条续跑路径要分清"边界事件的宿主"与"网关分支"，多一个未支持的形态
+     * 就多一处可能挂错。与其那样，不如在部署期明确拒绝。
+     *
+     * <p>定时器<b>作为事件网关的分支</b>是支持的，那是另一个判定：
+     * {@link #isSupportedGatewayBranch()}。
+     */
+    public boolean isSupportedCatchEvent() {
+        return isMessageEvent() || isSignalEvent();
+    }
+
+    /**
+     * 本引擎能真的等住的事件网关分支种类。
+     *
+     * <p>比 {@link #isSupportedCatchEvent()} 多了定时器：网关分支的定时器到期时
+     * 走的是<b>竞速</b>语义（它赢了，其余分支作废），
+     * 而不是"到点就往下走" —— 后者要判断这条捕获事件是不是孤立的，
+     * 而这个判断在部署期（{@code WfDefinitionValidator}）与引擎侧（{@code WfEngine}）
+     * 都要做一遍，放在节点上就等于把"是不是网关分支"这件事藏进了节点类型里。
+     *
+     * <p>所以这里<b>只回答"事件定义本身认不认识"</b>，
+     * "是不是网关分支"由 {@code WfDefinition#gatewayOf} 回答。
+     */
+    public boolean isSupportedGatewayBranch() {
+        return isMessageEvent() || isSignalEvent() || isTimerEvent();
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.trim().isEmpty();
+    }
+
+    public String getErrorCode() {
+        return errorCode;
+    }
+
+    public void setErrorCode(String errorCode) {
+        this.errorCode = errorCode;
+    }
+
+    public String getAttachedToRef() {
+        return attachedToRef;
+    }
+
+    public void setAttachedToRef(String attachedToRef) {
+        this.attachedToRef = attachedToRef;
+    }
+
+    /** 是否为该错误码的边界事件；errorCode 不区分大小写。 */
+    public boolean catchesError(String code) {
+        return errorCode != null && !errorCode.trim().isEmpty()
+                && errorCode.trim().equalsIgnoreCase(code == null ? "" : code.trim());
+    }
+
+    // ==================== 多实例（会签 / 或签 / 计数） ====================
+
+    /** 是否多实例节点。 */
+    private boolean multiInstance;
+
+    /**
+     * 实例个数：字面量数字或 {@code ${}} 表达式。
+     *
+     * <p>与集合迭代（{@link #loopCollection}）<b>二选一</b>，两者都配时报 ERROR。
+     * 会签"3 个人"与"3 个候选人"在实现上是同一件事，但写错成另一个的作者
+     * 会拿到一个他没预期的流程 —— 而这里猜不出来该听谁的，所以不猜。
+     */
+    private String loopCardinality;
+
+    /**
+     * 集合迭代：指向流程变量里的一个集合，逐个元素展开。
+     *
+     * <p>与 {@link #loopCardinality} 二选一。配了它之后<b>实例数由集合大小决定</b>，
+     * 不再由作者手写 —— 这正是"会签部门所有领导"这类流程需要的写法，
+     * 而 {@code loopCardinality} 要求作者先知道人数。
+     *
+     * <p>值可以是 {@code ${变量}} 表达式，也可以直接写变量名。
+     * 求值结果必须<b>是集合或数组</b>；求不出、类型不对都按 fail-closed 报错，
+     * 不当空集合处理 —— 空集合会让流程直接跳过整个会签节点往下走，
+     * 而"取不到人"和"确实没人"在业务上是两件事。
+     */
+    private String loopCollection;
+
+    /**
+     * 集合迭代时，当前元素绑定的<b>局部变量名</b>。
+     *
+     * <p>不配就不绑定元素，只按集合大小展开（退化成"按个数展开"，
+     * 而那个 {@link #loopCardinality} 就能写，不必绕这一圈）。
+     *
+     * <p>绑的是<b>元素原值</b>而不是它的字符串形式：集合里放的是对象时，
+     * 拿到对象才能引用它的字段。与此同时 {@code loopAssignee} 仍然拿到
+     * 字符串形式（{@code String.valueOf(element)}），
+     * 于是 {@code zifang:assignee="${loopAssignee}"} 两种写法都能用。
+     */
+    private String loopElement;
+
+    /**
+     * 完成条件（会签的判定式）。
+     *
+     * <p>为空 = <b>全部实例都办完才算完成</b>（会签）。
+     * 写 {@code ${nrOfCompletedInstances >= 1}} = 或签；
+     * {@code ${nrOfCompletedInstances >= 2}} = 计数会签。
+     *
+     * <p>可用变量：{@code loopCounter} / {@code nrOfInstances} /
+     * {@code nrOfActiveInstances} / {@code nrOfCompletedInstances}。
+     * 校验器会检查表达式里至少出现一个，否则报 ERROR ——
+     * 写错变量名（比如 {@code nrOfCompleted}）会因 fail-closed 判为 false，
+     * 于是流程永远等不到"完成"而卡死，且没有任何报错。
+     */
+    private String completionCondition;
+
+    /**
+     * 逐个串行执行。
+     *
+     * <p>本版<b>不支持</b>，配了会在部署期报 ERROR。
+     * 原因不是"难做"，而是串行会签与并行会签的完成判定不同
+     * （串行每次只激活一个实例），做成半套会比不做更危险。
+     */
+    private boolean sequential;
+
+    /**
+     * 每个实例的办理人列表变量。
+     *
+     * <p>值为流程变量里的一个集合。分叉第 i 个实例时，
+     * 会把 {@code list.get(i)} 写进该 token 的局部变量 {@code loopAssignee}，
+     * 于是流程定义里写 {@code zifang:assignee="${loopAssignee}"} 即可逐实例派不同人。
+     *
+     * <p>为什么不给 {@code ${approvers[loopCounter]}} 这种写法：
+     * 实测 z-util 的 EL <b>不支持变量下标</b>（{@code approvers[1]} 可以，
+     * {@code approvers[loopCounter]} 抛 ElException）。把索引求值挪到分叉时用
+     * Java 做掉，比在表达式引擎里补一个索引解析更可控。
+     *
+     * <p>与 {@link #loopCollection} 的差别只有一处：{@code collection} 还能通过
+     * {@link #loopElement} 把元素<b>原值</b>绑给办理表达式，并且它决定实例数；
+     * 这里只取办理人，实例数仍由 {@link #loopCardinality} 给。
+     * 保留它是因为已有流程定义在用它。
+     */
+    private String loopAssignees;
+
+    public String getCaseVariable() {
+        return caseVariable;
+    }
+
+    public void setCaseVariable(String caseVariable) {
+        this.caseVariable = caseVariable;
+    }
+
+    /** 复杂网关的汇合方式原文（{@code joining} / {@code competing}）。 */
+    public String getComplexJoin() {
+        return complexJoin;
+    }
+
+    public void setComplexJoin(String complexJoin) {
+        this.complexJoin = complexJoin;
+    }
+
+    /**
+     * 复杂网关是否走穿透式汇合。
+     *
+     * <p><b>只认 {@code competing} 这一个值</b>，其余一律当 joining：
+     * 拼错（{@code compete} / {@code nonJoining}）时静默走 joining，
+     * 症状是"我明明写了穿透，怎么还是合并了"。校验器会对非法取值报 ERROR，
+     * 所以这个"静默"只在校验被绕过时才会发生 —— 而兜底方向必须选**更保守**的那个：
+     * joining 与本引擎的既有行为一致，competing 才是新的那个。
+     */
+    public boolean isCompetingJoin() {
+        return "competing".equalsIgnoreCase(complexJoin == null ? "" : complexJoin.trim());
+    }
+
+    /** 阈值原文（{@code zifang:activationCondition}），没配时为 {@code null}。 */
+    public String getActivationCondition() {
+        return activationCondition;
+    }
+
+    public void setActivationCondition(String activationCondition) {
+        this.activationCondition = activationCondition;
+    }
+
+    /**
+     * 阈值 N：攒够几条分支的 token 就放行。
+     *
+     * <p><b>没配时返回 {@link Integer#MAX_VALUE}</b> 而不是 0：
+     * 运行期拿它和"已抵达数"比，"没配"必须表现得比任何真实阈值都难满足 ——
+     * 等齐是既有行为，阈值是新增的，往宽松方向兜底才对。
+     * 返回 0 的话"没配"会变成"立刻放行"，那等于把默认语义从"全到齐"悄悄改成"不等"。
+     *
+     * <p>解析失败返回 {@code -1} 而不是兜底成某个数：非法取值在部署期就报 ERROR，
+     * 运行期拿到 -1 只会出现在校验被绕过时，而那时<b>宁可一条都别放行</b>
+     * （挂住并留痕）也不要按猜测的阈值推进流程。
+     */
+    public int activationThreshold() {
+        if (activationCondition == null || activationCondition.trim().isEmpty()) {
+            return Integer.MAX_VALUE;
+        }
+        try {
+            int n = Integer.parseInt(activationCondition.trim());
+            return n > 0 ? n : -1;
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    /** 是否配了阈值（N 取 M）。 */
+    public boolean hasActivationThreshold() {
+        return activationCondition != null && !activationCondition.trim().isEmpty();
+    }
+
+    public boolean isAsyncBefore() {
+        return asyncBefore;
+    }
+
+    public void setAsyncBefore(boolean asyncBefore) {
+        this.asyncBefore = asyncBefore;
+    }
+
+    public boolean isAsyncAfter() {
+        return asyncAfter;
+    }
+
+    public void setAsyncAfter(boolean asyncAfter) {
+        this.asyncAfter = asyncAfter;
+    }
+
+    /** 这个异步 job 是否互斥（不与同实例的其它 exclusive job 并发）。默认 {@code true}。 */
+    public boolean isExclusive() {
+        return exclusive;
+    }
+
+    public void setExclusive(boolean exclusive) {
+        this.exclusive = exclusive;
+    }
+
+    /** 这个节点是否要异步（任一方向）。 */
+    public boolean isAsync() {
+        return asyncBefore || asyncAfter;
+    }
+
+    public boolean isMultiInstance() {
+        return multiInstance;
+    }
+
+    public void setMultiInstance(boolean multiInstance) {
+        this.multiInstance = multiInstance;
+    }
+
+    public String getLoopCardinality() {
+        return loopCardinality;
+    }
+
+    public void setLoopCardinality(String loopCardinality) {
+        this.loopCardinality = loopCardinality;
+    }
+
+    public String getCompletionCondition() {
+        return completionCondition;
+    }
+
+    public void setCompletionCondition(String completionCondition) {
+        this.completionCondition = completionCondition;
+    }
+
+    public boolean isSequential() {
+        return sequential;
+    }
+
+    public void setSequential(boolean sequential) {
+        this.sequential = sequential;
+    }
+
+    public String getLoopCollection() {
+        return loopCollection;
+    }
+
+    public void setLoopCollection(String loopCollection) {
+        this.loopCollection = loopCollection;
+    }
+
+    public String getLoopElement() {
+        return loopElement;
+    }
+
+    public void setLoopElement(String loopElement) {
+        this.loopElement = loopElement;
+    }
+
+    public String getLoopAssignees() {
+        return loopAssignees;
+    }
+
+    public void setLoopAssignees(String loopAssignees) {
+        this.loopAssignees = loopAssignees;
+    }
+
+    /** 默认优先级。 */
+    public static final int DEFAULT_PRIORITY = 50;
+
+    /**
+     * {@link #properties} 里标记"这个 TASK 是从不支持的 BPMN 元素退化来的"的键。
+     *
+     * <p>值为原始 BPMN 元素名（如 {@code eventBasedGateway}）。
+     * 由 {@code WfXmlParser} 在退化时写入，由 {@code WfDefinitionValidator} 读出来报 ERROR。
+     *
+     * <p>为什么需要这个标记：解析器对认不出的元素名会退化成 {@link WfNodeType#TASK}，
+     * 这样设计器导出的扩展类型不会让整份定义解析失败。但"退化成通用任务"对
+     * {@code task} 是合理的，对 {@code eventBasedGateway} 却是把流程语义换掉了。
+     * 光看 type=TASK 无法区分这两者，所以退化时必须留下原名。
+     */
+    public static final String PROPERTY_UNSUPPORTED_BPMN_ELEMENT = "zifang:unsupportedBpmnElement";
+
+    /**
+     * {@link #properties} 里标记"这个节点不是 {@code <process>} 的直接子节点，
+     * 而是被嵌在某个容器元素（目前只有 {@code subProcess}）里"的键。
+     *
+     * <p>值为外层容器元素的 id，没有则不存在。
+     *
+     * <p>存在的理由：解析结果是<b>扁平节点表</b>，父子关系在收表那一刻就没了。
+     * 而"这个节点嵌在 subProcess 里"恰恰是判断它会不会被执行的关键依据 ——
+     * 丢了这条信息，校验器就看不出哪些内联节点永远跑不到。
+     */
+    public static final String PROPERTY_NESTED_IN = "zifang:nestedIn";
+
+    /**
+     * 本节点被嵌在哪个容器元素里。
+     *
+     * @return 外层容器 id；是 {@code <process>} 的直接子节点则返回 {@code null}
+     */
+    public String nestedIn() {
+        Object value = property(PROPERTY_NESTED_IN);
+        return value == null ? null : String.valueOf(value);
+    }
+
+    /**
+     * 本节点是否由不支持的 BPMN 元素退化而来。
+     *
+     * @return 退化来源的原始元素名；本就是原生类型则返回 {@code null}
+     */
+    public String unsupportedBpmnElement() {
+        Object value = property(PROPERTY_UNSUPPORTED_BPMN_ELEMENT);
+        return value == null ? null : String.valueOf(value);
+    }
+
+    // ==================== 补偿（第 37 轮） ====================
+    //
+    // 三个属性都放在 properties 里而不是做成顶层字段，理由有二：
+    //   ① WfDefinitionCodec 对 properties 是整包拷贝（编解码两侧都是
+    //      new HashMap<>(node.getProperties())），走这里就不用改持久化表结构；
+    //   ② 它们与上面两个 PROPERTY_* 是同一类信息 —— 「这个元素在 BPMN 里的
+    //      结构角色」，而不是「这个节点要做什么」，顶层字段留给后者。
+
+    /** {@code isForCompensation="true"}：本活动是一个**补偿处理器**（第 37 轮）。 */
+    public static final String PROPERTY_FOR_COMPENSATION = "zifang:forCompensation";
+
+    /** 本节点是挂在活动上的**补偿边界事件**（含 {@code <compensateEventDefinition/>}）。 */
+    public static final String PROPERTY_COMPENSATION_BOUNDARY = "zifang:compensationBoundary";
+
+    /** {@code compensateEventDefinition@activityRef}：不填时用宿主活动。 */
+    public static final String PROPERTY_COMPENSATION_ACTIVITY_REF = "zifang:compensationActivityRef";
+
+    /**
+     * 本活动是不是**补偿处理器**（{@code isForCompensation="true"}）。
+     *
+     * <p>补偿处理器在正常路径上<b>永远不会被 token 走到</b>：它由
+     * {@code <association>} 关联到某个补偿边界事件，只有那次补偿被触发时才执行。
+     * 所以它天然没有入线 —— 这正是 {@link WfDefinition#unconditionalStartNodes()}
+     * 必须显式排除它的原因，否则「无入线」这一条会让每个画了补偿的流程
+     * 凭空多出一个无条件入口，部署期报「存在多个无条件开始节点」。
+     */
+    public boolean isForCompensation() {
+        return boolProperty(this, PROPERTY_FOR_COMPENSATION);
+    }
+
+    /** 本节点是不是补偿边界事件。 */
+    public boolean isCompensationBoundary() {
+        return boolProperty(this, PROPERTY_COMPENSATION_BOUNDARY);
+    }
+
+    /**
+     * 补偿边界事件上 {@code activityRef} 指定的补偿目标活动。
+     *
+     * @return 活动 id；没写 {@code activityRef} 则返回 {@code null}，
+     *         此时目标就是这条边界事件的宿主
+     */
+    public String compensationActivityRef() {
+        Object value = property(PROPERTY_COMPENSATION_ACTIVITY_REF);
+        return value == null || String.valueOf(value).trim().isEmpty()
+                ? null : String.valueOf(value).trim();
+    }
+
+    /**
+     * 读 properties 里的布尔值，字符串 {@code "true"} 也算 true。
+     *
+     * <p>走 properties 的代价是值要经过 JSON 一趟：写进去时是 {@link Boolean}，
+     * 读回来未必还是同一个类（换一套 JSON 库就可能是 {@code "true"} 字符串）。
+     * 这里两种都认，比让「重启后补偿突然全都不触发」更好 ——
+     * 那条症状没有任何报错，只是补偿安静地不做了。
+     */
+    private static boolean boolProperty(WfNode node, String key) {
+        Object value = node.property(key);
+        if (value instanceof Boolean) {
+            return (Boolean) value;
+        }
+        return value != null && "true".equalsIgnoreCase(String.valueOf(value).trim());
+    }
+
+    public WfNode() {
+    }
+
+    public WfNode(String id, String name, WfNodeType type) {
+        this.id = id;
+        this.name = name;
+        this.type = type;
+    }
+
+    public String getId() {
+        return id;
+    }
+
+    public void setId(String id) {
+        this.id = id;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public WfNodeType getType() {
+        return type;
+    }
+
+    public void setType(WfNodeType type) {
+        this.type = type == null ? WfNodeType.TASK : type;
+    }
+
+    public String getCategory() {
+        return category;
+    }
+
+    public void setCategory(String category) {
+        this.category = category;
+    }
+
+    public String getFormKey() {
+        return formKey;
+    }
+
+    public void setFormKey(String formKey) {
+        this.formKey = formKey;
+    }
+
+    public String getAssignee() {
+        return assignee;
+    }
+
+    public void setAssignee(String assignee) {
+        this.assignee = assignee;
+    }
+
+    public List<String> getCandidateUsers() {
+        return candidateUsers;
+    }
+
+    public void setCandidateUsers(List<String> candidateUsers) {
+        this.candidateUsers = candidateUsers == null ? new ArrayList<String>() : candidateUsers;
+    }
+
+    public List<String> getCandidateGroups() {
+        return candidateGroups;
+    }
+
+    public void setCandidateGroups(List<String> candidateGroups) {
+        this.candidateGroups = candidateGroups == null ? new ArrayList<String>() : candidateGroups;
+    }
+
+    public int getPriority() {
+        return priority;
+    }
+
+    public void setPriority(int priority) {
+        this.priority = priority;
+    }
+
+    public String getDueDateDuration() {
+        return dueDateDuration;
+    }
+
+    public void setDueDateDuration(String dueDateDuration) {
+        this.dueDateDuration = dueDateDuration;
+    }
+
+    public List<String> getRequiredVariables() {
+        return requiredVariables;
+    }
+
+    public void setRequiredVariables(List<String> requiredVariables) {
+        this.requiredVariables = requiredVariables == null ? new ArrayList<String>() : requiredVariables;
+    }
+
+    public String getDelegateClass() {
+        return delegateClass;
+    }
+
+    public void setDelegateClass(String delegateClass) {
+        this.delegateClass = delegateClass;
+    }
+
+    public String getDelegateExpression() {
+        return delegateExpression;
+    }
+
+    public void setDelegateExpression(String delegateExpression) {
+        this.delegateExpression = delegateExpression;
+    }
+
+    public String getScript() {
+        return script;
+    }
+
+    public void setScript(String script) {
+        this.script = script;
+    }
+
+    public String getMessageName() {
+        return messageName;
+    }
+
+    public void setMessageName(String messageName) {
+        this.messageName = messageName;
+    }
+
+    public String getTopic() {
+        return topic;
+    }
+
+    public void setTopic(String topic) {
+        this.topic = topic;
+    }
+
+    /** 是否是"交给外部 worker 做的一步"。 */
+    public boolean isExternalStep() {
+        return topic != null && !topic.trim().isEmpty();
+    }
+
+    public String getSignalName() {
+        return signalName;
+    }
+
+    public void setSignalName(String signalName) {
+        this.signalName = signalName;
+    }
+
+    public String getEscalationCode() {
+        return escalationCode;
+    }
+
+    public void setEscalationCode(String escalationCode) {
+        this.escalationCode = escalationCode;
+    }
+
+    /** 升级事件定义（{@code escalationEventDefinition}）。 */
+    public boolean isEscalationEvent() {
+        return !isBlank(escalationCode);
+    }
+
+    public String getLinkName() {
+        return linkName;
+    }
+
+    public void setLinkName(String linkName) {
+        this.linkName = linkName;
+    }
+
+    public String getCalledElementKey() {
+        return calledElementKey;
+    }
+
+    public void setCalledElementKey(String calledElementKey) {
+        this.calledElementKey = calledElementKey;
+    }
+
+    public String getResultExpression() {
+        return resultExpression;
+    }
+
+    public void setResultExpression(String resultExpression) {
+        this.resultExpression = resultExpression;
+    }
+
+    public String getResultVariable() {
+        return resultVariable;
+    }
+
+    public void setResultVariable(String resultVariable) {
+        this.resultVariable = resultVariable;
+    }
+
+    public String getDecisionRef() {
+        return decisionRef;
+    }
+
+    public void setDecisionRef(String decisionRef) {
+        this.decisionRef = decisionRef;
+    }
+
+    public String getDecisionRefBinding() {
+        return decisionRefBinding;
+    }
+
+    public void setDecisionRefBinding(String decisionRefBinding) {
+        this.decisionRefBinding = decisionRefBinding;
+    }
+
+    public String getDecisionRefVersion() {
+        return decisionRefVersion;
+    }
+
+    public void setDecisionRefVersion(String decisionRefVersion) {
+        this.decisionRefVersion = decisionRefVersion;
+    }
+
+    public String getMapDecisionResult() {
+        return mapDecisionResult;
+    }
+
+    public void setMapDecisionResult(String mapDecisionResult) {
+        this.mapDecisionResult = mapDecisionResult;
+    }
+
+    public Map<String, Object> getProperties() {
+        return properties;
+    }
+
+    public void setProperties(Map<String, Object> properties) {
+        this.properties = properties == null ? new HashMap<String, Object>() : properties;
+    }
+
+    /**
+     * 读取扩展属性（供 {@link #getDelegateExpression()} 这类"属性即配置"的场景）。
+     */
+    public Object property(String key) {
+        return properties == null ? null : properties.get(key);
+    }
+
+    /**
+     * 是否可被认领（有候选人）。
+     */
+    public boolean isClaimable() {
+        return !candidateUsers.isEmpty() || !candidateGroups.isEmpty();
+    }
+
+    @Override
+    public String toString() {
+        return "WfNode{" + id + " " + type + " '" + name + "'}";
+    }
+}

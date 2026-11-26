@@ -1,0 +1,340 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        z-wf-admin: 独立可启动应用（docker 镜像源 / 本地 java -jar 演示），永不上 Maven Central。
+        对齐 z-camuda-admin 模式：own-parent (spring-boot-starter-parent) + maven.deploy.skip=true。
+        <version> 与依赖的 z-wf-starter 版本必须与 ../pom.xml 的 <revision> 保持一致。
+    -->
+    <!-- 2026-10-30 SB3 火车：own-parent 从 spring-boot-starter-parent 2.7.12 reparent 到 z-boot-parent 1.2.0
+         （DM 早已 import 1.2.0，这里只是把 parent 链也拉齐 —— 悬留清零） -->
+    <parent>
+        <groupId>io.github.yuku123</groupId>
+        <artifactId>z-boot-parent</artifactId>
+        <version>1.2.6</version>
+        <relativePath/>
+    </parent>
+
+
+    <groupId>io.github.yuku123</groupId>
+    <artifactId>z-wf-admin</artifactId>
+    <version>2.0.0</version>
+    <packaging>jar</packaging>
+    <name>z-wf :: admin</name>
+    <description>z-wf 独立可启动应用 — 自研流程引擎 + 审批中心 REST。不发 Maven Central。 / Standalone App, NOT published to Central</description>
+
+    <properties>
+        <z-meta.version>1.0.2</z-meta.version>
+        <!-- 与 ../pom.xml <revision> 同步：根仓升到 2.0.0 是因为 z-wf 坐标的 1.x 是 Camunda 版，
+             本仓是自研引擎，属于破坏性大版本（详见根 pom 注释与 README 顶部）。 -->
+        <z-wf.version>2.0.1</z-wf.version>
+        <!-- z-util 版本口径：本模块是 own-parent（parent = spring-boot-starter-parent），
+             根仓 pom.xml 的 <z-util.version> 属性与 dependencyManagement 对本模块**完全不生效** ——
+             own-parent 就没有那条父子继承链。兄弟仓版本只能靠 import fleet 拿权威，
+             而 fleet（z-boot-parent 1.1.0 下发）把所有 z-util 坐标管在 1.0.19。
+             1.0.19 的 JsonUtil 有枚举序列化的老 bug（枚举被当 POJO 输出成 {"name":null,...}），
+             读回来直接抛「Enum name not found in JSON」——
+             实测打在 WfDecisionService 的决策表落库回读与 WfBatchService 的批次操作回读上。
+             该 bug 在 z-util 1.2.2 已修（枚举改为输出 name() 字符串），本模块钉 1.2.6。
+             抬 pin 同样要在本模块自己的 dependencyManagement 里逐个显式钉住，
+             光定义属性盖不住 import 进来的 BOM（根仓 pom 的注释里有同一条坑的完整实测）。 -->
+        <z-util.version>1.2.6</z-util.version>
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <java.version>17</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- 2026-10-30 Java17/SB3：本模块 parent 仍是 spring-boot-starter 2.7.12（迁移悬留），
+                 JDK8 内置 javax.annotation/servlet 已消失，显式补 jakarta 两件 -->
+            <dependency>
+                <groupId>jakarta.annotation</groupId>
+                <artifactId>jakarta.annotation-api</artifactId>
+                <version>2.1.1</version>
+            </dependency>
+            <dependency>
+                <groupId>jakarta.servlet</groupId>
+                <artifactId>jakarta.servlet-api</artifactId>
+                <version>6.0.0</version>
+                <scope>provided</scope>
+            </dependency>
+            <!-- own-parent 形态下兄弟仓版本只能靠 import fleet 拿权威 -->
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-boot-parent</artifactId>
+                <version>1.2.6</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- z-util：逐个显式钉住，理由见上面 properties 里的说明。
+                 本模块 own-parent ⇒ 根仓的 dependencyManagement 到不了这里，
+                 只 import fleet 的话所有 z-util 坐标都停在 fleet 下发的 1.0.19
+                 （实测 dependency:tree 全部显示 1.0.19），
+                 而 1.0.19 的枚举序列化是坏的 —— 决策表与批次操作回读都报
+                 「Enum name not found in JSON」，实测 5 条用例红。
+                 dependencyManagement 对传递依赖同样生效，所以连 z-util-core 拖进来的
+                 pattern-* 一并钉住，避免同一个仓两个版本同时在 classpath 上。 -->
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-core</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-parser-json</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-wf-kernel</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-expr-el</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-expr-obj</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-expr-sql</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-dsl-kernel</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-http</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-aop</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-bc</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-pattern-cache</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-pattern-composite</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-pattern-factory</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-pattern-register</artifactId>
+                <version>${z-util.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- 2026-10-30 Java17/SB3：JDK8 内置 javax.annotation/servlet 消失，显式补 jakarta 两件
+            （⚠ 本模块 parent 仍是 spring-boot-starter 2.7.12，运行时仍是 javax 栈 —— 迁移悬留，
+             下一班火车把 parent 挪到 z-boot-parent 1.2.0 后这里改成无版本） -->
+        <dependency>
+            <groupId>jakarta.annotation</groupId>
+            <artifactId>jakarta.annotation-api</artifactId>
+            <version>2.1.1</version>
+        </dependency>
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <version>6.0.0</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- z-wf 全栈：core (自研引擎) + web (REST) + starter (自动装配)。
+             **三个都要显式列**：starter → web → core 是传递的，但 admin 的测试直接 import
+             com.zifang.z.wf.core.model.* 等类型，靠传递依赖能编译但不稳（core 一旦在 web 里
+             标 optional 就会断）。显式声明让"admin 依赖引擎本体"这件事是 pom 里看得见的。 -->
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-wf-starter</artifactId>
+            <version>${z-wf.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-wf-web</artifactId>
+            <version>${z-wf.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-wf-core</artifactId>
+            <version>${z-wf.version}</version>
+        </dependency>
+
+        <!-- 服务注册 + RPC 暴露（starter 里是 optional 不传递，独立部署必须显式声明） -->
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-config-spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-rpc-spring-boot-starter</artifactId>
+        </dependency>
+
+        <!-- MySQL：z-wf 的 JDBC 持久化落库
+             2026-11-18 第二轮：坐标 mysql:mysql-connector-java → com.mysql:mysql-connector-j，
+             版本 8.0.33 → 8.4.0。
+             起因 GHSA-m6vm-37g8-gqvh（C:H，MySQL Connectors 接管漏洞）区间
+             introduced=0 / fixed=8.2.0 与 introduced=0 / last_affected=8.0.33。
+             **老坐标 mysql:mysql-connector-java 的最高版本就是 8.0.33**（repo1 maven-metadata
+             的 `<release>` 即 8.0.33）⇒ 留在老坐标上无干净版可抬，必须换坐标。
+             新坐标 com.mysql:mysql-connector-j 8.4.0 起干净（OSV 复核），
+             且与 z-boot-parent 1.2.4 的 DM 版本一致（driver 类名仍是 com.mysql.cj.jdbc.Driver）。 -->
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <version>8.4.0</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.alibaba</groupId>
+            <artifactId>druid-spring-boot-3-starter</artifactId>
+            <version>1.2.18</version>
+        </dependency>
+
+        <!-- H2 内存库：h2-test profile（端到端测试 / 无外部依赖演示） -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+        </dependency>
+
+        <!-- 2026-10-30 SB3 火车：knife4j-jakarta 与本模块 SB2.7.12 运行时悬留不相容，且源码零引用 —— 摘除，待 reparent 后按新地板补 swagger 面 -->
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-log4j2</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- spring-jdbc：DataSource 自动装配与 DataSourceProperties 初始化要 org.springframework.dao.*。
+             starter 里这条是 optional（库不该强绑 JDBC），但独立部署形态**必须**在这里显式补上 ——
+             缺它的症状极不明显：启动时抛 NoClassDefFoundError: org/springframework/dao/DataAccessException，
+             堆栈一路指到 wfPersistence 的工厂方法，看不出"少了 spring-jdbc"。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-meta-api</artifactId>
+            <version>1.0.2</version>
+        </dependency>
+    <dependency>
+        <groupId>io.github.yuku123</groupId>
+        <artifactId>z-ext-spring-boot-starter</artifactId>
+        <version>1.2.6</version>
+</dependency>
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-meta-starter</artifactId>
+            <version>${z-meta.version}</version>
+        </dependency>
+</dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>repackage</id>
+                        <goals><goal>repackage</goal></goals>
+                        <configuration>
+                            <classifier>exec</classifier>
+                            <mainClass>com.zifang.z.wf.admin.WfAdminApplication</mainClass>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- V2：前端由 _frontend/z-wf-suit 经 frontend-maven-plugin 构建，
+                 dist/ 再复制进 target/classes/static/（不落 src/main/resources，避免污染源码树）。
+                 路由表用绝对路径 /z-wf/**（见 component pages-manifest.jsx），所以后端不加 context-path，
+                 由 Ingress / frps 按 Host 分流，前端与 API 同源。 -->
+            <plugin>
+                <groupId>com.github.eirslett</groupId>
+                <artifactId>frontend-maven-plugin</artifactId>
+                <version>1.15.0</version>
+                <configuration>
+                    <workingDirectory>${project.basedir}/../_frontend/z-wf-suit</workingDirectory>
+                    <installDirectory>${project.basedir}/../_frontend/z-wf-suit/.mvn-node</installDirectory>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>install-node-and-npm</id>
+                        <goals><goal>install-node-and-npm</goal></goals>
+                        <configuration>
+                            <nodeVersion>v22.14.0</nodeVersion>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>npm-install</id>
+                        <goals><goal>npm</goal></goals>
+                        <configuration><arguments>install</arguments></configuration>
+                    </execution>
+                    <execution>
+                        <id>npm-build</id>
+                        <goals><goal>npm</goal></goals>
+                        <configuration><arguments>run build</arguments></configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>copy-frontend-dist</id>
+                        <phase>prepare-package</phase>
+                        <goals><goal>copy-resources</goal></goals>
+                        <configuration>
+                            <outputDirectory>${project.build.outputDirectory}/static</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>${project.basedir}/../_frontend/z-wf-suit/dist</directory>
+                                    <filtering>false</filtering>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

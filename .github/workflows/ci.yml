@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (JDK 8)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+          cache: maven
+
+      # z-boot-parent 1.0.21 只在 repo1，不在源码树里，所以 parent 解析必须走网络。
+      # 但 z-util 系列的版本是本仓显式钉死的，装一次之后后续步骤可以离线跑，
+      # 用来验证"离线可构建"这条承诺。
+      - name: Resolve dependencies
+        run: mvn -B -q dependency:go-offline -DexcludeReactor=true || true
+
+      - name: Build and test
+        run: mvn -B clean install
+
+      - name: Verify offline build works
+        run: mvn -B -o clean install
+
+      - name: Check dependency tree for forbidden engines
+        run: |
+          set -e
+          # "完全自研"这句话必须可被机器检查，而不是靠人读 pom。
+          # 一旦有人引回 camunda / flowable / activiti / jbpm / zeebe，
+          # 这个 job 必须红。
+          for artifact in camunda flowable activiti jbpm zeebe; do
+            if mvn -B -o dependency:tree 2>/dev/null | grep -i "$artifact"; then
+              echo "::error::依赖树里出现了 $artifact —— 本仓承诺完全自研"
+              exit 1
+            fi
+          done
+          echo "依赖树干净：未引入任何第三方工作流引擎"
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: '**/target/surefire-reports/'
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release-notes:
+    name: release dry-run
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches pom revision
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME#v}"
+          REV=$(mvn -B -q help:evaluate -Dexpression=revision -DforceStdout | tr -d '[:space:]')
+          echo "tag=$TAG  pom revision=$REV"
+          if [ "$TAG" != "$REV" ]; then
+            echo "::error::tag 版本与 pom <revision> 不一致：tag=$TAG revision=$REV"
+            exit 1
+          fi
+
+      # z-wf-admin 永不上 Maven Central（own-parent + deploy.skip）。
+      # 这一步确认 skip 确实生效，避免误发布管理端应用。
+      - name: Verify admin module is not deployable
+        run: |
+          set -e
+          SKIP=$(mvn -B -q -pl z-wf-admin help:evaluate \
+                 -Dexpression=maven.deploy.skip -DforceStdout | tr -d '[:space:]')
+          echo "z-wf-admin maven.deploy.skip=$SKIP"
+          if [ "$SKIP" != "true" ]; then
+            echo "::error::z-wf-admin 不允许发布到 Central，但 deploy.skip 未生效"
+            exit 1
+          fi

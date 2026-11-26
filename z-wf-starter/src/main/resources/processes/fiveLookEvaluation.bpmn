@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    五看评估流程示例（z-wf 自研引擎）。
+
+    形态：五项评分（业务/财务/法务/风控/战略）→ 并行会签 → 汇总 → 结束
+
+    演示的引擎能力：
+      · parallelGateway fork 出多个独立 token（每条评分线互不干扰）
+      · parallelGateway 汇合：等所有被激活的分支都到达才继续
+      · receiveTask：等待外部系统回传评分
+      · serviceTask：调用 WfJavaDelegate 做汇总计算
+-->
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:zifang="http://zifang.com/wf/bpmn/ext"
+             id="fiveLookDefinitions"
+             targetNamespace="http://zifang.com/wf">
+
+    <process id="fiveLookEvaluation" name="五看评估流程" isExecutable="true"
+             zifang:category="评估">
+
+        <startEvent id="start1" name="发起评估"/>
+
+        <parallelGateway id="fork" name="并行评分"/>
+
+        <userTask id="taskBiz" name="业务看"
+                  zifang:candidateGroups="biz-reviewers"
+                  zifang:category="评分"/>
+        <userTask id="taskFin" name="财务看"
+                  zifang:candidateGroups="fin-reviewers"
+                  zifang:category="评分"/>
+        <userTask id="taskLegal" name="法务看"
+                  zifang:candidateGroups="legal-reviewers"
+                  zifang:category="评分"/>
+        <userTask id="taskRisk" name="风控看"
+                  zifang:candidateGroups="risk-reviewers"
+                  zifang:category="评分"/>
+        <userTask id="taskStrategy" name="战略看"
+                  zifang:candidateGroups="strategy-reviewers"
+                  zifang:category="评分"/>
+
+        <parallelGateway id="join" name="汇合"/>
+
+        <serviceTask id="taskAggregate" name="汇总结论"
+                     zifang:delegateClass="com.zifang.z.wf.starter.sample.FiveLookAggregateDelegate"/>
+
+        <endEvent id="end1" name="结束" zifang:resultExpression="${conclusion}"/>
+
+        <sequenceFlow id="f0" sourceRef="start1" targetRef="fork"/>
+        <sequenceFlow id="f1" sourceRef="fork" targetRef="taskBiz"/>
+        <sequenceFlow id="f2" sourceRef="fork" targetRef="taskFin"/>
+        <sequenceFlow id="f3" sourceRef="fork" targetRef="taskLegal"/>
+        <sequenceFlow id="f4" sourceRef="fork" targetRef="taskRisk"/>
+        <sequenceFlow id="f5" sourceRef="fork" targetRef="taskStrategy"/>
+
+        <sequenceFlow id="f6" sourceRef="taskBiz" targetRef="join"/>
+        <sequenceFlow id="f7" sourceRef="taskFin" targetRef="join"/>
+        <sequenceFlow id="f8" sourceRef="taskLegal" targetRef="join"/>
+        <sequenceFlow id="f9" sourceRef="taskRisk" targetRef="join"/>
+        <sequenceFlow id="f10" sourceRef="taskStrategy" targetRef="join"/>
+
+        <sequenceFlow id="f11" sourceRef="join" targetRef="taskAggregate"/>
+        <sequenceFlow id="f12" sourceRef="taskAggregate" targetRef="end1"/>
+
+    </process>
+</definitions>

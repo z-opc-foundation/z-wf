@@ -1,0 +1,470 @@
+import React, {useEffect, useMemo, useState} from 'react';
+import {useNavigate} from 'react-router-dom';
+import {Badge, Button, Card, Dropdown, Form, Input, InputNumber, message, Modal, Select, Space, Table, Tag, Typography,} from 'antd';
+import {
+    BranchesOutlined,
+    CopyOutlined,
+    DeleteOutlined,
+    EditOutlined,
+    ExclamationCircleOutlined,
+    MoreOutlined,
+    PlusOutlined,
+    ReloadOutlined,
+    SearchOutlined,
+} from '@ant-design/icons';
+import {approvalApi} from '../../wf/services/api';
+import { EmptyState, ErrorState } from '@yuku123/z-frontend-common/ui'
+import {ProcessDefinition} from '../../wf/types';
+import dayjs from 'dayjs';
+import styles from './index.module.css';
+
+const {Title} = Typography;
+const {confirm} = Modal;
+
+/** 发起流程的表单值（title/approver/reason/days → startProcess 的 variables） */
+interface StartFormValues {
+    title?: string;
+    approver?: string;
+    reason?: string;
+    days?: number;
+    extraVars?: { key: string; value: string }[];
+}
+
+const ProcessList: React.FC = () => {
+    const navigate = useNavigate();
+    const [form] = Form.useForm();
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<Error | null>(null);
+    const [data, setData] = useState<ProcessDefinition[]>([]);
+    const [searchKeyword, setSearchKeyword] = useState('');
+
+    // 客户端查询过滤（lead 008 §2 规则 3）：过滤字段取自本表 columns 的 dataIndex
+    // （name / key / category）。页头搜索框本来就是查询框，之前只存了值没接到表格上。
+    const filteredData = useMemo<ProcessDefinition[]>(() => {
+        const kw = searchKeyword.trim().toLowerCase();
+        if (!kw) return data;
+        return data.filter((r) => {
+            const processKey = String(r.key ?? '');
+            return `${r.name ?? ''} ${processKey} ${r.category ?? ''}`.toLowerCase().includes(kw);
+        });
+    }, [data, searchKeyword]);
+    const [modalVisible, setModalVisible] = useState(false);
+    const [editingProcess, setEditingProcess] = useState<ProcessDefinition | null>(null);
+    // 2026-11-12: 发起流程 —— 此前 startProcess API 全仓零调用，模板列表只能设计不能发起，
+    // 闭环断在第一环。发起成功直接跳 /workflow/process/:id（流程视图），能逐步看到推进。
+    const [startTarget, setStartTarget] = useState<ProcessDefinition | null>(null);
+    const [startSubmitting, setStartSubmitting] = useState(false);
+    const [startForm] = Form.useForm();
+
+    const fetchProcessList = async () => {
+        try {
+            setLoading(true);
+            const result = await approvalApi.getProcessDefinitions();
+            setData(result);
+        } catch (error) {
+            console.error('获取流程列表失败:', error);
+            setError(error as Error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        fetchProcessList();
+    }, []);
+
+    const handleCreate = () => {
+        setEditingProcess(null);
+        form.resetFields();
+        setModalVisible(true);
+    };
+
+    const handleEdit = (record: ProcessDefinition) => {
+        setEditingProcess(record);
+        form.setFieldsValue({
+            name: record.name,
+            key: record.key,
+            description: record.description,
+            category: record.category,
+        });
+        setModalVisible(true);
+    };
+
+    const handleDelete = (record: ProcessDefinition) => {
+        confirm({
+            title: '确认删除',
+            icon: <ExclamationCircleOutlined/>,
+            content: `确定要删除流程 "${record.name}" 吗？此操作不可恢复。`,
+            okText: '删除',
+            okType: 'danger',
+            cancelText: '取消',
+            onOk: async () => {
+                try {
+                    // 调用删除API
+                    message.success('删除成功');
+                    fetchProcessList();
+                } catch (error) {
+                    message.error('删除失败');
+                }
+            },
+        });
+    };
+
+    const handleSave = async (values: any) => {
+        try {
+            if (editingProcess) {
+                // 更新
+                message.success('更新成功');
+            } else {
+                // 创建
+                message.success('创建成功');
+            }
+            setModalVisible(false);
+            fetchProcessList();
+        } catch (error) {
+            message.error('保存失败');
+        }
+    };
+
+    const openStart = (record: ProcessDefinition) => {
+        setStartTarget(record);
+        startForm.resetFields();
+        startForm.setFieldsValue({approver: 'admin'});
+    };
+
+    const handleStart = async (values: StartFormValues) => {
+        if (!startTarget) return;
+        try {
+            setStartSubmitting(true);
+            const variables: Record<string, unknown> = {};
+            if (values.approver) variables.approver = values.approver;
+            if (values.reason) variables.reason = values.reason;
+            if (values.days != null && values.days !== undefined) variables.days = values.days;
+            // 自定义键值对最后合并（模板缺角色变量如 marketScorer/ceo 时从这里补）
+            (values.extraVars || []).forEach(({key, value}) => {
+                if (key && key.trim() && value !== undefined && value !== '') {
+                    variables[key.trim()] = value;
+                }
+            });
+            const result = await approvalApi.startProcess({
+                processKey: String(startTarget.key),
+                initiator: 'admin',
+                title: values.title || String(startTarget.name || ''),
+                variables,
+            });
+            message.success('流程已发起');
+            setStartTarget(null);
+            const instanceId = result && (result as any).processInstanceId;
+            if (instanceId) {
+                navigate(`/workflow/process/${instanceId}`);
+            }
+        } catch (error) {
+            message.error(`发起失败: ${(error as Error).message}`);
+        } finally {
+            setStartSubmitting(false);
+        }
+    };
+
+    const getStatusBadge = (status: string) => {
+        switch (status) {
+            case 'active':
+                return <Badge status="processing" text="已部署"/>;
+            case 'suspended':
+                return <Badge status="warning" text="已暂停"/>;
+            default:
+                return <Badge status="default" text="草稿"/>;
+        }
+    };
+
+    const columns = [
+        {
+            title: '流程名称',
+            dataIndex: 'name',
+            key: 'name',
+            render: (text: string, record: ProcessDefinition) => (
+                <div className={styles.processName}>
+                    <BranchesOutlined className={styles.processIcon}/>
+                    <div className={styles.nameInfo}>
+                        <span className={styles.name}>{text}</span>
+                        <span className={styles.key}>{String(record.key)}</span>
+                    </div>
+                </div>
+            ),
+        },
+        {
+            title: '版本',
+            dataIndex: 'version',
+            key: 'version',
+            width: 80,
+            render: (version: number) => (
+                <Tag color="blue">v{version}</Tag>
+            ),
+        },
+        {
+            title: '分类',
+            dataIndex: 'category',
+            key: 'category',
+            width: 120,
+            render: (category?: string) => category || '-',
+        },
+        {
+            title: '状态',
+            dataIndex: 'status',
+            key: 'status',
+            width: 100,
+            render: (status: string) => getStatusBadge(status),
+        },
+        {
+            title: '部署时间',
+            dataIndex: 'updateTime',
+            key: 'updateTime',
+            width: 180,
+            // 定义端点的 createTime/updateTime 是空串 ⇒ dayjs('') 是 Invalid Date
+            render: (time: string) => (time ? dayjs(time).format('YYYY-MM-DD HH:mm:ss') : '-'),
+        },
+        {
+            title: '操作',
+            key: 'action',
+            width: 180,
+            fixed: 'right',
+            render: (_: any, record: ProcessDefinition) => (
+                <Space size="small">
+                    <Button
+                        type="primary"
+                        size="small"
+                        onClick={() => openStart(record)}
+                    >
+                        发起
+                    </Button>
+                    <Button
+                        size="small"
+                        onClick={() => navigate(`/workflow/designer/${record.id}`)}
+                    >
+                        设计
+                    </Button>
+                    <Dropdown
+                        menu={{
+                            items: [
+                                {
+                                    key: 'edit',
+                                    icon: <EditOutlined/>,
+                                    label: '编辑信息',
+                                    onClick: () => handleEdit(record),
+                                },
+                                {
+                                    key: 'copy',
+                                    icon: <CopyOutlined/>,
+                                    label: '复制',
+                                },
+                                {
+                                    type: 'divider',
+                                },
+                                {
+                                    key: 'delete',
+                                    icon: <DeleteOutlined/>,
+                                    label: '删除',
+                                    danger: true,
+                                    onClick: () => handleDelete(record),
+                                },
+                            ],
+                        }}
+                    >
+                        <Button type="link" size="small">
+                            <MoreOutlined/>
+                        </Button>
+                    </Dropdown>
+                </Space>
+            ),
+        },
+    ];
+
+    return (
+        <div className={styles.container}>
+            <Card className={styles.card}>
+                <div className={styles.header}>
+                    <div className={styles.titleSection}>
+                        <Title level={4} className={styles.title}>
+                            <BranchesOutlined className={styles.titleIcon}/>
+                            流程模板
+                        </Title>
+                        <span className={styles.subtitle}>
+              共 <strong>{data.length}</strong> 个模板 · 从模板发起流程实例
+            </span>
+                    </div>
+                    <Space>
+                        <Input
+                            placeholder="按流程名称 / 标识 / 分类过滤"
+                            prefix={<SearchOutlined/>}
+                            value={searchKeyword}
+                            onChange={(e) => setSearchKeyword(e.target.value)}
+                            style={{width: 260}}
+                            allowClear
+                        />
+                        <Button
+                            icon={<ReloadOutlined/>}
+                            onClick={fetchProcessList}
+                        >
+                            刷新
+                        </Button>
+                        <Button
+                            type="primary"
+                            icon={<PlusOutlined/>}
+                            onClick={handleCreate}
+                        >
+                            新建流程
+                        </Button>
+                    </Space>
+                </div>
+
+                {error ? (
+                    // @ts-ignore
+                    <ErrorState error={error} onRetry={fetchProcessList} type="inline"/>
+                ) : (
+                    <Table
+                        // @ts-ignore
+                        columns={columns}
+                        dataSource={filteredData}
+                        rowKey="id"
+                        loading={loading}
+                        // 分页按 lead 008 §2 规则 2 补齐四件套（原来只有 pagination={false}）：
+                        // 流程定义是用户自己新建的（页头「新建流程」按钮），条数会增长，
+                        // 不能按「≤10 行且不变」豁免。
+                        // 这页页头已经自带搜索框（Input「搜索流程名称」），所以不接基座
+                        // ListTable 的 searchKeys —— 否则页面上会出现两个搜索框。
+                        pagination={{
+                            pageSize: 10,
+                            showSizeChanger: true,
+                            pageSizeOptions: ['10', '20', '50', '100'],
+                            showTotal: (total) => `共 ${total} 条`,
+                        }}
+                        scroll={{x: 1400}}
+                        locale={{
+                            emptyText: (
+                                <EmptyState
+                                    title="暂无流程模板"
+                                    description="当前没有已部署的流程模板"
+                                    // @ts-ignore
+                                    action={
+                                        <Button type="primary" icon={<PlusOutlined/>} onClick={handleCreate}>
+                                            新建流程
+                                        </Button>
+                                    }
+                                />
+                            ),
+                        }}
+                    />
+                )}
+            </Card>
+
+            {/* 新建/编辑流程弹窗 */}
+            <Modal
+                title={editingProcess ? '编辑流程' : '新建流程'}
+                open={modalVisible}
+                onOk={() => form.submit()}
+                onCancel={() => setModalVisible(false)}
+            >
+                <Form
+                    form={form}
+                    layout="vertical"
+                    onFinish={handleSave}
+                >
+                    <Form.Item
+                        label="流程名称"
+                        name="name"
+                        rules={[{required: true, message: '请输入流程名称'}]}
+                    >
+                        <Input placeholder="请输入流程名称"/>
+                    </Form.Item>
+
+                    <Form.Item
+                        label="流程标识"
+                        name="key"
+                        rules={[
+                            {required: true, message: '请输入流程标识'},
+                            {pattern: /^[a-z0-9_]+$/, message: '只能包含小写字母、数字和下划线'}
+                        ]}
+                    >
+                        <Input placeholder="请输入流程标识，如：leave_process" disabled={!!editingProcess}/>
+                    </Form.Item>
+
+                    <Form.Item
+                        label="分类"
+                        name="category"
+                    >
+                        <Select placeholder="请选择分类" allowClear>
+                            <Select.Option value="人事">人事</Select.Option>
+                            <Select.Option value="财务">财务</Select.Option>
+                            <Select.Option value="行政">行政</Select.Option>
+                            <Select.Option value="业务">业务</Select.Option>
+                            <Select.Option value="IT">IT</Select.Option>
+                        </Select>
+                    </Form.Item>
+
+                    <Form.Item
+                        label="描述"
+                        name="description"
+                    >
+                        <Input.TextArea
+                            rows={4}
+                            placeholder="请输入流程描述"
+                        />
+                    </Form.Item>
+                </Form>
+            </Modal>
+
+            {/* 发起流程弹窗（2026-11-12）：从模板一键发起实例，成功后跳流程视图 */}
+            <Modal
+                title={startTarget ? `发起流程 — ${startTarget.name}` : '发起流程'}
+                open={!!startTarget}
+                onCancel={() => setStartTarget(null)}
+                confirmLoading={startSubmitting}
+                onOk={() => startForm.submit()}
+                okText="发起"
+            >
+                <Form form={startForm} layout="vertical" onFinish={handleStart}>
+                    <Form.Item label="申请标题" name="title"
+                               rules={[{required: true, message: '请输入申请标题'}]}>
+                        <Input placeholder="如：张三的请假申请"/>
+                    </Form.Item>
+                    <Form.Item label="审批人" name="approver"
+                               extra="流程变量 approver，决定待办派给谁">
+                        <Input placeholder="admin"/>
+                    </Form.Item>
+                    <Form.Item label="事由" name="reason">
+                        <Input.TextArea rows={3} placeholder="流程变量 reason（选填）"/>
+                    </Form.Item>
+                    <Form.Item label="天数" name="days"
+                               extra="流程变量 days，请假类模板使用（选填）">
+                        <InputNumber min={0.5} step={0.5} style={{width: '100%'}}/>
+                    </Form.Item>
+                    <Form.Item label="其他流程变量" style={{marginBottom: 0}}
+                               extra="模板声明了其他 assignee 变量（如五看模板的 marketScorer/ceo）时从这里补">
+                        <Form.List name="extraVars">
+                            {(fields, {add, remove}) => (
+                                <>
+                                    {fields.map((field) => (
+                                        <Space key={field.key} align="baseline" style={{display: 'flex', marginBottom: 4}}>
+                                            <Form.Item name={[field.name, 'key']} noStyle>
+                                                <Input placeholder="变量名" style={{width: 150}}/>
+                                            </Form.Item>
+                                            <Form.Item name={[field.name, 'value']} noStyle>
+                                                <Input placeholder="值" style={{width: 180}}/>
+                                            </Form.Item>
+                                            <Button type="text" size="small" onClick={() => remove(field.name)}>删除</Button>
+                                        </Space>
+                                    ))}
+                                    <Button type="dashed" size="small" block icon={<PlusOutlined/>}
+                                            onClick={() => add()}>
+                                        添加变量
+                                    </Button>
+                                </>
+                            )}
+                        </Form.List>
+                    </Form.Item>
+                </Form>
+            </Modal>
+        </div>
+    );
+};
+
+export default ProcessList;
