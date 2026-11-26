@@ -14,14 +14,14 @@ import {EmptyState, ErrorState} from '@yuku123/z-frontend-common/ui';
 import {DashboardStats, Task} from '../../types/workflow';
 
 const styles: Record<string, any> = {
-    dashboard: {padding: 24},
-    statsRow: {marginBottom: 24},
-    statCard: {marginBottom: 16},
-    todoIcon: {color: '#1677ff'},
-    doneIcon: {color: '#52c41a'},
-    initiatedIcon: {color: '#722ed1'},
+    dashboard: {margin: '0 calc(-1 * var(--zfc-page-x))', marginTop: 0, padding: 0, paddingTop: 0, borderRadius: 0, boxShadow: 'none'},
+    statsRow: {margin: '1px 0 -1px 0'},
+    statCard: {margin: '-1px 0 0 -1px', borderRadius: 0, boxShadow: 'none'},
+    todoIcon: {color: 'var(--zfc-primary)'},
+    doneIcon: {color: '#2ba471'},
+    initiatedIcon: {color: 'var(--zfc-primary)'},
     statFooter: {textAlign: 'right', marginTop: 8},
-    todoCard: {marginTop: 16},
+    todoCard: {marginTop: 0, borderRadius: 0, boxShadow: 'none'},
     taskTitle: {display: 'flex', justifyContent: 'space-between', alignItems: 'center'},
     taskDesc: {fontSize: 12, color: '#888'},
 };
@@ -78,14 +78,14 @@ const Dashboard: React.FC = () => {
     return (
         <div className={styles.dashboard}>
             {/* 统计卡片 */}
-            <Row gutter={16} className={styles.statsRow}>
+            <Row gutter={0} className={styles.statsRow}>
                 <Col xs={24} sm={8}>
                     <Card loading={loading} className={styles.statCard}>
                         <Statistic
                             title="待办任务"
                             value={stats.todoCount}
                             prefix={<ClockCircleOutlined className={styles.todoIcon}/>}
-                            styles={{content: {color: '#1677ff'}}}
+                            styles={{content: {color: 'var(--zfc-primary)'}}}
                         />
                         <div className={styles.statFooter}>
                             <Link to={`${wfBase}/todo`}>
@@ -100,7 +100,7 @@ const Dashboard: React.FC = () => {
                             title="已办任务"
                             value={stats.doneCount}
                             prefix={<CheckCircleOutlined className={styles.doneIcon}/>}
-                            styles={{content: {color: '#52c41a'}}}
+                            styles={{content: {color: '#2ba471'}}}
                         />
                         <div className={styles.statFooter}>
                             <Link to={`${wfBase}/done`}>
@@ -115,7 +115,7 @@ const Dashboard: React.FC = () => {
                             title="我发起的"
                             value={stats.initiatedCount}
                             prefix={<FileTextOutlined className={styles.initiatedIcon}/>}
-                            styles={{content: {color: '#722ed1'}}}
+                            styles={{content: {color: 'var(--zfc-primary)'}}}
                         />
                         <div className={styles.statFooter}>
                             <Link to={`${wfBase}/my-processes`}>

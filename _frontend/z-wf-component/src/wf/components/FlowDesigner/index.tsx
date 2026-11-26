@@ -16,7 +16,7 @@ const nodeTypes = [
     {
         type: 'approval',
         label: '审批节点',
-        icon: svgIcon('<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect x="4" y="8" width="24" height="16" rx="3" fill="#fff" stroke="#1677ff" stroke-width="2"/><rect x="8" y="13" width="16" height="2" rx="1" fill="#1677ff"/><rect x="8" y="18" width="10" height="2" rx="1" fill="#1677ff"/></svg>'),
+        icon: svgIcon('<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect x="4" y="8" width="24" height="16" rx="3" fill="#fff" stroke="#0052d9" stroke-width="2"/><rect x="8" y="13" width="16" height="2" rx="1" fill="#0052d9"/><rect x="8" y="18" width="10" height="2" rx="1" fill="#0052d9"/></svg>'),
     },
     {
         type: 'condition',

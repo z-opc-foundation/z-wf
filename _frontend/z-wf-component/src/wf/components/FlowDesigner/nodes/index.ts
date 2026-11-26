@@ -31,7 +31,7 @@ class ApprovalNodeModel extends RectNodeModel {
     getNodeStyle() {
         const style = super.getNodeStyle();
         style.fill = '#fff';
-        style.stroke = '#1677ff';
+        style.stroke = '#0052d9';
         style.strokeWidth = 2;
         return style;
     }

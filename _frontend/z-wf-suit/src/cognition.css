@@ -1,0 +1,127 @@
+/* z-wf 认知范式全局收口（lead 008 §26）。
+ * 设计 token 由 @yuku123/z-frontend-common/blocks.css 提供，这里只做壳层与 antd 归一。 */
+html,
+body,
+#root {
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+    color: var(--zfc-ink);
+    background: var(--zfc-bg);
+    font-family: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+        Roboto, 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+}
+
+.zfc-app-shell {
+    margin: 0;
+    margin-top: 0;
+    padding: 0;
+    padding-top: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--zfc-bg);
+}
+
+.zfc-app-header {
+    min-height: 48px;
+    margin: 0;
+    padding: 0 var(--zfc-page-x);
+    border-radius: 0;
+    border-bottom: 1px solid var(--zfc-line);
+    box-shadow: none;
+    background: var(--zfc-surface);
+}
+
+.zfc-app-body {
+    display: flex;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--zfc-bg);
+}
+
+.zfc-app-main {
+    margin: 0;
+    margin-top: 0;
+    padding: 0 var(--zfc-page-x);
+    padding-top: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--zfc-bg);
+}
+
+/* 页面、面板、卡片、表格与工具栏均为平面；阴影只保留给下方浮层。 */
+.ant-card,
+.ant-card::before,
+.ant-table-wrapper,
+.ant-table,
+.ant-table-container,
+.ant-descriptions,
+.ant-list,
+.ant-list-item,
+.ant-tabs,
+.ant-tabs-content-holder,
+.ant-alert,
+.ant-form,
+.ant-spin-nested-loading,
+.ant-spin-container {
+    box-shadow: none;
+}
+
+.ant-card {
+    border-color: var(--zfc-line);
+    border-radius: var(--zfc-radius-sm);
+}
+
+.ant-card .ant-card-head {
+    border-color: var(--zfc-line);
+}
+
+.ant-btn {
+    border-radius: var(--zfc-radius-sm);
+    box-shadow: none;
+}
+
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-select-selector,
+.ant-picker {
+    /* AntD CSS-in-JS 的同优先级规则可能后注入，控件圆角必须稳定为 9px。 */
+    border-radius: 9px !important;
+}
+
+.ant-table-wrapper,
+.ant-descriptions,
+.ant-list {
+    border-radius: 0;
+}
+
+.ant-modal-content,
+.ant-select-dropdown,
+.ant-dropdown .ant-dropdown-menu,
+.ant-tooltip-inner {
+    border: 1px solid var(--zfc-line);
+    border-radius: var(--zfc-radius);
+    box-shadow: var(--zfc-overlay-shadow);
+}
+
+.ant-drawer-content {
+    border: 1px solid var(--zfc-line);
+    border-radius: 0;
+    box-shadow: var(--zfc-overlay-shadow);
+}
+
+.ant-modal-header,
+.ant-drawer-header {
+    border-color: var(--zfc-line);
+}
+
+.ant-modal-footer,
+.ant-drawer-footer {
+    border-color: var(--zfc-line);
+}

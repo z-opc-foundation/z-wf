@@ -52,7 +52,7 @@ function ProtectedShell() {
             appTitle="z-wf 流程中心"
             appVersion="0.1.0"
             appUser={user}
-            appIcon={{ icon: <img src="/icon.png" alt="z-wf 流程中心" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 }} />, color: '#3b82f6', label: 'z-wf 流程中心' }}
+            appIcon={{ icon: <img src="/icon.png" alt="z-wf 流程中心" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 }} />, color: '#0052d9', label: 'z-wf 流程中心' }}
         />
     )
 }

@@ -18,8 +18,8 @@ export default function HomePage() {
     const cards = menuItems.filter((m) => m.key !== '/z-wf/home')
 
     return (
-        <div>
-            <Card style={{ marginBottom: 16, background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)', border: 'none' }}>
+        <div style={{ margin: '0 calc(-1 * var(--zfc-page-x))', marginTop: 0, padding: 0, paddingTop: 0, borderRadius: 0, boxShadow: 'none' }}>
+            <Card style={{ margin: 0, background: 'var(--zfc-primary)', border: 'none', borderRadius: 8, boxShadow: 'none' }}>
                 <Space direction="vertical" size={4} style={{ color: '#fff' }}>
                     <Title level={3} style={{ color: '#fff', margin: 0 }}>
                         欢迎{user?.name ? `，${user.name}` : ''}
@@ -33,22 +33,22 @@ export default function HomePage() {
                 </Space>
             </Card>
 
-            <Row gutter={[16, 16]}>
+            <Row gutter={[0, 0]} style={{ margin: '-1px 0 0 1px' }}>
                 {cards.map((m) => (
                     <Col key={m.key} xs={24} sm={12} md={12} lg={8}>
-                        <Card hoverable onClick={() => navigate(m.key)} style={{ borderTop: '3px solid #7c3aed' }}>
+                        <Card hoverable onClick={() => navigate(m.key)} style={{ marginLeft: -1, marginTop: -1, borderTop: '3px solid var(--zfc-primary)', borderRadius: 8, boxShadow: 'none' }}>
                             <Space align="start" size={12}>
                                 <div style={{
                                     width: 44, height: 44, borderRadius: 8, flexShrink: 0,
-                                    background: 'rgba(124,58,237,0.08)', color: '#7c3aed',
+                                    background: 'var(--zfc-primary-soft)', color: 'var(--zfc-primary)',
                                     display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20,
                                 }}>
                                     {m.icon}
                                 </div>
                                 <div style={{ minWidth: 0 }}>
-                                    <div style={{ fontSize: 15, fontWeight: 600, color: '#0f172a' }}>{m.label}</div>
+                                    <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--zfc-ink)' }}>{m.label}</div>
                                     {m.desc && (
-                                        <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>{m.desc}</div>
+                                        <div style={{ fontSize: 12, color: 'var(--zfc-muted-2)', marginTop: 2 }}>{m.desc}</div>
                                     )}
                                 </div>
                             </Space>
